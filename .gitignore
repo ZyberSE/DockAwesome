@@ -1,0 +1,25 @@
+# Generated binaries, packages, tests and local version counter
+/build/
+/.build-revision
+/.build-revision.lock
+/.build-revision.new
+
+# Local runtime preferences and snapshots
+/DockAwesome.json
+/DockAwesome.json.bak
+/DockAwesome.json.new
+/.impeccable/review/
+
+# macOS and editor metadata
+.DS_Store
+.AppleDouble
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python tooling
+__pycache__/
+*.py[cod]

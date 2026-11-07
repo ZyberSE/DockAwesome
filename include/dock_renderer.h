@@ -1,0 +1,32 @@
+#ifndef DOCK_RENDERER_H
+#define DOCK_RENDERER_H
+#include "dock_core.h"
+#include "dock_geometry.h"
+/* Pixel backend owns no OS resources. Add kernels without touching layout or
+   Workbench. AMMX selection is explicit: never execute a probe instruction. */
+typedef struct { const char *name; DockMixHalf mix_half; DockConvertRGB24 rgba_to_rgb24;
+    DockConvertRGB565 decode565, encode565; DockBytesEqual bytes_equal;
+    DockKeyRGB565 key565; } DockPixelBackend;
+/* Presenter owns OS/driver upload and palette conversion. Buffer stays owned
+   by caller; callback must consume it before returning. */
+typedef struct {
+    void *context;
+    void (*present)(void *context, const DockImage *frame);
+} DockPresenter;
+typedef struct {
+    const DockPixelBackend *pixels;
+    DockPresenter output;
+    DockPanelShape panel; /* Zero-initialize the renderer before first draw. */
+    unsigned char *coverage; /* Optional caller-owned width*height transport mask. */
+    int pressed_item; /* One-based pressed item; zero means none. */
+    int center_panel; /* Keep the panel around an empty end slot during a drag. */
+    DockEdge edge;
+} DockRenderer;
+const DockPixelBackend *dock_backend_portable(void);
+#ifdef DOCK_AMMX
+const DockPixelBackend *dock_backend_ammx(void);
+#endif
+void dock_renderer_draw(DockRenderer *renderer, DockImage *canvas,
+    const DockImage *backdrop, const DockCache *const *icons,
+    const DockPlacement *placements, int count, const DockSettings *settings);
+#endif

@@ -17,7 +17,7 @@ Pointer -> layout -> renderer -> frame -> native window or PiP2
 | `dock_core.c` | Icon caches, layout, animation, blending, and pixel conversion |
 | `dock_geometry.c` | Bottom, left, and right geometry and hit testing |
 | `dock_interaction.c` | Button pairs, drag state, and pin actions |
-| `dock_renderer.c` | Pixel backend selection |
+| `dock_renderer.c` | Pixel backend selection, damage tracking, and damaged PiP conversion |
 | `dock_prefs.c` | JSON preferences |
 | `amiga_main.c` | Workbench integration, item state, input, and timers |
 | `amiga_ui.c` | Menus, labels, Settings, About, and Folder Stack |
@@ -26,9 +26,9 @@ Pointer -> layout -> renderer -> frame -> native window or PiP2
 | `amiga_pip.c` | PiP2 buffers, alignment, presentation, and lease |
 
 `DockPixelBackend` selects C or AMMX kernels. Both use the same rounded
-50% blend. Icons with partial alpha share the C compositor. The caller
-presents the frame after adding overlays; screen memory stays in the
-native display layer.
+50% blend. Icons with partial alpha share the C compositor. The renderer
+draws the overlays (running dots, the dragged icon) and the caller
+presents the frame; screen memory stays in the native display layer.
 
 ## Layout and memory
 
@@ -70,6 +70,21 @@ backdrop) row by row between frames. The main program calls
 capture, a drag reference, or a snapshot); the next frame mixes the rows
 again. The backdrop is copied only outside the plate interior. On Vampire at
 Size 72 with 13 icons this took composition from 40.6 to 24.1 ms per frame.
+
+The renderer also keeps the inputs of its last draw and redraws only the
+damage: a list of up to 80 rectangles that never intersect (overlapping
+ones merge into their bounding box; overflow redraws everything). Changed
+slots add their old and new image rectangles, moved plate ends a strip that
+reaches the corner radius plus one pixel inward, the divider its old and new
+span, and running dots and the dragged icon, which the renderer now draws as
+overlays, their old and new rectangles. A different canvas, backdrop,
+coverage buffer, edge, centered plate, setting, item count, corner radius or
+plate thickness redraws everything, as does `dock_renderer_invalidate`. The
+main program calls it after every cache free, replace, build or swap and
+every reorder, because a rebuilt cache can reuse a freed address. Each
+rectangle is drawn by `dock_render_oriented_clip`, which writes canvas and
+coverage only inside it, with the bytes a full draw gives there.
+`DockRenderer.damage` reports what the last draw wrote.
 
 ## Input and updates
 

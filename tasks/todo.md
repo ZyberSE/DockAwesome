@@ -201,11 +201,11 @@ target and 0 animated out-of-surface frames. The C half blend fell from
 probe checks pass). Worker stack frames fell from ~17.5 KB to 1.3 KB.
 
 Deferred, with reasons:
-- Tinted-plate cache and visible-span icon blending: no Vampire stage
-  measurement yet. With AMMX the plate blend is ~0.5 ms of a 6.4 ms frame;
-  measure compose_us with --profile before implementing.
-- Partial compare (main finding 6) is implemented but unmeasured; check
-  against the 801 us capture cost and on physical output.
+- Tinted-plate cache (kept glass) and visible-span icon blending (runs) were
+  implemented in c41bfa5; see "Large-icon zoom speed".
+- Partial compare (main finding 6) is implemented (frame_check and the
+  plate-only check in live_capture); its cost is capture_compare_us_avg in
+  the --profile report.
 - Folder-reveal hook: if another program chains our backfill hook and the
   original was the default, a pass-through stays installed while the dock
   runs. Closing it needs a permanent code stub.
@@ -423,3 +423,24 @@ Release archive rebuilt as 1.0 beta 1 (beta 1 was never published):
 ~/Downloads/DockAwesome-1.0b1.lha (122,219 bytes, SHA-256
 75693347...ffb8eefe), packed with LhA on the Amiga; every file matches
 build/release/DockAwesome.
+
+## Next: zoom wave matching macOS (requested 2026-11-08)
+
+Measured from the user's macOS screenshot (right edge, 2x pixels, rest
+96 px, hovered 187 px) against `dock_layout` (Size 48, 195%, pointer on an
+icon centre). Share of the full zoom per icon from the pointer:
+
+| Steps from the pointer | macOS | DockAwesome |
+| --- | --- | --- |
+| 0 | 1.00 (1.95x) | 1.00 (1.96x) |
+| 1 | 0.84-0.87 | 0.83 |
+| 2 | 0.47-0.49 | 0.50 |
+| 3 | ~0.04 | 0.15 |
+| 4 | 0 | 0 |
+
+- [ ] Make the third icon from the pointer grow ~0.04 of the zoom instead
+      of 0.15, keeping steps 0-2; add a geometry test for the profile.
+- [ ] Check on the Vampire against the macOS screenshot.
+- Also reported: the entry feels less snappy than macOS. At Size 72 the
+  8-tick entry took 332 ms before damage rendering (36 ms frames on a
+  20 ms tick); re-measure after damage rendering before changing the curve.

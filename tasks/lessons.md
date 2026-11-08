@@ -1,5 +1,11 @@
 # Project lessons
 
+## Communication
+
+- Reply to the user in Swedish, in plain words. Present comparisons as
+  "icon one, two, three steps from the pointer" with sizes in pixels, not
+  internal terms such as falloff, tail or neighbour index.
+
 ## Build and test
 
 - Build successfully before uploading. An old binary can survive a failed build.

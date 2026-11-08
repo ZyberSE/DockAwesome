@@ -126,6 +126,7 @@ typedef struct {
 
 typedef struct {
     struct Gadget *slider[SLIDER_COUNT], *readout[SLIDER_COUNT], *position, *path;
+    struct Gadget *browse, *clear, *cancel, *save;
     int limit[SLIDER_COUNT]; /* What fits now. */
     int cap[SLIDER_COUNT];   /* Slider range, raised for larger saved values. */
     char value[SLIDER_COUNT][16];
@@ -1403,6 +1404,18 @@ void dock_ui_set_busy(DockUI *ui, const char *status)
     }
     SetWindowTitles(ui->dialog,(STRPTR)(status ? ui->busy_title : ui->dialog_title),(UBYTE *)~0);
     SetWindowPointer(ui->dialog,WA_BusyPointer,status != NULL,WA_PointerDelay,FALSE,TAG_DONE);
+    if (ui->settings.save) {
+        /* Nothing can change while the draft is applied. Browse stays
+           disabled without asl.library. */
+        SettingsView *s = &ui->settings;
+        struct Gadget *const gadgets[] = {s->slider[SIZE_SLIDER], s->slider[SCALE_SLIDER],
+            s->position, s->path, s->clear, s->cancel, s->save};
+        size_t i;
+        for (i = 0; i < sizeof(gadgets)/sizeof(gadgets[0]); ++i)
+            if (gadgets[i]) GT_SetGadgetAttrs(gadgets[i],ui->dialog,NULL,GA_Disabled,status != NULL,TAG_DONE);
+        if (s->browse && ui->asl)
+            GT_SetGadgetAttrs(s->browse,ui->dialog,NULL,GA_Disabled,status != NULL,TAG_DONE);
+    }
 }
 
 void dock_ui_set_fit_hook(DockUI *ui, DockUIFit hook, void *context)
@@ -1963,13 +1976,13 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
         y += line+4;
         g = s->path = gadget(ui,g,STRING_KIND,GID_PATH,NULL,left,y,
             right-left-browse-clear-2*GAP,row,0,path);
-        g = gadget(ui,g,BUTTON_KIND,GID_BROWSE,"_Browse...",right-browse-clear-GAP,y,browse,row,
+        g = s->browse = gadget(ui,g,BUTTON_KIND,GID_BROWSE,"_Browse...",right-browse-clear-GAP,y,browse,row,
             PLACETEXT_IN,browse_tags);
-        g = gadget(ui,g,BUTTON_KIND,GID_CLEAR,"_Clear",right-clear,y,clear,row,PLACETEXT_IN,shortcut);
+        g = s->clear = gadget(ui,g,BUTTON_KIND,GID_CLEAR,"_Clear",right-clear,y,clear,row,PLACETEXT_IN,shortcut);
         y += row+MARGIN;
     }
-    g = gadget(ui,g,BUTTON_KIND,GID_CANCEL,"Cancel",right-save-cancel-GAP,y,cancel,row,PLACETEXT_IN,NULL);
-    g = gadget(ui,g,BUTTON_KIND,GID_SAVE,"Save",right-save,y,save,row,PLACETEXT_IN,NULL);
+    g = s->cancel = gadget(ui,g,BUTTON_KIND,GID_CANCEL,"Cancel",right-save-cancel-GAP,y,cancel,row,PLACETEXT_IN,NULL);
+    g = s->save = gadget(ui,g,BUTTON_KIND,GID_SAVE,"Save",right-save,y,save,row,PLACETEXT_IN,NULL);
     if (!g) goto fail;
     AddGList(w,ui->gadgets,(UWORD)-1,-1,NULL);
     RefreshGList(ui->gadgets,w,NULL,-1);

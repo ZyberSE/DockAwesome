@@ -386,3 +386,40 @@ file cannot be kept as pins. Disabled/ holds locked old binaries to delete.
 Release archive rebuilt: ~/Downloads/DockAwesome-1.0b1.lha (119,699 bytes,
 SHA-256 111bc02f...8afed359), packed with LhA on the Amiga; every file
 matches build/release/DockAwesome.
+
+## Large-icon zoom speed and plate padding
+
+Vampire, Size 72, 13 icons, 1280x168 canvas (framebench, compose only):
+58.7 ms before.
+- [x] Plate glass: the plate color mixed with the backdrop is kept per row
+      and mixed again only after the backdrop changes (PiP capture, drag
+      reference, snapshot). 58.7 -> 46.3 ms; a backdrop that changes every
+      frame costs +3.4 ms over before.
+- [x] Icon blend without a divide, two channels per multiply, and
+      precomputed per-row runs (transparent skipped, opaque copied) built
+      with the cache (~3% of pixel bytes). -> 28.5 ms.
+- [x] Backdrop copied only outside the plate interior. -> 24.5 ms.
+- [x] Output byte-identical to HEAD: 300 render scenarios (3 edges, flat and
+      captured, coverage, pressed, centered, divider), with and without
+      glass; 200,000 random blends; new unit tests for glass and runs.
+- [x] Real dock with --pip --profile: render 52.9 -> 40.8 ms (compose 40.6
+      -> 28.5) before the backdrop-span change.
+- [x] Real dock after all compose changes: compose 24.1 ms, conversion
+      12.3 ms (render about 36 ms, from 52.9).
+- [x] Rejected: a fused AMMX encode+key kernel. Validated bit-exact on the
+      Vampire and 13% faster cache-hot, 8.1 vs 11.7 ms in framebench, but in
+      the real dock writing the PiP buffer it was slower in every form: row
+      spans 15.3-16.4 ms, full rows 13.4 ms, via a fast-RAM row and CopyMem
+      14.7 ms, against 12.3 ms for the separate passes. Code removed.
+- [x] Plate thickness: margin grows by an eighth of the artwork above Size 32
+      (Size 72: 20 -> 12 px per side; user asked for slightly less than 14). Unchanged at Size 32 and below.
+- [x] User check of the new padding on the Vampire (asked for slightly
+      less than 14 px; 12 px approved).
+- [x] Installed 1.0 beta 1 in ApolloOS:WBStartup (old binaries are in
+      WBStartup/Disabled as DockAwesome-*.old; Workbench holds locks on
+      them until a reboot, then delete them). RAM: cleaned.
+
+Release archive rebuilt as 1.0 beta 1 (beta 1 was never published):
+~/Downloads/DockAwesome-1.0b1.lha (122,219 bytes, SHA-256
+75693347...ffb8eefe), packed with LhA on the Amiga; every file matches
+build/release/DockAwesome.

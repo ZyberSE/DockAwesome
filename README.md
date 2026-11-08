@@ -1,21 +1,24 @@
 # DockAwesome
 
-A macOS-style dock for AmigaOS. Built for Vampire and SAGA.
+A macOS-style dock for ApolloOS on the Vampire V4 (68080, AMMX and SAGA).
 
 - Hover to magnify nearby icons and see their names.
 - Drag icons to add, move, or remove pins. Original files stay in place.
-- See open apps, drawers, and documents. Pin temporary apps with **Keep in Dock**.
+- See open apps, drawers, and documents. Every program with a window on screen
+  gets a dot under its pin, or a temporary icon. Pin those with **Keep in Dock**.
 - Browse a drawer from the dock with **Folder Stack**.
 - Use live transparency with SAGA PiP2, or use a static or solid background.
 
 ## Requirements
 
-- **DockAwesome** needs a 68020 or newer.
-- **DockAwesome080** needs a Vampire 68080. `--ammx` enables AMMX.
-- The dock needs a public screen with at least 8-bit color. RTG screens above
-  8 bits need `cybergraphics.library` V40 or newer.
-- The minimum library versions are Intuition, Graphics, and Layers V39,
-  Icon and Workbench V44, and Utility V37.
+- A Vampire V4 with a 68080 CPU. DockAwesome is built only for the 68080 and
+  uses AMMX. It does not run on other CPUs.
+- ApolloOS R9.5, tested with core 12515 and a 1280 × 720 RGB565 SAGA Workbench.
+- Live transparency (PiP) needs a 16-bit SAGA screen. On other screens the
+  dock uses a static or solid background. Screens above 8 bits need
+  `cybergraphics.library` V40 or newer.
+- `screennotify.library`, included in ApolloOS, lets the dock close and
+  reopen when the Workbench resolution changes.
 
 | Icon format | Support |
 | --- | --- |
@@ -28,16 +31,18 @@ Source icons can be up to 1024 × 1024 px. Workbench can supply a default icon.
 
 ## Run
 
-Copy the binary and its matching `.info` file to the same drawer. Open it
-from Workbench or run it from Shell.
+Copy `DockAwesome` and `DockAwesome.info` to the same drawer. Open it from
+Workbench or run it from Shell. To start it with Workbench, put both files in
+`SYS:WBStartup`. The icon has the `DONOTWAIT` tooltype; keep it, or Workbench
+waits for the dock during startup.
 
 ```text
 DockAwesome SYS:Prefs SYS:System
-DockAwesome080 --pip --size 32 --zoom 64
+DockAwesome --pip --size 32 --zoom 64
 ```
 
 **About** shows the version and build date. You can also run
-`DockAwesome080 --version` or `Version DockAwesome080 FILE FULL`.
+`DockAwesome --version` or `Version DockAwesome FILE FULL`.
 
 | Mode | Background |
 | --- | --- |
@@ -45,14 +50,14 @@ DockAwesome080 --pip --size 32 --zoom 64
 | `--opaque` | Solid fill |
 | `--pip` | Live transparency on SAGA PiP2. This mode enables AMMX. |
 
-PiP needs DockAwesome080, Apollo core 11900 or newer, ApolloOS/AROS
-Intuition and Layers V50, and a native RGB565 screen. Reserve PiP2 for the
-dock while it runs. A saved PiP setting falls back to snapshot if needed.
-An explicit `--pip` requires PiP support.
+PiP needs Apollo core 11900 or newer, ApolloOS Intuition and Layers V50,
+and a native RGB565 screen. Reserve PiP2 for the dock while it runs. A saved
+PiP setting falls back to snapshot if needed. An explicit `--pip` requires PiP
+support.
 
-On Coffin r65, use `DockAwesome080 --ammx --snapshot`. Workbench drawer
-closing works there. App quitting and document closing need ApolloOS
-Intuition extensions.
+When the Workbench resolution changes, the dock closes before Workbench
+resets and reopens on the new screen. It chooses PiP or snapshot for the new
+mode and lowers **Size** if the icons no longer fit.
 
 ## Controls
 
@@ -75,13 +80,16 @@ the frontmost Shell on the dock's screen.
 
 ## Settings
 
-- **Size** sets the resting icon size. The slider normally runs from 16 to 96 px.
-- **Scale** sets magnification from 1.00× to 2.00×. Use 1.00× to turn zoom off.
+- **Size** sets the resting icon size from 16 px up to the largest size that
+  fits the chosen edge, scale, and Folder Stack (at most 96 px).
+- **Scale** sets magnification from 1.00× to 2.00×, up to a 192 px zoom. Use
+  1.00× to turn zoom off.
 - **Left**, **Bottom**, and **Right** set the screen edge.
 - **Folder Stack** holds one drawer. Use **Browse** to pick it or **Clear** to remove it.
 
 Pins save automatically to `ENVARC:DockAwesome.json`. Use **Save** to apply
-settings or **Cancel** to discard them. Use `--config RAM:DockTest.json` to test
+settings or **Cancel** to discard them. New sizes rebuild every icon, which
+takes a few seconds; the Settings title shows the progress. Use `--config RAM:DockTest.json` to test
 with a separate file.
 
 CLI options include `--size 16..192`, `--zoom PIXELS`, `--levels 2..33`,
@@ -93,27 +101,30 @@ The verified offsets are +17 and -1.
 ## Build and test
 
 The default toolchain is `~/ApolloCrossDevLocal/Compilers/GCC-6.50-Stable`.
-Set `TOOLCHAIN` to override it. Python 3 generates the build version.
-Both builds share the local `.build-revision` counter.
+Set `TOOLCHAIN` to override it. Python 3 generates the build version from
+the local `.build-revision` counter.
 
 ```sh
 make host-test host-sanitize
 make host-bench
 make verify
-make AMMX=1 verify
 make ammx-probe
 make pip-probe pip-align-probe pip-coexist-probe
 make package
-make AMMX=1 package
 ```
 
-Builds go in `build/`. Packages go in `build/dist/DockAwesome/`.
-`make release RELEASE="1.0 beta 1"` builds the 68080 release with that
-version in About and `$VER`, and stages it in `build/release/DockAwesome`.
-Pack that drawer with LhA on the Amiga: `LHA -r a DockAwesome-1.0b1.lha RAM:Release/ DockAwesome`.
-With ApolloExplorer running on the Amiga, use
-`make AMMX=1 deploy AMIGA_DEST=amiga:RAM:` to copy both files with `acp`.
+`make` builds `build/DockAwesome` for the 68080 with AMMX. Packages go in
+`build/dist/DockAwesome/`.
+`make release RELEASE="1.0 beta 1"` builds with that version in About and
+`$VER`, and stages the release in `build/release/DockAwesome`. Pack that
+drawer with LhA on the Amiga: `LHA -r a DockAwesome-1.0b1.lha RAM:Release/ DockAwesome`.
+With ApolloExplorer running on the Amiga, `make deploy AMIGA_DEST=amiga:RAM:`
+copies both files with `acp`.
 Run the AMMX probe on Vampire. `--profile` reports frame and upload times.
+
+`tools/make-icon.py` packs the Workbench icon from `assets/DockAwesome-48.png`.
+`tools/make-about-font.py` regenerates the About glyphs in `src/about_font.c`
+from Bitstream Vera Sans; the font files are not part of the build.
 
 See [Architecture](docs/architecture.md), [Hardware](docs/hardware.md),
 [PiP](docs/pip-backend.md), [Verification](docs/verification.md), and the

@@ -36,7 +36,7 @@ int main(void)
     begin=clock();
     for(j=0;j<FRAMES;++j) {
         if(!dock_layout(&s,COUNT,WIDTH,HEIGHT,j%WIDTH,90,1,p)) return 1;
-        dock_render_oriented_mask(&frame,&back,icons,p,COUNT,&s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0);
+        dock_render_oriented_mask(&frame,&back,icons,p,COUNT,&s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0, NULL);
         checksum+=frame.pixels[(j%(WIDTH*HEIGHT))*4];
     }
     end=clock();

@@ -16,7 +16,12 @@ typedef struct {
     int pressed_item; /* One-based pressed item; zero means none. */
     int center_panel; /* Keep the panel around an empty end slot during a drag. */
     DockEdge edge;
+    /* Plate rows mixed with the backdrop. Call dock_renderer_backdrop_changed
+       whenever the backdrop pixels change; free with dock_renderer_release. */
+    DockGlass glass;
 } DockRenderer;
+void dock_renderer_backdrop_changed(DockRenderer *renderer);
+void dock_renderer_release(DockRenderer *renderer);
 const DockPixelBackend *dock_backend_portable(void);
 #ifdef DOCK_AMMX
 const DockPixelBackend *dock_backend_ammx(void);

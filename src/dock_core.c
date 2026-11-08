@@ -75,8 +75,44 @@ void dock_cache_free(DockCache *cache)
 {
     int i;
     if (!cache) return;
-    for (i = 0; i < DOCK_MAX_LEVELS; ++i) free(cache->image[i].pixels);
+    for (i = 0; i < DOCK_MAX_LEVELS; ++i) { free(cache->image[i].pixels); free(cache->runs[i]); }
     memset(cache, 0, sizeof(*cache));
+}
+
+enum { RUN_OPAQUE = 0x8000 };
+/* Runs of nonzero alpha per row, split where opacity changes; see DockCache.
+   Run indices and lengths fit 16 bits for images up to 255 px. */
+static uint16_t *build_runs(const DockImage *im, size_t *bytes)
+{
+    uint16_t *runs = NULL;
+    size_t count = 0;
+    int pass, x, y, w = im->width, h = im->height;
+    if (w < 1 || h < 1 || w > 255 || h > 255) return NULL;
+    for (pass = 0; pass < 2; ++pass) {
+        size_t n = 0;
+        if (pass) {
+            *bytes = ((size_t)h+1+count*2)*sizeof(uint16_t);
+            runs = (uint16_t *)malloc(*bytes);
+            if (!runs) return NULL;
+        }
+        for (y = 0; y < h; ++y) {
+            const unsigned char *row = im->pixels+(size_t)y*w*4;
+            if (pass) runs[y] = (uint16_t)n;
+            for (x = 0; x < w;) {
+                int start = x, opaque = row[x*4+3] == 255;
+                if (!row[x*4+3]) { ++x; continue; }
+                while (x < w && row[x*4+3] && (row[x*4+3] == 255) == opaque) ++x;
+                if (pass) {
+                    runs[h+1+n*2] = (uint16_t)start;
+                    runs[h+1+n*2+1] = (uint16_t)((x-start)|(opaque ? RUN_OPAQUE : 0));
+                }
+                ++n;
+            }
+        }
+        if (pass) runs[h] = (uint16_t)n;
+        count = n;
+    }
+    return runs;
 }
 
 /* Bicubic resampling (Keys, a = -0.75) in Q12. It keeps edges sharper than
@@ -339,6 +375,7 @@ int dock_icon_build(DockImage *out, const DockImage *source, int size)
     memset(&cache, 0, sizeof(cache));
     if (!cache_build(&cache, source, &s)) return 0;
     *out = cache.image[0];
+    free(cache.runs[0]);
     return 1;
 }
 
@@ -410,6 +447,10 @@ static int cache_build(DockCache *out, const DockImage *source, const DockSettin
         taps_free(&xt); taps_free(&yt);
         if (!taps_build(&xt,w,cw,4) || !taps_build(&yt,h,ch,cw*4)) goto done;
         resample(dst->pixels+((size_t)oy*n+ox)*4,n*4,w,h,premultiplied,cw,&xt,&yt,column);
+    }
+    for (l = 0; l < out->levels; ++l) {
+        size_t bytes = 0;
+        if (!(out->runs[l] = build_runs(&out->image[l],&bytes))) goto done;
     }
     ok = 1;
 done:
@@ -760,6 +801,48 @@ int dock_reorder(void *items, size_t size, int count, int from, int to)
     return 1;
 }
 
+static uint32_t load32(const unsigned char *p)
+{
+    uint32_t v;
+    memcpy(&v, p, 4);
+#ifdef DOCK_EMULATE_BIG_ENDIAN
+    v = (v>>24)|((v>>8)&UINT32_C(0xff00))|((v<<8)&UINT32_C(0xff0000))|(v<<24);
+#endif
+    return v;
+}
+
+static void store32(unsigned char *p, uint32_t v)
+{
+#ifdef DOCK_EMULATE_BIG_ENDIAN
+    v = (v>>24)|((v>>8)&UINT32_C(0xff00))|((v<<8)&UINT32_C(0xff0000))|(v<<24);
+#endif
+    memcpy(p, &v, 4);
+}
+
+/* Blend one translucent pixel exactly as blend_mask does. */
+static void blend_pixel(unsigned char *d, const unsigned char *s, int pressed)
+{
+    uint32_t a = s[3], inv = 255 - a, t;
+    if (!pressed) {
+        /* Two channels per multiply in 16-bit lanes, each (v+127)/255
+           without a divide. The alpha lane is reset below. */
+        uint32_t sw = load32(s), dw = load32(d), lo, hi;
+        lo = (sw & UINT32_C(0x00ff00ff))*a + (dw & UINT32_C(0x00ff00ff))*inv + UINT32_C(0x00800080);
+        hi = ((sw>>8) & UINT32_C(0x00ff00ff))*a + ((dw>>8) & UINT32_C(0x00ff00ff))*inv + UINT32_C(0x00800080);
+        lo = ((lo + ((lo>>8) & UINT32_C(0x00ff00ff))) >> 8) & UINT32_C(0x00ff00ff);
+        hi = (hi + ((hi>>8) & UINT32_C(0x00ff00ff))) & UINT32_C(0xff00ff00);
+        store32(d, lo | hi);
+    } else {
+        int c;
+        for (c = 0; c < 3; ++c) {
+            /* (v+127)/255 without a divide; exact for v <= 65025. */
+            t = (s[c]*3u+2)/4 * a + d[c] * inv + 128;
+            d[c] = (unsigned char)((t + (t >> 8)) >> 8);
+        }
+    }
+    d[3] = 255;
+}
+
 static void blend_mask(DockImage *dst, const DockImage *src, int x, int y,
                         unsigned char *coverage, int pressed)
 {
@@ -775,17 +858,63 @@ static void blend_mask(DockImage *dst, const DockImage *src, int x, int y,
     for (sy = top; sy < bottom; ++sy) {
         const unsigned char *s = src->pixels + ((size_t)sy * src->width + left) * 4;
         unsigned char *d = dst->pixels + ((size_t)(sy + y) * dst->width + left + x) * 4;
-        for (sx = left; sx < right; ++sx, s += 4, d += 4) {
-            unsigned int a = s[3], inv = 255 - a;
-            int c;
-            if (!a) continue;
-            if (coverage) coverage[(size_t)(sy+y)*dst->width+sx+x] = 255;
-            if (a == 255 && !pressed) { memcpy(d, s, 4); continue; }
-            for (c = 0; c < 3; ++c) {
-                unsigned int color = pressed ? (s[c]*3+2)/4 : s[c];
-                d[c] = (unsigned char)((color * a + d[c] * inv + 127) / 255);
+        unsigned char *m = coverage ? coverage + (size_t)(sy + y) * dst->width + left + x : NULL;
+        sx = left;
+        while (sx < right) {
+            int run = sx;
+            /* Transparent and opaque pixels come in runs: skip or copy them whole. */
+            while (run < right && !s[3]) { ++run; s += 4; }
+            d += (size_t)(run-sx)*4; if (m) m += run-sx;
+            sx = run;
+            if (!pressed) {
+                while (run < right && s[(run-sx)*4+3] == 255) ++run;
+                if (run > sx) {
+                    size_t n = (size_t)(run-sx);
+                    memcpy(d, s, n*4);
+                    if (m) { memset(m, 255, n); m += n; }
+                    s += n*4; d += n*4; sx = run;
+                    continue;
+                }
             }
-            d[3] = 255;
+            if (sx < right) {
+                blend_pixel(d, s, pressed);
+                if (m) *m++ = 255;
+                s += 4; d += 4; ++sx;
+            }
+        }
+    }
+}
+
+/* blend_mask with the image's precomputed runs: the same pixels, without
+   scanning transparent ones. */
+static void blend_runs(DockImage *dst, const DockImage *src, const uint16_t *runs,
+                       int x, int y, unsigned char *coverage, int pressed)
+{
+    int sy, left, top, right, bottom, h = src->height;
+    if (!dst->pixels || dst->width <= 0 || dst->height <= 0) return;
+    if (x >= dst->width || y >= dst->height || x <= -src->width || y <= -src->height) return;
+    left = x < 0 ? -x : 0; top = y < 0 ? -y : 0;
+    right = src->width; bottom = src->height;
+    if ((int64_t)right > (int64_t)dst->width - x) right = (int)((int64_t)dst->width - x);
+    if ((int64_t)bottom > (int64_t)dst->height - y) bottom = (int)((int64_t)dst->height - y);
+    for (sy = top; sy < bottom; ++sy) {
+        const uint16_t *r = runs+h+1+(size_t)runs[sy]*2, *end = runs+h+1+(size_t)runs[sy+1]*2;
+        const unsigned char *srow = src->pixels+(size_t)sy*src->width*4;
+        size_t row = (size_t)(sy+y)*dst->width;
+        for (; r < end; r += 2) {
+            int a = r[0], b = a+(r[1] & ~RUN_OPAQUE), n;
+            const unsigned char *s;
+            unsigned char *d;
+            if (a < left) a = left;
+            if (b > right) b = right;
+            if (a >= b) continue;
+            /* Clipped, so a+x is inside the destination row. */
+            n = b-a; s = srow+a*4; d = dst->pixels+(row+(size_t)(a+x))*4;
+            if (coverage) memset(coverage+row+(size_t)(a+x),255,(size_t)n);
+            if ((r[1] & RUN_OPAQUE) && !pressed)
+                for (; n; --n, s += 4, d += 4) memcpy(d,s,4);
+            else
+                for (; n; --n, s += 4, d += 4) blend_pixel(d,s,pressed);
         }
     }
 }
@@ -810,24 +939,6 @@ void dock_blend_masked(DockImage *dst, const DockImage *src, int x, int y, unsig
 #else
 #define DOCK_LITTLE_ENDIAN 1
 #endif
-
-static uint32_t load32(const unsigned char *p)
-{
-    uint32_t v;
-    memcpy(&v, p, 4);
-#ifdef DOCK_EMULATE_BIG_ENDIAN
-    v = (v>>24)|((v>>8)&UINT32_C(0xff00))|((v<<8)&UINT32_C(0xff0000))|(v<<24);
-#endif
-    return v;
-}
-
-static void store32(unsigned char *p, uint32_t v)
-{
-#ifdef DOCK_EMULATE_BIG_ENDIAN
-    v = (v>>24)|((v>>8)&UINT32_C(0xff00))|((v<<8)&UINT32_C(0xff0000))|(v<<24);
-#endif
-    memcpy(p, &v, 4);
-}
 
 void dock_rgba_to_rgb24_c(unsigned char *dst, const unsigned char *src, unsigned long pixels)
 {
@@ -988,14 +1099,33 @@ static void draw_divider(DockImage *canvas, const DockRect *panel,
     }
 }
 
+/* Pixels [first, first+count) of the canvas from the backdrop, or the flat fill. */
+static void background_span(unsigned char *pixels, const unsigned char *backdrop,
+                            const unsigned char *flat, size_t first, size_t count)
+{
+    if (!count) return;
+    if (backdrop) memcpy(pixels+first*4, backdrop+first*4, count*4);
+    else {
+        size_t i, done;
+        memcpy(pixels+first*4, flat, 4);
+        /* Doubling copies: a few memcpy calls instead of one per pixel. */
+        for (done = 1; done < count; done += i) {
+            i = done < count-done ? done : count-done;
+            memcpy(pixels+(first+done)*4, pixels+first*4, i*4);
+        }
+    }
+}
+
+static const unsigned char dock_panel_background[4] = {20, 24, 32, 255};
+
 void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
                  const DockCache *const *icons, const DockPlacement *p, int count,
                  const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
-                 unsigned char *coverage, int pressed_item, int edge, int center_panel)
+                 unsigned char *coverage, int pressed_item, int edge, int center_panel,
+                 DockGlass *glass)
 {
     enum { RIM_STRENGTH = 52 };
     static const unsigned char flat_background[4] = {32, 36, 42, 255};
-    static const unsigned char panel_background[4] = {20, 24, 32, 255};
     int x, y, shelf_top, shelf_bottom, left, right, radius, i;
     int captured, width, height;
     DockRect rect;
@@ -1016,15 +1146,21 @@ void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
             else rect.bottom = height-rect.top;
         }
     }
-    if (coverage) memset(coverage, 0, (size_t)width * height);
     captured = backdrop && backdrop->pixels && backdrop->width == width && backdrop->height == height;
-    if (captured) memcpy(pixels, backdrop->pixels, (size_t)width * height * 4);
-    else {
-        size_t n = (size_t)width * height, j;
-        for (j = 0; j < n; ++j) memcpy(pixels + j * 4, flat_background, 4);
-    }
+    if (!captured || !glass || !glass->image.pixels || !glass->ready ||
+        glass->image.width != width || glass->image.height != height) glass = NULL;
     left = rect.left; right = rect.right;
     shelf_top = rect.top; shelf_bottom = rect.bottom;
+    if (right <= left || shelf_bottom <= shelf_top) shelf_top = shelf_bottom = 0;
+    /* The plate rows draw their own background around the plate; every
+       other row gets the backdrop (or flat fill) and no coverage here. */
+    background_span(pixels, captured ? backdrop->pixels : NULL, flat_background, 0, (size_t)width*shelf_top);
+    background_span(pixels, captured ? backdrop->pixels : NULL, flat_background,
+                    (size_t)width*shelf_bottom, (size_t)width*(height-shelf_bottom));
+    if (coverage) {
+        memset(coverage, 0, (size_t)width*shelf_top);
+        memset(coverage+(size_t)width*shelf_bottom, 0, (size_t)width*(height-shelf_bottom));
+    }
     radius = (edge == DOCK_EDGE_BOTTOM ? shelf_bottom-shelf_top : right-left)/4;
     if (radius > (right - left) / 2) radius = (right - left) / 2;
     if (radius > (shelf_bottom-shelf_top)/2) radius = (shelf_bottom-shelf_top)/2;
@@ -1045,13 +1181,34 @@ void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
             }
         }
         d = row + (left + row_inset) * 4;
-        if (coverage) memset(coverage+(size_t)y*width+left+row_inset, 255,
-                             (size_t)(right-left-row_inset*2));
-        for (x = left + row_inset; x < right - row_inset; ++x, d += 4)
-            memcpy(d,panel_background,4);
-        if (captured) {
-            size_t offset = ((size_t)y * width + left + row_inset) * 4;
-            mix_half(pixels + offset, backdrop->pixels + offset, (unsigned long)(right - left - row_inset * 2));
+        {
+            /* Outside the plate interior: background, no coverage. */
+            size_t start = (size_t)y*width, inner = (size_t)(left+row_inset), end = (size_t)(right-row_inset);
+            background_span(pixels, captured ? backdrop->pixels : NULL, flat_background, start, inner);
+            background_span(pixels, captured ? backdrop->pixels : NULL, flat_background,
+                            start+end, (size_t)width-end);
+            if (coverage) {
+                memset(coverage+start, 0, inner);
+                memset(coverage+start+inner, 255, end-inner);
+                memset(coverage+start+end, 0, (size_t)width-end);
+            }
+        }
+        if (glass) {
+            /* The same bytes as the fill and mix below, mixed once per backdrop row. */
+            unsigned char *g = glass->image.pixels+(size_t)y*width*4;
+            if (!glass->ready[y]) {
+                for (x = 0; x < width; ++x) memcpy(g+x*4,dock_panel_background,4);
+                mix_half(g,backdrop->pixels+(size_t)y*width*4,(unsigned long)width);
+                glass->ready[y] = 1;
+            }
+            memcpy(d, g+(left+row_inset)*4, (size_t)(right-left-row_inset*2)*4);
+        } else {
+            for (x = left + row_inset; x < right - row_inset; ++x, d += 4)
+                memcpy(d,dock_panel_background,4);
+            if (captured) {
+                size_t offset = ((size_t)y * width + left + row_inset) * 4;
+                mix_half(pixels + offset, backdrop->pixels + offset, (unsigned long)(right - left - row_inset * 2));
+            }
         }
         center_left = left + (cy < radius ? radius : 1);
         center_right = right - (cy < radius ? radius : 1);
@@ -1076,6 +1233,11 @@ void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
     for (i = 0; i < count; ++i) {
         int level = p[i].level;
         if (icons[i] && level >= 0 && level < DOCK_MAX_LEVELS && level < icons[i]->levels)
-            blend_mask(canvas, &icons[i]->image[level], p[i].x, p[i].y, coverage, pressed_item == i+1);
+        {
+            if (icons[i]->runs[level])
+                blend_runs(canvas, &icons[i]->image[level], icons[i]->runs[level], p[i].x, p[i].y,
+                           coverage, pressed_item == i+1);
+            else blend_mask(canvas, &icons[i]->image[level], p[i].x, p[i].y, coverage, pressed_item == i+1);
+        }
     }
 }

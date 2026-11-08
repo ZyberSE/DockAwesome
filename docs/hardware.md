@@ -2,11 +2,11 @@
 
 ## Builds
 
-`make` builds DockAwesome for 68020 or newer. `make AMMX=1` builds
-DockAwesome080 for Vampire. Separate object directories keep CPU targets
-apart. See the [build instructions](../README.md#build-and-test).
+`make` builds DockAwesome for the Vampire 68080 with AMMX (`-m68080`,
+`DOCK_AMMX`). There is no build for other CPUs. See the
+[build instructions](../README.md#build-and-test).
 
-Both builds link with `-noixemul`. The app and larger probes request a
+The build links with `-noixemul`. The app and larger probes request a
 32 KiB stack with `__stack` and link with `-Wl,-u,___stkinit`.
 Check `___stkinit`, `___stkexit`, and `___stkswap` in the binary.
 
@@ -63,6 +63,16 @@ left the Workbench bitmap intact.
 The buffer retirement check reads `GfxBase->VBCounter` after the pointer
 write. If the counter stays the same, wait for VBlank before reusing the
 buffer. ApolloOS increments the counter before signaling waiters.
+
+## ApolloOS notes
+
+- The ApolloOS sources in `../ApolloOS` are older than R9.5: Intuition LVOs
+  differ by one slot. Check OS behavior with a probe on the target.
+- Intuition on R9.5 sends window open and close notifications but no
+  Workbench close notification. Workbench resets come from
+  `screennotify.library` (`AddWorkbenchClient`, message type 3).
+- Outline fonts take seconds to open through diskfont after a reboot
+  (about 11 s for four Vera Sans sizes). The About text is prerendered.
 
 ## ApolloOS text ABI
 

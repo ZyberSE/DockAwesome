@@ -1,6 +1,6 @@
 # SAGA PiP2
 
-`DockAwesome080 --pip` uses AMMX and a small RGB565 overlay. Workbench keeps
+`DockAwesome --pip` uses AMMX and a small RGB565 overlay. Workbench keeps
 its original bitmap and main scanout.
 
 ## Requirements

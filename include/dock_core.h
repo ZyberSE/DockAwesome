@@ -27,6 +27,11 @@ typedef struct {
 } DockSettings;
 typedef struct {
     DockImage image[DOCK_MAX_LEVELS];
+    /* Per level: height+1 row starts, then (x, length) pairs for the visible
+       runs of each row; bit 15 of length marks an opaque run. Rendering uses
+       them to skip transparent pixels and copy opaque ones whole. They take
+       about 3% of the pixel bytes on real icons and are not counted in bytes. */
+    uint16_t *runs[DOCK_MAX_LEVELS];
     size_t bytes;
     int levels;
 } DockCache;
@@ -101,9 +106,14 @@ void dock_mix_half_ammx(unsigned char *dst, const unsigned char *src, unsigned l
    mix_half and shape cache are optional. Optional coverage holds one byte
    per canvas pixel: the plate and visible artwork mark 255, all others 0.
    A one-based pressed item darkens its artwork only; zero is normal.
-   edge is a DOCK_EDGE_* value; artwork remains upright. */
+   edge is a DOCK_EDGE_* value; artwork remains upright. glass, when given
+   with the backdrop's size, keeps plate rows (the plate color mixed 50% with
+   the backdrop) between frames: a row is mixed once, then copied, until the
+   caller clears ready[] because the backdrop changed. */
+typedef struct { DockImage image; unsigned char *ready; } DockGlass;
 void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
                  const DockCache *const *icons, const DockPlacement *p, int count,
                  const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
-                 unsigned char *coverage, int pressed_item, int edge, int center_panel);
+                 unsigned char *coverage, int pressed_item, int edge, int center_panel,
+                 DockGlass *glass);
 #endif

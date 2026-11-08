@@ -4,7 +4,8 @@
 
 ## Platform
 
-Native AmigaOS. Vampire with SAGA is the main target.
+ApolloOS on the Vampire V4 (68080 with AMMX and SAGA). There is no build for
+other CPUs.
 
 ## Users
 
@@ -16,12 +17,13 @@ A small macOS-style dock with zoom, drag and drop, glass, and consistent icons.
 
 ## Stack
 
-C, optional 68080 AMMX, and OS libraries.
+C, 68080 AMMX, and OS libraries.
 
 ## Operating Context
 
 The tested setup is ApolloOS R9.5 on a Vampire 68080 with a 1280 × 720 RGB565
-SAGA screen. The dock requires at least 8-bit color.
+SAGA screen. Live glass needs a 16-bit SAGA screen; other screens use the
+snapshot or opaque background.
 
 ## Capabilities and Constraints
 

@@ -633,9 +633,9 @@ static void test_reference_timing_and_panel(void)
     assert(!memcmp(current, rest, sizeof(rest)));
     memset(backdrop, 200, sizeof(backdrop));
     for (y = 0; y < 320 * 100; ++y) backdrop[y*4+3] = 255;
-    dock_render_oriented_mask(&frame, &back, icons, rest, 5, &s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0);
+    dock_render_oriented_mask(&frame, &back, icons, rest, 5, &s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0, NULL);
     for (y = 0; y < 100; ++y) memcpy(center+y*4, pixels+(y*320+160)*4, 4);
-    dock_render_oriented_mask(&frame, &back, icons, left, 5, &s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0);
+    dock_render_oriented_mask(&frame, &back, icons, left, 5, &s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0, NULL);
     for (y = 0; y < 100; ++y) {
         assert(!memcmp(center+y*4, pixels+(y*320+160)*4, 4));
         if (y < 100-DOCK_DESKTOP_GAP-dock_panel_thickness(&s))
@@ -660,10 +660,10 @@ static void test_rounded_panel(void)
     for (x = 0; x < W * H; ++x) {
         back[x*4] = 120; back[x*4+1] = 100; back[x*4+2] = 80; back[x*4+3] = 255;
     }
-    dock_render_oriented_mask(&frame, &backdrop, icons, p, 5, &s, NULL, shape, NULL, 0, DOCK_EDGE_BOTTOM, 0);
+    dock_render_oriented_mask(&frame, &backdrop, icons, p, 5, &s, NULL, shape, NULL, 0, DOCK_EDGE_BOTTOM, 0, NULL);
     assert(shape->radius == 11);
     memcpy(reference, pixels, sizeof(pixels));
-    dock_render_oriented_mask(&frame, &backdrop, icons, p, 5, &s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0);
+    dock_render_oriented_mask(&frame, &backdrop, icons, p, 5, &s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0, NULL);
     assert(!memcmp(reference, pixels, sizeof(pixels))); /* cached and analytic masks agree */
     for (y = TOP; y < BOTTOM; ++y) for (x = LEFT; x < RIGHT; ++x) {
         int mx = LEFT + RIGHT - 1 - x, my = TOP + BOTTOM - 1 - y;
@@ -688,11 +688,11 @@ static void test_rounded_panel(void)
     }
     assert(fractional > 10); /* coverage antialiasing, not binary stair steps */
     assert(dock_layout(&s, 5, W, H, 80, 60, 1, p));
-    dock_render_oriented_mask(&frame, &backdrop, icons, p, 5, &s, NULL, shape, NULL, 0, DOCK_EDGE_BOTTOM, 0);
+    dock_render_oriented_mask(&frame, &backdrop, icons, p, 5, &s, NULL, shape, NULL, 0, DOCK_EDGE_BOTTOM, 0, NULL);
     assert(shape->radius == 11); /* width animation reuses radius-only masks */
     assert(!memcmp(pixels+BOTTOM*W*4, back+BOTTOM*W*4, (H-BOTTOM)*W*4));
     frame.width = frame.height = 1;
-    dock_render_oriented_mask(&frame, NULL, NULL, NULL, 0, &s, NULL, shape, NULL, 0, DOCK_EDGE_BOTTOM, 0);
+    dock_render_oriented_mask(&frame, NULL, NULL, NULL, 0, &s, NULL, shape, NULL, 0, DOCK_EDGE_BOTTOM, 0, NULL);
     assert(pixels[0] == 32 && pixels[3] == 255);
     free(shape);
 }
@@ -836,10 +836,10 @@ static void test_overlay_coverage(void)
         backdrop.pixels[i*4+2] = 255; backdrop.pixels[i*4+3] = 255;
     }
     icon.levels = 1; icon.image[0].width = icon.image[0].height = 4; icon.image[0].pixels = icon_pixels;
-    dock_render_oriented_mask(&frame, &backdrop, icons, &place, 1, &settings, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0);
+    dock_render_oriented_mask(&frame, &backdrop, icons, &place, 1, &settings, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0, NULL);
     memcpy(plain, frame.pixels, 100*100*4);
     memset(mask, 0xa5, 100*100);
-    dock_render_oriented_mask(&frame, &backdrop, icons, &place, 1, &settings, NULL, NULL, mask, 0, DOCK_EDGE_BOTTOM, 0);
+    dock_render_oriented_mask(&frame, &backdrop, icons, &place, 1, &settings, NULL, NULL, mask, 0, DOCK_EDGE_BOTTOM, 0, NULL);
     assert(!memcmp(plain, frame.pixels, 100*100*4));
     assert(mask[8*100+48] == 255 && mask[8*100+49] == 255 && mask[8*100+50] == 0);
     assert(mask[70*100+50] == 255 && mask[0] == 0 && mask[99*100+50] == 0);
@@ -902,6 +902,19 @@ static void test_pressed_artwork(void)
     renderer.pressed_item = 0;
     dock_renderer_draw(&renderer,&frame,&backdrop,icons,p,2,&s);
     assert(!memcmp(normal,pixels,sizeof(pixels)));
+    /* Kept glass rows give the same frame as mixing the plate every frame,
+       including after the backdrop changes and the caller says so. */
+    assert(renderer.glass.ready);
+    dock_render_oriented_mask(&frame,&backdrop,icons,p,2,&s,NULL,NULL,NULL,0,DOCK_EDGE_BOTTOM,0,NULL);
+    assert(!memcmp(normal,pixels,sizeof(pixels)));
+    for (i = 0; i < 100*100*4; ++i) back[i] = (unsigned char)(i*7+i/400);
+    dock_renderer_backdrop_changed(&renderer);
+    dock_renderer_draw(&renderer,&frame,&backdrop,icons,p,2,&s);
+    memcpy(normal,pixels,sizeof(pixels));
+    dock_render_oriented_mask(&frame,&backdrop,icons,p,2,&s,NULL,NULL,NULL,0,DOCK_EDGE_BOTTOM,0,NULL);
+    assert(!memcmp(normal,pixels,sizeof(pixels)));
+    dock_renderer_release(&renderer);
+    assert(!renderer.glass.ready && !renderer.glass.image.pixels);
 }
 
 static void test_side_panel_coverage(void)
@@ -917,13 +930,13 @@ static void test_side_panel_coverage(void)
     int edge,x,y;
     assert(pixels && left_pixels && bottom_mask && side_mask && shape);
     assert(dock_edge_layout(&s,DOCK_EDGE_BOTTOM,5,LONG,CROSS,LONG/2,72,1,bottom));
-    dock_render_oriented_mask(&frame,NULL,icons,bottom,5,&s,NULL,shape,bottom_mask,0,DOCK_EDGE_BOTTOM,0);
+    dock_render_oriented_mask(&frame,NULL,icons,bottom,5,&s,NULL,shape,bottom_mask,0,DOCK_EDGE_BOTTOM,0,NULL);
     assert(shape->radius == 11);
     frame.width = CROSS; frame.height = LONG;
     for (edge = DOCK_EDGE_LEFT; edge <= DOCK_EDGE_RIGHT; ++edge) {
         int mouse_x = edge == DOCK_EDGE_LEFT ? CROSS-1-72 : 72;
         assert(dock_edge_layout(&s,(DockEdge)edge,5,CROSS,LONG,mouse_x,LONG/2,1,side));
-        dock_render_oriented_mask(&frame,NULL,icons,side,5,&s,NULL,shape,side_mask,0,edge,0);
+        dock_render_oriented_mask(&frame,NULL,icons,side,5,&s,NULL,shape,side_mask,0,edge,0,NULL);
         assert(shape->radius == 11);
         if (edge == DOCK_EDGE_LEFT) memcpy(left_pixels,pixels,N*4);
         for (y = 0; y < LONG; ++y) for (x = 0; x < CROSS; ++x) {
@@ -962,7 +975,7 @@ static void test_clipped_divider(void)
             DockPlacement p[2] = {{positions[i][0],positions[i][0],32,0},
                 {positions[i][1],positions[i][1],32,0}};
             memset(pixels,0xa5,sizeof(pixels));
-            dock_render_oriented_mask(&canvas,NULL,icons,p,2,&s,NULL,NULL,NULL,0,edge,0);
+            dock_render_oriented_mask(&canvas,NULL,icons,p,2,&s,NULL,NULL,NULL,0,edge,0,NULL);
             for (j = 0; j < 8; ++j) {
                 assert(pixels[j] == 0xa5);
                 assert(pixels[sizeof(pixels)-1-j] == 0xa5);
@@ -1040,12 +1053,53 @@ static void test_renderer(void)
     free(pixels); free(back);
 }
 
+/* Precomputed runs draw exactly what scanning every pixel draws, at every
+   level, clipped at all four sides, pressed or not, with and without coverage. */
+static void test_icon_runs(void)
+{
+    enum { SRC = 64, W = 160, H = 120 };
+    static unsigned char src[SRC*SRC*4], a[W*H*4], b[W*H*4], ma[W*H], mb[W*H];
+    DockImage source = {SRC,SRC,src}, fa = {W,H,a}, fb = {W,H,b};
+    DockSettings s = dock_settings_default();
+    DockCache cache, scanned;
+    const DockCache *with[1] = {&cache}, *without[1] = {&scanned};
+    unsigned seed = 7;
+    int i, l, x, y, k;
+    for (y = 0; y < SRC; ++y) for (x = 0; x < SRC; ++x) {
+        int dx = x-SRC/2, dy = y-SRC/2, d = dx*dx+dy*dy;
+        unsigned char *q = src+(y*SRC+x)*4;
+        seed = seed*1103515245u+12345u;
+        q[0] = (unsigned char)(seed>>8); q[1] = (unsigned char)(seed>>16); q[2] = (unsigned char)(x*4);
+        q[3] = d < 400 ? 255 : d < 700 ? (unsigned char)(seed>>24) : d < 900 ? (unsigned char)((seed>>24)&1 ? 255 : 0) : 0;
+    }
+    s.base_size = 48; s.max_size = 96; s.levels = 5;
+    memset(&cache,0,sizeof(cache));
+    assert(dock_cache_build(&cache,&source,&s));
+    scanned = cache;
+    for (l = 0; l < cache.levels; ++l) { assert(cache.runs[l]); scanned.runs[l] = NULL; }
+    for (k = 0; k < 400; ++k) {
+        DockPlacement p;
+        int pressed = k&1;
+        unsigned char *mask_a = k&2 ? ma : NULL, *mask_b = k&2 ? mb : NULL;
+        seed = seed*1103515245u+12345u;
+        l = (int)(seed>>8)%cache.levels;
+        p.size = cache.image[l].width; p.level = l;
+        p.x = (int)((seed>>12)%(W+2*p.size))-p.size; p.y = (int)((seed>>20)%(H+2*p.size))-p.size;
+        for (i = 0; i < W*H*4; ++i) a[i] = b[i] = (unsigned char)(i*13+k);
+        dock_render_oriented_mask(&fa,&fa,with,&p,1,&s,NULL,NULL,mask_a,pressed,DOCK_EDGE_BOTTOM,0,NULL);
+        dock_render_oriented_mask(&fb,&fb,without,&p,1,&s,NULL,NULL,mask_b,pressed,DOCK_EDGE_BOTTOM,0,NULL);
+        assert(!memcmp(a,b,sizeof(a)));
+        if (mask_a) assert(!memcmp(ma,mb,sizeof(ma)));
+    }
+    dock_cache_free(&cache);
+}
+
 int main(void)
 {
     DockSettings defaults = dock_settings_default();
     test_normalize(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_layout(); test_blend();
     test_mix(); test_pressed_artwork(); test_side_panel_coverage(); test_reorder(); test_renderer();
-    test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build();
+    test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build(); test_icon_runs();
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();
     test_animation_and_pointer_anchor(); test_reference_timing_and_panel(); test_rounded_panel();
     test_convert(); test_native565(); test_key565(); test_overlay_coverage();

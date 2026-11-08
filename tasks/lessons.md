@@ -144,3 +144,8 @@
   LVOs differ by one slot). Verify OS behavior with a probe on the target.
 - Workbench reset notifications on ApolloOS come from screennotify.library
   (AddWorkbenchClient, type 3), not Intuition's SNOTIFY_BEFORE_CLOSEWB.
+- A framebench win on malloc buffers does not carry over to the PiP buffer:
+  measure conversion changes in the real dock with --profile before keeping
+  them (a fused kernel 30% faster in the bench was 9% slower live).
+- Workbench-started programs do not appear in Status. Before blaming a stale
+  PiP2 lease, check for a dock started from WBStartup.

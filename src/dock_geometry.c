@@ -43,9 +43,14 @@ static int clip(int value, int limit)
 
 int dock_panel_thickness(const DockSettings *s)
 {
-    int artwork = s->base_size-2*DOCK_ICON_INSET;
-    /* The reference plate has 31 px of margin per side for 96 px of artwork. */
-    return artwork+2*((artwork*31+48)/96);
+    enum { KNEE = 32-2*DOCK_ICON_INSET };
+    int artwork = s->base_size-2*DOCK_ICON_INSET, margin;
+    /* Up to the default size the plate keeps the reference margin, 31 px per
+       side for 96 px of artwork. Above it the margin grows by an eighth of the
+       artwork's growth, so large icons do not sit in a thick slab. */
+    if (artwork <= KNEE) margin = (artwork*31+48)/96;
+    else margin = (KNEE*31+48)/96+(artwork-KNEE+4)/8;
+    return artwork+2*margin;
 }
 
 void dock_panel_cross_bounds(const DockSettings *s, int extent, int *inner, int *outer)

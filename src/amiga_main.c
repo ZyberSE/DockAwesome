@@ -1174,7 +1174,7 @@ static void close_surface(App *app)
     app->front_pending = 0;
     app->settling = 0;
     amiga_display_close(app->display); app->display = NULL;
-    free(app->canvas.pixels); free(app->backdrop.pixels);
+    free(app->canvas.pixels); free(app->backdrop.pixels); dock_renderer_release(&app->renderer);
     memset(&app->canvas, 0, sizeof(app->canvas)); memset(&app->backdrop, 0, sizeof(app->backdrop));
 }
 
@@ -1264,6 +1264,7 @@ static int open_surface(App *app)
             strcpy(app->surface_error, "PiP needs a native big-endian RGB16 SAGA screen bitmap."); return 0;
         }
     } else if (app->snapshot && !amiga_display_capture(app->display, &app->backdrop, app->left, app->top)) return 0;
+    dock_renderer_backdrop_changed(&app->renderer);
     app->window = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)app->screen,
         WA_Left, app->left, WA_Top, app->top, WA_Width, app->width-right_padding, WA_Height, app->height,
         WA_Borderless, TRUE, WA_Activate, FALSE, WA_ReportMouse, TRUE, WA_RMBTrap, TRUE,
@@ -2649,6 +2650,7 @@ static int update_drag_mask(App *app, int sample)
                 app->drag_reference = 1;
                 app->renderer.pixels->decode565(app->backdrop.pixels,app->source565,
                     (unsigned long)app->width*app->height);
+                dock_renderer_backdrop_changed(&app->renderer);
                 reference_changed = 1;
             } else app->drag_reference = -1;
         }
@@ -2815,6 +2817,7 @@ static int live_capture(App *app, int full_compare)
         ++app->stats.source_changes;
         app->renderer.pixels->decode565(app->backdrop.pixels, app->source565,
             (unsigned long)app->width*app->height);
+        dock_renderer_backdrop_changed(&app->renderer);
         app->source_valid = 1;
         if (app->profile) app->stats.decode_ticks += profile_clock()-decode_started;
     }

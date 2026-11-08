@@ -14,23 +14,16 @@ RELEASE ?=
 empty :=
 space := $(empty) $(empty)
 RELEASE_FILE = $(subst $(space),,$(subst beta,b,$(RELEASE)))
-AMMX ?= 0
 
 HOST_FLAGS := -std=c99 -O2 -Wall -Wextra -Werror -pedantic -Iinclude
 AMIGA_FLAGS := -std=gnu99 -O2 -Wall -Wextra -fomit-frame-pointer -noixemul
 AMIGA_INCLUDES := -Iinclude -I$(SDK)/libnix/include -I$(SDK)/ndk-include -I$(SDK)/include
-ifeq ($(AMMX),1)
+# DockAwesome targets the Vampire 68080 with AMMX and SAGA only.
 CPU_FLAGS := -m68080
 AMIGA_FLAGS += -DDOCK_AMMX
-AMIGA_OUTPUT := build/DockAwesome080
+AMIGA_OUTPUT := build/DockAwesome
 AMIGA_OBJDIR := build/obj080
 AMIGA_ASM_OBJECTS := $(AMIGA_OBJDIR)/ammx.o
-else
-CPU_FLAGS := -m68020
-AMIGA_OUTPUT := build/DockAwesome
-AMIGA_OBJDIR := build/obj020
-AMIGA_ASM_OBJECTS :=
-endif
 AMIGA_C_SOURCES := $(sort $(wildcard src/*.c))
 AMIGA_C_OBJECTS := $(patsubst src/%.c,$(AMIGA_OBJDIR)/%.o,$(AMIGA_C_SOURCES))
 AMIGA_OBJECTS := $(AMIGA_C_OBJECTS) $(AMIGA_OBJDIR)/amiga_input.o $(AMIGA_ASM_OBJECTS)
@@ -61,7 +54,7 @@ $(AMIGA_OBJDIR)/ammx.o: src/ammx.s Makefile | check-toolchain
 	"$(AMIGA_AS)" -Fhunk -m68080 -opt-speed -o "$@" "$<"
 
 $(AMIGA_OUTPUT): $(AMIGA_OBJECTS) tools/build-version.py Makefile
-	"$(PYTHON)" tools/build-version.py "$(if $(RELEASE),DockAwesome,$(notdir $@))" "$(AMIGA_OBJDIR)/build_version.c" "$(RELEASE)"
+	"$(PYTHON)" tools/build-version.py "$(notdir $@)" "$(AMIGA_OBJDIR)/build_version.c" "$(RELEASE)"
 	"$(AMIGA_CC)" $(AMIGA_INCLUDES) $(AMIGA_FLAGS) $(CPU_FLAGS) -c "$(AMIGA_OBJDIR)/build_version.c" -o "$(AMIGA_OBJDIR)/build_version.o"
 	"$(AMIGA_CC)" $(CPU_FLAGS) -noixemul -Wl,-u,___stkinit $(AMIGA_OBJECTS) "$(AMIGA_OBJDIR)/build_version.o" -o "$@"
 
@@ -128,16 +121,15 @@ deploy: amiga
 	@test -n "$(AMIGA_DEST)" || { echo "Set AMIGA_DEST to host:volume:." >&2; exit 1; }
 	"$(ACP)" "$(AMIGA_OUTPUT).info" "$(AMIGA_OUTPUT)" "$(AMIGA_DEST)"
 
-# Test release: stage the 68080 build as DockAwesome with its icon and notes
+# Test release: stage DockAwesome with its icon and notes
 # in build/release/DockAwesome. Pack that drawer with LhA on the Amiga.
 release:
 	@test -n "$(RELEASE)" || { echo 'Set RELEASE, for example: make release RELEASE="1.0 beta 1"' >&2; exit 1; }
-	$(RM) build/DockAwesome080
-	$(MAKE) AMMX=1 RELEASE="$(RELEASE)" amiga
+	$(RM) build/DockAwesome
+	$(MAKE) RELEASE="$(RELEASE)" amiga
 	$(RM) -r build/release
 	@mkdir -p build/release/DockAwesome
-	cp build/DockAwesome080 build/release/DockAwesome/DockAwesome
-	cp build/DockAwesome080.info build/release/DockAwesome/DockAwesome.info
+	cp build/DockAwesome build/DockAwesome.info build/release/DockAwesome/
 	cp release/ReadMe.txt README.md build/release/DockAwesome/
 	@echo "Staged build/release/DockAwesome for DockAwesome-$(RELEASE_FILE).lha"
 
@@ -148,7 +140,7 @@ clean:
 
 .PHONY: ammx-probe
 ammx-probe:
-	$(MAKE) AMMX=1 build/DockAwesomeAMMXProbe
+	$(MAKE) build/DockAwesomeAMMXProbe
 
 build/obj080/ammx_probe.o: tools/ammx_probe.c include/dock_core.h | check-toolchain
 	@mkdir -p "$(@D)"
@@ -159,7 +151,7 @@ build/DockAwesomeAMMXProbe: build/obj080/dock_core.o build/obj080/dock_geometry.
 
 .PHONY: pip-probe
 pip-probe:
-	$(MAKE) AMMX=1 build/DockAwesomePipProbe080
+	$(MAKE) build/DockAwesomePipProbe080
 
 build/obj080/pip_probe.o: tools/pip_probe.c include/amiga_pip.h | check-toolchain
 	@mkdir -p "$(@D)"
@@ -170,7 +162,7 @@ build/DockAwesomePipProbe080: build/obj080/pip_probe.o build/obj080/amiga_pip.o 
 
 .PHONY: pip-coexist-probe
 pip-coexist-probe:
-	$(MAKE) AMMX=1 build/DockAwesomePipCoexistProbe080
+	$(MAKE) build/DockAwesomePipCoexistProbe080
 
 build/obj080/pip_coexist_probe.o: tools/pip_coexist_probe.c include/amiga_pip.h | check-toolchain
 	@mkdir -p "$(@D)"
@@ -181,7 +173,7 @@ build/DockAwesomePipCoexistProbe080: build/obj080/pip_coexist_probe.o build/obj0
 
 .PHONY: pip-align-probe
 pip-align-probe:
-	$(MAKE) AMMX=1 build/DockAwesomePipAlignProbe080
+	$(MAKE) build/DockAwesomePipAlignProbe080
 
 build/obj080/pip_align_probe.o: tools/pip_align_probe.c include/amiga_pip.h | check-toolchain
 	@mkdir -p "$(@D)"

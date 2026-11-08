@@ -484,3 +484,15 @@ icon centre). Share of the full zoom per icon from the pointer:
 - Also reported: the entry feels less snappy than macOS. At Size 72 the
   8-tick entry took 332 ms before damage rendering (36 ms frames on a
   20 ms tick); re-measure after damage rendering before changing the curve.
+
+## Smoother zoom and new size limits (2026-11-08)
+
+- [x] Settings: Size up to 72 px, Scale up to 2.50x, zoom at most 128 px
+      (the macOS limit). Measured at Size 42 x 2.50 (105 px): 13.0 ms per
+      frame, entry 148 ms; Size 72 x 1.78 (128 px): 23.1 ms.
+- [x] Display refresh measured: 50.00 Hz (150 WaitTOF in 2.9997 s), so 50
+      frames per second is the ceiling; the dock already reached it.
+- [x] Animation ticks synced to the vertical blank. Same pointer motion,
+      two runs each: stalled frames (2+ fields) 40 of 250 with the timer,
+      10 of 181 synced. Remaining stalls are frames over 20 ms (backdrop
+      re-capture when the hover label opens, first ease-out frame).

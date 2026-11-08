@@ -14,6 +14,7 @@
 #include "amiga_version.h"
 #include <exec/execbase.h>
 #include <exec/interrupts.h>
+#include <hardware/intbits.h>
 #include <dos/dosextens.h>
 #include <dos/dostags.h>
 #include <devices/input.h>
@@ -188,6 +189,12 @@ typedef struct {
 } ProgramPoll;
 /* mn_Length is a UWORD. The worker scratch is not part of the message. */
 _Static_assert(offsetof(ProgramPoll,owners) <= 0xffff, "ProgramPoll message exceeds mn_Length");
+/* Shared with the vertical-blank server (amiga_input.s; offsets fixed):
+   it counts fields and, while armed, signals the main task. Animation ticks
+   then follow the display instead of a 20 ms timer that drifts against
+   its 50 Hz, which shows a frame twice or never now and then. */
+typedef struct { struct Task *task; ULONG mask; volatile ULONG armed, fields; } VBlankState;
+void dock_vblank_entry(void);
 /* --profile counters. Only the profile report reads them. */
 typedef struct {
     ULONG wakes;
@@ -212,6 +219,9 @@ typedef struct {
     /* --damage-check: draws compared, and frames that differ from a full
        composition or a full conversion. */
     ULONG check_frames, compose_mismatch, convert_mismatch;
+    /* Display fields between consecutive animation frames: one is even
+       motion, zero a frame never shown, two or more a stall. */
+    ULONG pace_one, pace_same, pace_stall, pace_field;
 } ProfileStats;
 typedef struct App {
     DockSettings settings;
@@ -319,6 +329,12 @@ typedef struct App {
     DockRenderer check_renderer;
     DockImage check_canvas;
     unsigned char *check_coverage, *check565;
+    /* Vertical-blank animation ticks (see VBlankState). */
+    VBlankState vblank;
+    struct Interrupt vblank_interrupt;
+    LONG vblank_bit;
+    ULONG vblank_field;
+    int vblank_open, vblank_armed, no_vsync;
 } App;
 
 static void animation_cancel(App *app);
@@ -1552,7 +1568,15 @@ static void animation_schedule(App *app)
     ULONG delay = dock_ui_folder_frame_delay(app->ui);
     if (!fast && !app->label_at) { animation_cancel(app); return; }
     if (fast && app->timer_pending && app->timer_label_only) animation_cancel(app);
-    if (!app->timer_open || app->timer_pending || app->timer_failed) return;
+    if (!app->timer_open || app->timer_pending || app->vblank_armed || app->timer_failed) return;
+    if (fast && delay == 20000 && app->vblank_open && !app->no_vsync) {
+        /* One tick per display field. A field that passes before the read
+           below only delays the tick by one field. */
+        app->vblank.armed = 1;
+        app->vblank_field = app->vblank.fields;
+        app->vblank_armed = 1;
+        return;
+    }
     if (!fast) {
         uint64_t now = profile_clock();
         delay = now < app->label_at ?
@@ -1569,6 +1593,7 @@ static void animation_schedule(App *app)
 
 static void animation_cancel(App *app)
 {
+    app->vblank.armed = 0; app->vblank_armed = 0;
     if (!app->timer_pending) return;
     if (!CheckIO((struct IORequest *)app->timer_io)) AbortIO((struct IORequest *)app->timer_io);
     WaitIO((struct IORequest *)app->timer_io);
@@ -1578,11 +1603,15 @@ static void animation_cancel(App *app)
 
 static int animation_step(App *app)
 {
-    LONG error;
+    LONG error = 0;
     int closed;
-    if (!app->timer_pending || !CheckIO((struct IORequest *)app->timer_io)) return 0;
-    error = WaitIO((struct IORequest *)app->timer_io);
-    app->timer_pending = 0;
+    if (app->vblank_armed && app->vblank.fields != app->vblank_field) {
+        app->vblank.armed = 0; app->vblank_armed = 0;
+    } else {
+        if (!app->timer_pending || !CheckIO((struct IORequest *)app->timer_io)) return 0;
+        error = WaitIO((struct IORequest *)app->timer_io);
+        app->timer_pending = 0;
+    }
     if (error) {
         app->timer_failed = 1;
         app->flash_pin_id = 0;
@@ -2886,6 +2915,17 @@ static int animation_open(App *app)
     TimerBase = app->timer_io->tr_node.io_Device;
     app->clock_hz = ReadEClock(&clock);
     app->started = ((uint64_t)clock.ev_hi<<32) | clock.ev_lo;
+    app->vblank_bit = AllocSignal(-1);
+    if (app->vblank_bit >= 0) {
+        app->vblank.task = FindTask(NULL);
+        app->vblank.mask = 1UL<<app->vblank_bit;
+        app->vblank_interrupt.is_Node.ln_Type = NT_INTERRUPT;
+        app->vblank_interrupt.is_Node.ln_Name = (char *)"DockAwesome vblank";
+        app->vblank_interrupt.is_Data = &app->vblank;
+        app->vblank_interrupt.is_Code = (void (*)())dock_vblank_entry;
+        AddIntServer(INTB_VERTB,&app->vblank_interrupt);
+        app->vblank_open = 1;
+    }
     app->stats.min_ticks = UINT64_MAX;
     {
         app->live_port = CreateMsgPort();
@@ -2932,6 +2972,9 @@ static void profile_report(App *app)
             (unsigned long)(app->stats.conversion_frames && canvas ?
                 app->stats.conversion_pixels*100/(canvas*app->stats.conversion_frames) : 0));
     }
+    printf("Frame pacing: one_field=%lu same_field=%lu stalled=%lu vsync=%d\n",
+        (unsigned long)app->stats.pace_one, (unsigned long)app->stats.pace_same,
+        (unsigned long)app->stats.pace_stall, app->vblank_open && !app->no_vsync);
     if (app->damage_check)
         printf("Damage check: frames=%lu compose_mismatch=%lu convert_mismatch=%lu\n",
             (unsigned long)app->stats.check_frames, (unsigned long)app->stats.compose_mismatch,
@@ -2994,6 +3037,12 @@ static void profile_report(App *app)
 static void profile_close(App *app)
 {
     animation_cancel(app);
+    if (app->vblank_open) {
+        /* The server must be gone before the task and App go away. */
+        RemIntServer(INTB_VERTB,&app->vblank_interrupt);
+        app->vblank_open = 0;
+    }
+    if (app->vblank_bit >= 0) { FreeSignal(app->vblank_bit); app->vblank_bit = -1; }
     live_cancel(app);
     if (app->live_open) CloseDevice((struct IORequest *)app->live_io);
     if (app->live_io) DeleteIORequest((struct IORequest *)app->live_io);
@@ -3242,6 +3291,16 @@ static void draw(App *app)
             Move(app->window->RPort, (app->width-length)/2, app->height-25);
             amiga_text_draw(app->window->RPort,label,strlen(label));
         }
+    }
+    if (app->profile && app->vblank_open) {
+        /* Consecutive frames of one motion: at most five fields apart. */
+        ULONG field = app->vblank.fields, fields = field-app->stats.pace_field;
+        if (app->frames && fields <= 5) {
+            if (fields == 1) ++app->stats.pace_one;
+            else if (!fields) ++app->stats.pace_same;
+            else ++app->stats.pace_stall;
+        }
+        app->stats.pace_field = field;
     }
     if (app->profile) {
         uint64_t ticks = profile_clock()-started;
@@ -3927,6 +3986,7 @@ static __attribute__((noinline)) void event_loop(App *app)
         ULONG signals = Wait(workbench | (1UL<<app->window->UserPort->mp_SigBit) |
             (1UL<<app->drop_port->mp_SigBit) | (1UL<<app->timer_port->mp_SigBit) |
             (app->live_port ? (1UL<<app->live_port->mp_SigBit) : 0) |
+            (app->vblank_open ? app->vblank.mask : 0) |
             (app->program_replies ? (1UL<<app->program_replies->mp_SigBit) : 0) |
             (app->status_notify ? (1UL<<app->status_notify_bit) : 0) |
             app->input_context.signal | dock_ui_signal_mask(app->ui) | SIGBREAKF_CTRL_C);
@@ -4191,7 +4251,7 @@ static void usage(void)
     puts("DockAwesome [--config file] [--size pixels] [--zoom pixels] [--levels n]\n"
          "            [--snapshot | --opaque | --pip] [--ammx] [--profile]\n"
          "            [--pip-dump prefix] [--pip-x-offset n] [--pip-y-offset n]\n"
-         "            [--bench-sweep speed] [--damage-check]\n"
+         "            [--bench-sweep speed] [--damage-check] [--no-vsync]\n"
          "            [Workbench paths...] [--version]\n"
          "Drop Workbench icons to pin them. Click a pin to open it.\n"
          "Drag to reorder. Drag out or press Delete to remove a pin.\n"
@@ -4204,7 +4264,8 @@ static void usage(void)
          "--pip-dump writes prefix-source.ppm and prefix-composed.ppm on exit.\n"
          "--bench-sweep 1..64 sweeps a synthetic pointer at that many pixels per\n"
          "frame, prints the profile and exits. --damage-check compares every\n"
-         "frame with a full composition and PiP conversion and reports mismatches.");
+         "frame with a full composition and PiP conversion and reports mismatches.\n"
+         "--no-vsync paces zoom animation with the 20 ms timer instead of the display.");
 }
 
 int main(int argc, char **argv)
@@ -4213,7 +4274,7 @@ int main(int argc, char **argv)
     int i, status = 20, initial_count, config_state, window_shapes;
     int explicit_pip = 0, explicit_ammx;
     if (!app) return 20;
-    app->settings = dock_settings_default(); app->input_bit = -1;
+    app->settings = dock_settings_default(); app->input_bit = app->vblank_bit = -1;
     {
         /* The icon cache may use a quarter of the free memory, at least the
            portable 16 MB default; a fixed budget refused sizes that fit. */
@@ -4275,6 +4336,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--ammx")) app->use_ammx = 1;
         else if (!strcmp(argv[i], "--profile")) app->profile = 1;
         else if (!strcmp(argv[i], "--damage-check")) app->damage_check = app->profile = 1;
+        else if (!strcmp(argv[i], "--no-vsync")) app->no_vsync = 1;
         else if (!strcmp(argv[i], "--bench-sweep")) {
             app->bench_speed = i+1 < argc ? bounded_option(argv[++i],1,64) : INT_MAX;
             if (app->bench_speed == INT_MAX) { puts("--bench-sweep needs a speed from 1 to 64."); free(app); return 20; }

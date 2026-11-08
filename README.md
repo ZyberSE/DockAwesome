@@ -100,6 +100,7 @@ and `--profile`. Zoom must be at least the resting size and at most 192 px.
 `--bench-sweep 1..64` sweeps a synthetic pointer across the dock at that
 many pixels per frame, prints the profile and exits. `--damage-check`
 compares every frame with a full redraw (see [Verification](docs/verification.md)).
+`--no-vsync` paces zoom animation with a 20 ms timer instead of the display.
 Use `--pip-x-offset` and `--pip-y-offset` to set alignment from -128 to 128.
 The verified offsets are +17 and -1.
 

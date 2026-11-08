@@ -92,7 +92,14 @@ The `input.device` bridge converts the Amiga register ABI to the GCC stack
 ABI. It tracks owned button pairs and signals the main task. Keep rendering,
 allocation, and Intuition calls out of the input handler.
 
-The 20 ms animation timer runs only during motion or a pending hover label.
+Zoom animation ticks follow the display: a vertical-blank interrupt server
+counts fields and, while a tick is armed, signals the main task, so each frame
+is drawn just after a field starts (50.00 Hz measured on the 1280 × 720
+screen). A free 20 ms timer drifts against the field and showed a frame for
+two fields in 16% of animation frames, against 5.5% when synced; the rest are
+frames over 20 ms. `--no-vsync` restores the timer for comparison. The 20 ms
+timer still runs Folder Stack motion and hover-label delays, only during
+motion or a pending hover label.
 Entry and exit use an eight-tick cubic ease-out: a third of the change on the
 first tick, all of it by the sixth. The transition ends when the row reaches
 its target. Moving the pointer does not restart the curve. Schedule the next tick before uploading the current frame.

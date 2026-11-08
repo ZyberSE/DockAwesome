@@ -37,3 +37,6 @@ waits until the row settles, prints the profile and exits. Frames are paced
 by `WaitTOF` and the backdrop is not polled. Compare `render_us_avg` between
 builds with the same configuration, back to back. The `Damage:` line gives
 the number of full frames and the share of the canvas composed and converted.
+`Frame pacing:` counts display fields between consecutive animation frames:
+one is even motion, zero a frame never shown, two or more a visible stall.
+Compare a default run with `--no-vsync` using the same pointer motion.

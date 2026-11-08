@@ -49,7 +49,10 @@ enum { SIZE_SLIDER, SCALE_SLIDER, SLIDER_COUNT };
 static const int slider_min[] = {DOCK_MIN_ICON_SIZE,DOCK_SCALE_ONE};
 static const char *const settings_positions[] = {"Left","Bottom","Right",NULL};
 static const DockEdge settings_edges[] = {DOCK_EDGE_LEFT,DOCK_EDGE_BOTTOM,DOCK_EDGE_RIGHT};
-enum { SIZE_SLIDER_MAX = 96, SCALE_SLIDER_MAX = 2*DOCK_SCALE_ONE };
+/* Size stops at 72 px and Scale at 2.50x, and the zoomed icon at 128 px
+   like the macOS Dock: larger zooms blur the 48 px icons and take more
+   than a 20 ms frame. */
+enum { SIZE_SLIDER_MAX = 72, SCALE_SLIDER_MAX = 5*DOCK_SCALE_ONE/2, ZOOM_CEILING = 128 };
 enum { POPUP_RADIUS = 6, LABEL_GAP = 8, LABEL_MARGIN = 4, LABEL_TIP = 4, LABEL_PADDING = 10 };
 enum {
     MENU_SURFACE, MENU_RIM, MENU_HOVER, MENU_TEXT, MENU_HOVER_TEXT,
@@ -129,6 +132,7 @@ typedef struct {
     struct Gadget *browse, *clear, *cancel, *save;
     int limit[SLIDER_COUNT]; /* What fits now. */
     int cap[SLIDER_COUNT];   /* Slider range, raised for larger saved values. */
+    int zoom_cap;            /* ZOOM_CEILING, raised for a larger saved zoom. */
     char value[SLIDER_COUNT][16];
 } SettingsView;
 
@@ -1905,6 +1909,8 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
         ui->draft.edge = DOCK_EDGE_BOTTOM;
     s->cap[SIZE_SLIDER] = ui->draft.size > SIZE_SLIDER_MAX ? ui->draft.size : SIZE_SLIDER_MAX;
     s->cap[SCALE_SLIDER] = ui->draft.scale_percent > SCALE_SLIDER_MAX ? ui->draft.scale_percent : SCALE_SLIDER_MAX;
+    s->zoom_cap = dock_scaled_size(ui->draft.size,ui->draft.scale_percent);
+    if (s->zoom_cap < ZOOM_CEILING) s->zoom_cap = ZOOM_CEILING;
     update_limits(ui,0);
 
     line = ui->font_height > ui->font.ta_YSize ? ui->font_height : ui->font.ta_YSize;
@@ -2254,7 +2260,8 @@ static void update_limits(DockUI *ui, int live)
     if (size_max < slider_min[SIZE_SLIDER]) size_max = slider_min[SIZE_SLIDER];
     if (ui->draft.size > size_max) ui->draft.size = size_max;
     while (scale_max > DOCK_SCALE_ONE &&
-        (unsigned int)(dock_scaled_size(ui->draft.size,scale_max)-1) >= DOCK_MAX_ICON_SIZE) --scale_max;
+        ((unsigned int)(dock_scaled_size(ui->draft.size,scale_max)-1) >= DOCK_MAX_ICON_SIZE ||
+         dock_scaled_size(ui->draft.size,scale_max) > s->zoom_cap)) --scale_max;
     if (ui->draft.scale_percent > scale_max) ui->draft.scale_percent = scale_max;
     s->limit[SIZE_SLIDER] = size_max;
     s->limit[SCALE_SLIDER] = scale_max;

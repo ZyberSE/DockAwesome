@@ -57,3 +57,22 @@ _dock_folder_backfill_entry:
     lea 12(sp),sp
     movem.l (sp)+,d2-d7/a2-a6
     rts
+
+; Vertical-blank interrupt server. a1 = VBlankState {task, mask, armed,
+; fields}: count every field, and while armed signal the main task. Return
+; with Z set so the rest of the VERTB chain runs.
+    xdef _dock_vblank_entry
+_dock_vblank_entry:
+    addq.l #1,12(a1)
+    tst.l 8(a1)
+    beq.s .vblank_done
+    move.l a6,-(sp)
+    move.l 4.w,a6
+    move.l 4(a1),d0
+    move.l (a1),a1
+    jsr -324(a6)            ; Signal(task, mask)
+    move.l (sp)+,a6
+.vblank_done:
+    lea $dff000,a0          ; as the next server in the chain expects
+    moveq #0,d0
+    rts

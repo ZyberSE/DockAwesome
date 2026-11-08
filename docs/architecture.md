@@ -93,8 +93,9 @@ ABI. It tracks owned button pairs and signals the main task. Keep rendering,
 allocation, and Intuition calls out of the input handler.
 
 The 20 ms animation timer runs only during motion or a pending hover label.
-Entry and exit use eight smoothstep ticks. Moving the pointer does not restart
-the curve. Schedule the next tick before uploading the current frame.
+Entry and exit use an eight-tick cubic ease-out: a third of the change on the
+first tick, all of it by the sixth. The transition ends when the row reaches
+its target. Moving the pointer does not restart the curve. Schedule the next tick before uploading the current frame.
 Compare current and target placements to detect completion. A subpixel step
 may change no pixels.
 

@@ -518,11 +518,33 @@ static void logical_positions(const DockSettings *s, int count, int width, int m
     for (i = 0; i < count; ++i) out[i].x = positions[i]+shift;
 }
 
+/* Share of the full zoom (Q24) for an icon distance pixels from the
+   pointer. The macOS Dock, measured at 2x, grows the icons 1, 2 and 3
+   pitches away by 0.86, 0.48 and 0.04 of the zoom and the fourth not at all.
+   A Catmull-Rom curve through those samples is smooth, and its weights sum
+   to one at every phase, so the row's total growth never changes while the
+   pointer moves and icons outside the wave stay still. It reaches 5 pitches
+   and dips below zero there by at most 0.008 of the zoom. offset is the
+   pointer's distance in pitches, Q16. */
+static int32_t wave_weight(int32_t offset)
+{
+    static const int32_t sample[7] = {256, 220, 123, 10, 0, 0, 0}; /* Q8, by pitch */
+    int32_t q = offset < 0 ? -offset : offset, f = (q & 65535) >> 4, f2, f3;
+    int j = q >> 16;
+    if (j > 4) return 0;
+    /* Catmull-Rom basis for samples j-1 .. j+2, Q12 phase, Q24 weights. */
+    f2 = f*f; f3 = (f2 >> 12)*f;
+    return sample[j ? j-1 : 1]*((-f3+2*f2-(f<<12))/2/256)+
+        sample[j]*((3*f3-5*f2+(INT32_C(2)<<24))/2/256)+
+        sample[j+1]*((-3*f3+4*f2+(f<<12))/2/256)+sample[j+2]*((f3-f2)/2/256);
+}
+
 int dock_layout(const DockSettings *s, int count, int width, int height,
                 int mx, int my, int active, DockPlacement *out)
 {
-    int i, total, rest, start, pitch, reach, x, panel_top, panel_bottom, baseline, constrained = 0;
+    int i, total, rest, start, pitch, x, panel_top, panel_bottom, baseline, constrained = 0;
     int logical_size[DOCK_MAX_ITEMS];
+    int32_t slot;
     if (!dock_settings_valid(s) || !out || count < 0 || count > DOCK_MAX_ITEMS ||
         width < 1 || height < s->max_size + s->padding * 2) return 0;
     if (!count) return 1;
@@ -540,24 +562,35 @@ int dock_layout(const DockSettings *s, int count, int width, int height,
             out[i] = (DockPlacement){x+extra_gap(s,count,i-1), y, s->base_size, 0};
         return 1;
     }
-    reach = pitch * 4;
     total = count > 1 ? s->end_gap : 0;
-    for (i = 0; i < count; ++i) {
-        int distance = mx - (start+i*pitch+s->base_size/2+extra_gap(s,count,i-1));
-        int level = 0;
-        uint32_t weight = 0;
-        if (distance < 0) distance = -distance;
-        if (s->max_size > s->base_size && distance < reach) {
-            /* Rounded broad wave: smoothstep has zero slope at the peak and
-               tail, unlike the old narrow squared cusp. Fixed-point only. */
-            uint32_t t = (uint32_t)(reach-distance) * 256 / (uint32_t)reach;
-            weight = t * t * (768 - 2*t);
-            level = (int)(((uint32_t)(s->levels-1)*weight + (UINT32_C(1)<<23)) >> 24);
+    {
+        /* The pointer in resting slots (Q16), with the wider end-gap pitch
+           counting as one slot, floored once: every icon sees the same phase,
+           as logical_positions maps the pointer between the same centers. */
+        int focus = mx-(start+s->base_size/2), reach = 6*pitch;
+        if (focus < -reach) focus = -reach;
+        slot = 0;
+        for (i = 0; focus >= 0 && i+1 < count; ++i) {
+            int span = pitch+extra_gap(s,count,i);
+            if (focus < span) break;
+            focus -= span; slot += 65536;
         }
+        if (focus > reach) focus = reach;
+        slot += focus >= 0 ? focus*65536/(pitch+(i+1 < count ? extra_gap(s,count,i) : 0)) :
+            -((-focus*65536+pitch-1)/pitch);
+    }
+    for (i = 0; i < count; ++i) {
+        int level = 0;
+        int32_t weight = 0;
+        if (s->max_size > s->base_size) weight = wave_weight(slot-i*65536);
+        if (weight > 0)
+            level = (int)(((uint32_t)(s->levels-1)*(uint32_t)weight + (UINT32_C(1)<<23)) >> 24);
         out[i].level = level;
         out[i].size = level_size(s, level);
+        /* The slightly negative tail stays in the logical size, so the row's
+           total growth is the same at every pointer position. */
         logical_size[i] = s->base_size*256+
-            (int)(((uint32_t)(s->max_size-s->base_size)*weight+UINT32_C(32768))>>16);
+            (int)(((s->max_size-s->base_size)*(weight/16)+2048)/4096);
         total += out[i].size;
     }
     for (i = 0; i+1 < count; ++i)
@@ -718,9 +751,11 @@ int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlace
     }
     envelope = animation->tick < TRANSITION_TICKS;
     if (envelope) {
-        int t = ++animation->tick;
-        /* smoothstep(t/8): integer numerator, denominator 8^3 = 512. */
-        weight = t * t * (3 * TRANSITION_TICKS - 2 * t);
+        int t = ++animation->tick, rest = TRANSITION_TICKS - t;
+        /* Cubic ease-out, 1-(1-t/8)^3 over 8^3 = 512: a third of the change
+           on the first tick and most of it by the fourth, like the macOS
+           Dock; a smoothstep start moved one pixel and felt sluggish. */
+        weight = 512 - rest * rest * rest;
         for (i = 0; i < count; ++i) {
             int origin = animation->origin_level[i];
             levels[i] = (origin * (512 - weight) + target[i].level * weight + 256) / 512;
@@ -730,6 +765,26 @@ int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlace
         for (i = 0; i < count; ++i) levels[i] = ease(current[i].level, target[i].level);
     }
     memcpy(before, current, (size_t)count*sizeof(*current));
+    {
+        /* Rounded intermediate levels can make the row wider than the span
+           of the previous and target rows, which keep_row_inside cannot pack
+           without overlap. Shrink the icons furthest above their target
+           first; the target row fits, so this ends at or above it. */
+        int start = before[0].x < target[0].x ? before[0].x : target[0].x;
+        int end = before[count-1].x+before[count-1].size, target_end = target[count-1].x+target[count-1].size;
+        int64_t width = 0;
+        if (target_end > end) end = target_end;
+        for (i = 0; i < count; ++i) width += level_size(s, levels[i]);
+        while (width > end-start) {
+            int over = -1;
+            for (i = 0; i < count; ++i)
+                if (levels[i] > target[i].level &&
+                    (over < 0 || levels[i]-target[i].level > levels[over]-target[over].level)) over = i;
+            if (over < 0) break;
+            width -= level_size(s, levels[over]) - level_size(s, levels[over]-1);
+            --levels[over];
+        }
+    }
     for (i = 0; i < count; ++i) {
         DockPlacement next;
         int64_t target_center = (int64_t)target[i].x*256+target[i].size*128;
@@ -748,6 +803,10 @@ int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlace
         current[i] = next;
     }
     keep_row_inside(animation, current, before, target, count);
+    /* The ease-out reaches the target before its last ticks. End it there,
+       so a later retarget eases instead of jumping on a near-full weight. */
+    if (envelope && !memcmp(current, target, (size_t)count*sizeof(*current)))
+        animation->tick = TRANSITION_TICKS;
     return memcmp(before, current, (size_t)count*sizeof(*current)) != 0;
 }
 

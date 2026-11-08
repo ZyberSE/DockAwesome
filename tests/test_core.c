@@ -76,16 +76,23 @@ static void test_reference_wave_and_hover(void)
     first_center = rest[0].x+s.base_size/2;
     x = first_center+4*(s.base_size+s.gap);
     assert(dock_layout(&s,9,700,128,x,100,1,wave));
-    assert(wave[4].size == 64 && wave[3].size >= 58 && wave[2].size >= 47 && wave[1].size >= 36);
+    /* The macOS Dock profile (measured at 2x, +-0.03 of the zoom): icons 1, 2
+       and 3 steps from the pointer grow 0.84-0.87, 0.47-0.49 and ~0.04 of the
+       full zoom; the fourth stays at rest. Here the zoom is 32 px. */
+    assert(wave[4].size == 64);
+    assert(wave[3].size >= 32+26 && wave[3].size <= 32+29);
+    assert(wave[2].size >= 32+14 && wave[2].size <= 32+17);
+    assert(wave[1].size >= 32 && wave[1].size <= 32+3);
     for(i=0;i<4;++i) assert(wave[i].size == wave[8-i].size);
     assert(wave[0].size == s.base_size);
     /* Shared midpoint makes both adjacent icons near the peak, rather than
-       the old narrow spike with an almost unscaled neighbor. */
+       a narrow spike with an almost unscaled neighbor. */
     x = first_center+3*(s.base_size+s.gap)+(s.base_size+s.gap)/2;
     assert(dock_layout(&s,9,700,128,x,100,1,wave));
     assert(wave[3].size >= 62 && wave[4].size >= 62);
     assert(wave[2].size >= 53 && wave[5].size >= 53);
-    assert(wave[1].size >= 41 && wave[6].size >= 41);
+    assert(wave[1].size >= 36 && wave[1].size <= 42 && abs(wave[6].size-wave[1].size) <= 1);
+    assert(wave[0].size == s.base_size && wave[7].size == s.base_size);
     /* Empty maximum-zoom headroom does not activate; the shelf does.
        An actually enlarged icon keeps hover when the pointer moves inward. */
     assert(!dock_hover_contains(&s,rest,9,700,128,350,30));
@@ -119,7 +126,7 @@ static void test_zoom_gap_compaction(void)
     for(i=0;i<8;++i) {
         assert(rest[i+1].x-rest[i].x-rest[i].size == 5);
     }
-    assert(target[4].size == 64 && target[3].size == 59);
+    assert(target[4].size == 64 && target[3].size == 60);
     assert(target[4].x-target[3].x-target[3].size == 3);
     assert(target[1].x-target[0].x-target[0].size == 5);
     memcpy(current,rest,sizeof(rest)); dock_animation_reset(&animation);
@@ -452,16 +459,42 @@ static void test_distant_icon_motion(void)
     DockPlacement previous[17], target[17], current[17];
     DockAnimation animation;
     int x, i, tick, far_x;
-    assert(dock_layout(&s,17,1024,128,380,100,1,previous));
-    /* A complete wave travels inside this row. Icons outside it stay at
-       size32. Rounded neighboring widths previously moved them up to3px
-       for a single pointer pixel; these logical centers must stay put. */
-    for (x = 381; x <= 640; ++x) {
-        assert(dock_layout(&s,17,1024,128,x,100,1,target));
-        for (i = 0; i < 17; ++i) if (!previous[i].level && !target[i].level)
-            assert(previous[i].x == target[i].x);
-        memcpy(previous,target,sizeof(previous));
+    int rest_center[17], outside, end_gap;
+    /* A complete wave, five pitches each way, travels inside this row, with
+       and without the Folder Stack's end gap. Icons outside it stay at size
+       32. Rounded neighboring widths previously moved them up to 3px for a
+       single pointer pixel; the wave keeps the row's growth constant, so
+       these icons must stay put. */
+    for (end_gap = 0; end_gap <= 12; end_gap += 12) {
+        int reach = 5*(s.base_size+s.gap)+end_gap;
+        s.end_gap = end_gap; outside = 0;
+        assert(dock_layout(&s,17,1024,128,0,0,0,current));
+        for (i = 0; i < 17; ++i) rest_center[i] = current[i].x+s.base_size/2;
+        assert(dock_layout(&s,17,1024,128,rest_center[5],100,1,previous));
+        for (x = rest_center[5]+1; x <= rest_center[11]; ++x) {
+            assert(dock_layout(&s,17,1024,128,x,100,1,target));
+            for (i = 0; i < 17; ++i)
+                if (abs(x-1-rest_center[i]) >= reach && abs(x-rest_center[i]) >= reach) {
+                    assert(!previous[i].level && !target[i].level);
+                    assert(previous[i].x == target[i].x);
+                    ++outside;
+                }
+            memcpy(previous,target,sizeof(previous));
+        }
+        assert(outside > 900);
     }
+    /* Crossing the wider Folder Stack pitch: the wave sees the pointer in
+       resting slots, so the first icon stays put. With per-icon distances
+       it jumped back and forth over 9 px. */
+    s.end_gap = 12;
+    assert(dock_layout(&s,17,1024,128,0,0,0,current));
+    far_x = -1;
+    for (x = current[15].x+16; x <= current[16].x+16; ++x) {
+        assert(dock_layout(&s,17,1024,128,x,100,1,target));
+        if (far_x < 0) far_x = target[0].x;
+        assert(target[0].x == far_x);
+    }
+    s.end_gap = 0;
     assert(dock_layout(&s,17,1024,128,0,0,0,current));
     assert(dock_layout(&s,17,1024,128,380,100,1,target));
     dock_animation_reset(&animation);
@@ -487,6 +520,38 @@ static void test_distant_icon_motion(void)
     assert(memcmp(current,target,sizeof(*current)));
     for (tick = 1; tick < 8; ++tick) dock_animate_step(&s,&animation,current,target,1);
     assert(!memcmp(current,target,sizeof(*current)));
+}
+
+/* Coarse zoom levels and quick in-out moves: rounded intermediate sizes
+   must never make neighboring icons overlap (a fast ease-out once
+   overlapped the first two icons by 5 px). */
+static void test_animation_no_overlap(void)
+{
+    static const int config[][4] = {{64,164,5,12},{64,164,5,0},{32,64,2,12},{48,96,3,0},{40,78,33,12}};
+    static const int codex[4] = {137,230,650,659}, codex_active[4] = {1,1,0,1};
+    size_t c;
+    unsigned seed = 31;
+    for (c = 0; c < sizeof(config)/sizeof(config[0]); ++c) {
+        DockSettings s = dock_settings_default();
+        DockPlacement current[8], target[8];
+        DockAnimation animation;
+        int step, i;
+        s.base_size = config[c][0]; s.max_size = config[c][1]; s.levels = config[c][2]; s.end_gap = config[c][3];
+        assert(dock_layout(&s,8,704,200,0,0,0,current));
+        dock_animation_reset(&animation);
+        for (step = 0; step < 4000; ++step) {
+            int x, active;
+            if (!c && step < 4) { x = codex[step]; active = codex_active[step]; }
+            else {
+                seed = seed*1103515245u+12345u; x = (int)((seed>>8)%704);
+                seed = seed*1103515245u+12345u; active = (seed>>8)%4 != 0;
+            }
+            assert(dock_layout(&s,8,704,200,x,150,active,target));
+            dock_animate_step(&s,&animation,current,target,8);
+            for (i = 1; i < 8; ++i) assert(current[i].x >= current[i-1].x+current[i-1].size);
+            assert(current[0].x >= 0 && current[7].x+current[7].size <= 704);
+        }
+    }
 }
 
 static void test_layout(void)
@@ -603,14 +668,15 @@ static void test_reference_timing_and_panel(void)
     DockImage frame = {320, 100, pixels}, back = {320, 100, backdrop};
     const DockCache *icons[5] = {NULL, NULL, NULL, NULL, NULL};
     int tick, y;
-    static const int entry_levels[8] = {1, 5, 10, 16, 22, 27, 31, 32};
+    /* Ease-out: a third of the zoom on the first tick, full by the sixth. */
+    static const int entry_levels[8] = {11, 19, 24, 28, 30, 32, 32, 32};
     assert(dock_layout(&s, 5, 320, 100, 0, 0, 0, rest));
     assert(dock_layout(&s, 5, 320, 100, 80, 60, 1, left));
     assert(dock_layout(&s, 5, 320, 100, 240, 60, 1, right));
     memcpy(current, rest, sizeof(rest));
     dock_animation_reset(&animation);
     assert(dock_animate_step(&s, &animation, current, left, 5));
-    assert(current[0].level == entry_levels[0]); /* gentle one-pixel first step */
+    assert(current[0].level == entry_levels[0]); /* a snappy first step */
     assert(animation.tick == 1);
     for (tick = 2; tick <= 8; ++tick) {
         dock_animate_step(&s, &animation, current, left, 5);
@@ -622,13 +688,18 @@ static void test_reference_timing_and_panel(void)
     for (tick = 1; tick <= 8; ++tick) {
         const DockPlacement *target = tick % 2 ? left : right;
         dock_animate_step(&s, &animation, current, target, 5);
-        assert(animation.tick == tick); /* moving the pointer does not restart */
+        /* Moving the pointer does not restart the transition; it may end
+           early when the row reaches the latest target. */
+        assert(animation.tick == tick || animation.tick == 8);
     }
+    for (tick = 0; tick < 16 && memcmp(current, right, sizeof(right)); ++tick)
+        dock_animate_step(&s, &animation, current, right, 5);
     assert(!memcmp(current, right, sizeof(right)));
     assert(!dock_animate_step(&s, &animation, current, right, 5));
     for (tick = 1; tick <= 8; ++tick) {
         dock_animate_step(&s, &animation, current, rest, 5);
-        assert(animation.tick == tick);
+        /* The transition ends once the row is home, before its last ticks. */
+        assert(animation.tick == tick || (animation.tick == 8 && !memcmp(current, rest, sizeof(rest))));
     }
     assert(!memcmp(current, rest, sizeof(rest)));
     memset(backdrop, 200, sizeof(backdrop));
@@ -1212,74 +1283,76 @@ static uint32_t fixture_checksum(const RenderFixture *f)
 /* Running dots on slots 0 and 3, drawn after the frame the old way. */
 static const int fixture_running[FIX_COUNT] = {1,0,0,1,0};
 
-/* Pixel-exact checksums of canvas plus coverage, generated once with the
+/* Pixel-exact checksums of canvas plus coverage, generated with the
    full-frame renderer before damage rendering existed. A change here is a
-   rendering regression, never a table update. */
+   rendering regression, never a table update. The hover scenarios also
+   depend on dock_layout: they were regenerated once when the zoom wave
+   changed to the macOS profile, with the rest scenarios unchanged. */
 static const uint32_t render_goldens[FIX_SCENARIOS] = {
-    0x1d1a8288, 0x8f43232f, 0x84b7daf1, 0xf6a46096, 0x8ccc2510, 0x7e9af103,
-    0x48541d09, 0xb1cb84b1, 0x0494c9de, 0xa1bc6675, 0x0c206437, 0x14ce343e,
-    0x91e50f12, 0x7abf6a05, 0xffbf9ea1, 0xa0332381, 0x52a4e958, 0x6593849c,
-    0xb9e8109e, 0xfbcb9db9, 0x8943428c, 0x017f0ca4, 0xf5906712, 0x4606d36d,
-    0x5081cad2, 0x4c8d9536, 0x32bbbd4c, 0xe7116e51, 0x2c88ea52, 0x716072a2,
-    0xe981d0ba, 0x9a62975d, 0x1d1a8288, 0x8f43232f, 0x84b7daf1, 0xf6a46096,
-    0x8ccc2510, 0x7e9af103, 0x48541d09, 0xb1cb84b1, 0x0494c9de, 0xa1bc6675,
-    0x0c206437, 0x14ce343e, 0x91e50f12, 0x7abf6a05, 0xffbf9ea1, 0xa0332381,
-    0x52a4e958, 0x6593849c, 0xb9e8109e, 0xfbcb9db9, 0x8943428c, 0x017f0ca4,
-    0xf5906712, 0x4606d36d, 0x5081cad2, 0x4c8d9536, 0x32bbbd4c, 0xe7116e51,
-    0x2c88ea52, 0x716072a2, 0xe981d0ba, 0x9a62975d, 0xf6243960, 0x93ebc9ef,
-    0x1faf51cf, 0x5d73f400, 0x65808cc1, 0xdea8a89f, 0x21b068b4, 0x24c964ae,
-    0x5bc4096a, 0x16b8affd, 0xbf0af790, 0x69e4b268, 0x40bc840a, 0x1ddab627,
-    0xded4e918, 0xd5d4da1f, 0x6da0b0ef, 0x88b77216, 0xff4e1a8e, 0x594e2e1a,
-    0x2af548bc, 0xf6c226c9, 0x2db50018, 0xc2e68212, 0x2f103d81, 0x6b692344,
-    0x2a07ef21, 0x19a0bfd6, 0x15229b6f, 0x96fd2589, 0x3abef3cc, 0x03363b67,
-    0xf6243960, 0x93ebc9ef, 0x1faf51cf, 0x5d73f400, 0x65808cc1, 0xdea8a89f,
-    0x21b068b4, 0x24c964ae, 0x5bc4096a, 0x16b8affd, 0xbf0af790, 0x69e4b268,
-    0x40bc840a, 0x1ddab627, 0xded4e918, 0xd5d4da1f, 0x6da0b0ef, 0x88b77216,
-    0xff4e1a8e, 0x594e2e1a, 0x2af548bc, 0xf6c226c9, 0x2db50018, 0xc2e68212,
-    0x2f103d81, 0x6b692344, 0x2a07ef21, 0x19a0bfd6, 0x15229b6f, 0x96fd2589,
-    0x3abef3cc, 0x03363b67, 0xa09a8da0, 0x320a5771, 0xc5ce8c5c, 0x37f50b33,
-    0x855f4a7c, 0x94da8d1d, 0x058557c6, 0x5a295e86, 0xe8f48812, 0xa8119f73,
-    0xa6cdcc9e, 0x729fa74b, 0xa543c7ee, 0x42c7475f, 0x69c6bb4e, 0xe06782b6,
-    0xf3060da0, 0xdc05571d, 0x44276c8b, 0x46a963bc, 0xcc3aca7c, 0x15565c89,
-    0x4238423d, 0x401c4006, 0x3b600812, 0x6b3d00e7, 0x40e4e1f5, 0x7f46ecf4,
-    0xec1f47ee, 0x2c5e7f93, 0xe3e97e25, 0x0dccca36, 0xa09a8da0, 0x320a5771,
-    0xc5ce8c5c, 0x37f50b33, 0x855f4a7c, 0x94da8d1d, 0x058557c6, 0x5a295e86,
-    0xe8f48812, 0xa8119f73, 0xa6cdcc9e, 0x729fa74b, 0xa543c7ee, 0x42c7475f,
-    0x69c6bb4e, 0xe06782b6, 0xf3060da0, 0xdc05571d, 0x44276c8b, 0x46a963bc,
-    0xcc3aca7c, 0x15565c89, 0x4238423d, 0x401c4006, 0x3b600812, 0x6b3d00e7,
-    0x40e4e1f5, 0x7f46ecf4, 0xec1f47ee, 0x2c5e7f93, 0xe3e97e25, 0x0dccca36,
-    0x34f1533f, 0xb53f2f37, 0xed44f88f, 0x7a78565c, 0xe5c27c6c, 0x67af22e5,
-    0x80b0f800, 0x83adc3b8, 0xc09e7def, 0xb847f5f8, 0xed234cfc, 0x44a8ec69,
-    0x671b8c23, 0x26e4551a, 0x26acb5b8, 0xa2595644, 0x08498ab7, 0x8916a1cb,
-    0xd38bba85, 0x79dd5c57, 0x45b411b4, 0x7b201289, 0x53b19699, 0x6934bc4c,
-    0xcf85cf27, 0x0179602c, 0x02cd73a2, 0xabf3e26a, 0x67726a4b, 0x4c55a81e,
-    0x459cf039, 0x3cecabd0, 0x34f1533f, 0xb53f2f37, 0xed44f88f, 0x7a78565c,
-    0xe5c27c6c, 0x67af22e5, 0x80b0f800, 0x83adc3b8, 0xc09e7def, 0xb847f5f8,
-    0xed234cfc, 0x44a8ec69, 0x671b8c23, 0x26e4551a, 0x26acb5b8, 0xa2595644,
-    0x08498ab7, 0x8916a1cb, 0xd38bba85, 0x79dd5c57, 0x45b411b4, 0x7b201289,
-    0x53b19699, 0x6934bc4c, 0xcf85cf27, 0x0179602c, 0x02cd73a2, 0xabf3e26a,
-    0x67726a4b, 0x4c55a81e, 0x459cf039, 0x3cecabd0, 0xa251c330, 0x2abe5bc5,
-    0x760bb050, 0x6362271e, 0x4171878c, 0x3db54521, 0xbecd8bf6, 0x77634c17,
-    0xac482ba2, 0x0172ee0b, 0x5e274d22, 0x9ab16936, 0x3882933e, 0xc5e2d507,
-    0x43b3281e, 0x1ba68a87, 0x73bff1b0, 0x375f40fa, 0x65453aef, 0x1b7a5c65,
-    0xd828740c, 0x4b460796, 0x512a1bbd, 0xc6a2dd17, 0x8cb82222, 0x62b06fa0,
-    0xac2a2ee9, 0x74335ddd, 0x647c93be, 0xd453b05c, 0x8012cfc5, 0x6ae61b87,
-    0xa251c330, 0x2abe5bc5, 0x760bb050, 0x6362271e, 0x4171878c, 0x3db54521,
-    0xbecd8bf6, 0x77634c17, 0xac482ba2, 0x0172ee0b, 0x5e274d22, 0x9ab16936,
-    0x3882933e, 0xc5e2d507, 0x43b3281e, 0x1ba68a87, 0x73bff1b0, 0x375f40fa,
-    0x65453aef, 0x1b7a5c65, 0xd828740c, 0x4b460796, 0x512a1bbd, 0xc6a2dd17,
-    0x8cb82222, 0x62b06fa0, 0xac2a2ee9, 0x74335ddd, 0x647c93be, 0xd453b05c,
-    0x8012cfc5, 0x6ae61b87, 0xa46d6f02, 0x748eacb4, 0x1eb00470, 0xccae443d,
-    0xc755d1c0, 0xfa274994, 0x6c4d8328, 0x09c8b820, 0x442acffe, 0xa4ed2b9a,
-    0x1586f67b, 0x307b8197, 0xb5f122a2, 0xb56af412, 0x643dde80, 0x509ee914,
-    0x0785f749, 0x44a5b900, 0xb971d18f, 0x1bfb84ad, 0xd0a2b297, 0x4d732b38,
-    0xbdb26263, 0x2cc9be35, 0x6c542211, 0x1126c10e, 0x5d3bed00, 0xef67a227,
-    0x55211ad1, 0x992e462e, 0x735f7783, 0x845e1ec1, 0xa46d6f02, 0x748eacb4,
-    0x1eb00470, 0xccae443d, 0xc755d1c0, 0xfa274994, 0x6c4d8328, 0x09c8b820,
-    0x442acffe, 0xa4ed2b9a, 0x1586f67b, 0x307b8197, 0xb5f122a2, 0xb56af412,
-    0x643dde80, 0x509ee914, 0x0785f749, 0x44a5b900, 0xb971d18f, 0x1bfb84ad,
-    0xd0a2b297, 0x4d732b38, 0xbdb26263, 0x2cc9be35, 0x6c542211, 0x1126c10e,
-    0x5d3bed00, 0xef67a227, 0x55211ad1, 0x992e462e, 0x735f7783, 0x845e1ec1
+    0x1d1a8288, 0xe3a6c983, 0x84b7daf1, 0xbaeb2950, 0x8ccc2510, 0xcca2f0fb,
+    0x3e66c599, 0x46d84034, 0x0494c9de, 0xe5d3f233, 0x0c206437, 0xb20c6a56,
+    0x91e50f12, 0xae3aeeeb, 0x99765f1b, 0x4241c58e, 0x52a4e958, 0xa8cfd5a4,
+    0xb9e8109e, 0xbca8bb10, 0x8943428c, 0x376ba5e0, 0x4c6588e6, 0x83bbf6f8,
+    0x5081cad2, 0x04727c54, 0x32bbbd4c, 0xe18bec82, 0x2c88ea52, 0x519c8610,
+    0x32aa8ef8, 0x0e23d1ae, 0x1d1a8288, 0xe3a6c983, 0x84b7daf1, 0xbaeb2950,
+    0x8ccc2510, 0xcca2f0fb, 0x3e66c599, 0x46d84034, 0x0494c9de, 0xe5d3f233,
+    0x0c206437, 0xb20c6a56, 0x91e50f12, 0xae3aeeeb, 0x99765f1b, 0x4241c58e,
+    0x52a4e958, 0xa8cfd5a4, 0xb9e8109e, 0xbca8bb10, 0x8943428c, 0x376ba5e0,
+    0x4c6588e6, 0x83bbf6f8, 0x5081cad2, 0x04727c54, 0x32bbbd4c, 0xe18bec82,
+    0x2c88ea52, 0x519c8610, 0x32aa8ef8, 0x0e23d1ae, 0xf6243960, 0x4ffb78f7,
+    0x1faf51cf, 0x4dbc7131, 0x65808cc1, 0xc647c92b, 0x03e48aef, 0xa1c61264,
+    0x5bc4096a, 0x92fe1fa2, 0xbf0af790, 0x51893a64, 0x40bc840a, 0xdf4d7791,
+    0x8fe19980, 0x29df4611, 0x6da0b0ef, 0xf072c23e, 0xff4e1a8e, 0xdfcde28a,
+    0x2af548bc, 0x923eca85, 0xa5cdd355, 0x33123961, 0x2f103d81, 0xb0cdf107,
+    0x2a07ef21, 0x0e9f515f, 0x15229b6f, 0xe2d7b4af, 0x1c4c0aaa, 0x865fe12c,
+    0xf6243960, 0x4ffb78f7, 0x1faf51cf, 0x4dbc7131, 0x65808cc1, 0xc647c92b,
+    0x03e48aef, 0xa1c61264, 0x5bc4096a, 0x92fe1fa2, 0xbf0af790, 0x51893a64,
+    0x40bc840a, 0xdf4d7791, 0x8fe19980, 0x29df4611, 0x6da0b0ef, 0xf072c23e,
+    0xff4e1a8e, 0xdfcde28a, 0x2af548bc, 0x923eca85, 0xa5cdd355, 0x33123961,
+    0x2f103d81, 0xb0cdf107, 0x2a07ef21, 0x0e9f515f, 0x15229b6f, 0xe2d7b4af,
+    0x1c4c0aaa, 0x865fe12c, 0xa09a8da0, 0xd47b6ced, 0xc5ce8c5c, 0x8ed46511,
+    0x855f4a7c, 0x6b019cf9, 0xc6a3ec74, 0x710286d5, 0xe8f48812, 0x8a099f3d,
+    0xa6cdcc9e, 0x1627b0fb, 0xa543c7ee, 0x6474a7c9, 0xf7ad8b3a, 0xcf086f5f,
+    0xf3060da0, 0xbe504041, 0x44276c8b, 0x41b04c11, 0xcc3aca7c, 0x83b7b7ad,
+    0x106959f3, 0x96c94dd5, 0x3b600812, 0xa177b211, 0x40e4e1f5, 0xc90397fb,
+    0xec1f47ee, 0xac77e5fd, 0xdf74d131, 0xf4cf365f, 0xa09a8da0, 0xd47b6ced,
+    0xc5ce8c5c, 0x8ed46511, 0x855f4a7c, 0x6b019cf9, 0xc6a3ec74, 0x710286d5,
+    0xe8f48812, 0x8a099f3d, 0xa6cdcc9e, 0x1627b0fb, 0xa543c7ee, 0x6474a7c9,
+    0xf7ad8b3a, 0xcf086f5f, 0xf3060da0, 0xbe504041, 0x44276c8b, 0x41b04c11,
+    0xcc3aca7c, 0x83b7b7ad, 0x106959f3, 0x96c94dd5, 0x3b600812, 0xa177b211,
+    0x40e4e1f5, 0xc90397fb, 0xec1f47ee, 0xac77e5fd, 0xdf74d131, 0xf4cf365f,
+    0x34f1533f, 0xf9000c98, 0xed44f88f, 0x67a56abd, 0xe5c27c6c, 0x3e8f1cf2,
+    0xaf32b392, 0x4a1ec3bb, 0xc09e7def, 0x25f78b99, 0xed234cfc, 0xa6e09849,
+    0x671b8c23, 0x97bcb0eb, 0x042122c6, 0x40ea8372, 0x08498ab7, 0x21ff5f4c,
+    0xd38bba85, 0x83844abd, 0x45b411b4, 0xe81275b6, 0xf5dd8336, 0x5399a3bb,
+    0xcf85cf27, 0xfd06c7bd, 0x02cd73a2, 0xc2bf7849, 0x67726a4b, 0x92b6e1bf,
+    0x1cb80b62, 0x4a656372, 0x34f1533f, 0xf9000c98, 0xed44f88f, 0x67a56abd,
+    0xe5c27c6c, 0x3e8f1cf2, 0xaf32b392, 0x4a1ec3bb, 0xc09e7def, 0x25f78b99,
+    0xed234cfc, 0xa6e09849, 0x671b8c23, 0x97bcb0eb, 0x042122c6, 0x40ea8372,
+    0x08498ab7, 0x21ff5f4c, 0xd38bba85, 0x83844abd, 0x45b411b4, 0xe81275b6,
+    0xf5dd8336, 0x5399a3bb, 0xcf85cf27, 0xfd06c7bd, 0x02cd73a2, 0xc2bf7849,
+    0x67726a4b, 0x92b6e1bf, 0x1cb80b62, 0x4a656372, 0xa251c330, 0x05326d1c,
+    0x760bb050, 0x99ffcaf8, 0x4171878c, 0xf473a078, 0xdc4a2188, 0x5b3c5494,
+    0xac482ba2, 0xf414c58c, 0x5e274d22, 0xd149bf9a, 0x3882933e, 0xef564ee8,
+    0x5b0cfb6e, 0x2b013916, 0x73bff1b0, 0x71e10b6b, 0x65453aef, 0xc47b59b8,
+    0xd828740c, 0x0e42d207, 0x45332407, 0x9d70cf54, 0x8cb82222, 0x354f9e9b,
+    0xac2a2ee9, 0xac3d4a5a, 0x647c93be, 0x13ae2337, 0xe600a6c5, 0x572e37d6,
+    0xa251c330, 0x05326d1c, 0x760bb050, 0x99ffcaf8, 0x4171878c, 0xf473a078,
+    0xdc4a2188, 0x5b3c5494, 0xac482ba2, 0xf414c58c, 0x5e274d22, 0xd149bf9a,
+    0x3882933e, 0xef564ee8, 0x5b0cfb6e, 0x2b013916, 0x73bff1b0, 0x71e10b6b,
+    0x65453aef, 0xc47b59b8, 0xd828740c, 0x0e42d207, 0x45332407, 0x9d70cf54,
+    0x8cb82222, 0x354f9e9b, 0xac2a2ee9, 0xac3d4a5a, 0x647c93be, 0x13ae2337,
+    0xe600a6c5, 0x572e37d6, 0xa46d6f02, 0x1dcdf89c, 0x1eb00470, 0xa33c58ad,
+    0xc755d1c0, 0x9ca18a67, 0x96ccf9ca, 0xbb5fe2a7, 0x442acffe, 0x7d616f32,
+    0x1586f67b, 0xc47b94fc, 0xb5f122a2, 0x0f3a9f49, 0x7b80cd07, 0xb3deb339,
+    0x0785f749, 0xdfc6bfe0, 0xb971d18f, 0x8c2e2049, 0xd0a2b297, 0x2dfdd6db,
+    0x1f2ebc42, 0xa187254b, 0x6c542211, 0xc4b62c52, 0x5d3bed00, 0xd11b3af0,
+    0x55211ad1, 0xe4758c69, 0xc22143ef, 0x3d048ef5, 0xa46d6f02, 0x1dcdf89c,
+    0x1eb00470, 0xa33c58ad, 0xc755d1c0, 0x9ca18a67, 0x96ccf9ca, 0xbb5fe2a7,
+    0x442acffe, 0x7d616f32, 0x1586f67b, 0xc47b94fc, 0xb5f122a2, 0x0f3a9f49,
+    0x7b80cd07, 0xb3deb339, 0x0785f749, 0xdfc6bfe0, 0xb971d18f, 0x8c2e2049,
+    0xd0a2b297, 0x2dfdd6db, 0x1f2ebc42, 0xa187254b, 0x6c542211, 0xc4b62c52,
+    0x5d3bed00, 0xd11b3af0, 0x55211ad1, 0xe4758c69, 0xc22143ef, 0x3d048ef5
 };
 
 static int fixture_scenario(int edge, int captured, int glass, int pressed, int center,
@@ -1708,7 +1781,7 @@ static void test_damage_fuzz(void)
 int main(void)
 {
     DockSettings defaults = dock_settings_default();
-    test_normalize(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_layout(); test_blend();
+    test_normalize(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_animation_no_overlap(); test_layout(); test_blend();
     test_mix(); test_pressed_artwork(); test_side_panel_coverage(); test_reorder(); test_renderer();
     test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build(); test_icon_runs();
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();

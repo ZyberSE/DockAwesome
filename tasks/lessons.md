@@ -2,6 +2,8 @@
 
 ## Communication
 
+- A local build is "build N", not a version. Versions exist only for
+  release packages (for example "1.0 beta 1").
 - Reply to the user in Swedish, in plain words. Present comparisons as
   "icon one, two, three steps from the pointer" with sizes in pixels, not
   internal terms such as falloff, tail or neighbour index.
@@ -24,7 +26,11 @@
 - Zoom inward from a fixed baseline. Keep plate thickness fixed and let its
   ends follow the icon row. Middle hovers can center. End hovers can shift.
 - Measure the zoom ratio, wave, and activation area. The reference is about
-  2× and magnifies several neighbors. Stop the timer when the row settles.
+  2× and grows the icons 1, 2 and 3 pitches away by 0.86, 0.48 and 0.04 of
+  the zoom. Stop the timer when the row settles.
+- Keep the wave's weights summing to a constant at every pointer phase and
+  floor the phase once for all icons. Otherwise the row's total growth
+  breathes and icons outside the wave move by a pixel.
 - Keep hover continuous across enlarged icons. Use icon alpha for button hits.
 - Map the pointer between centers. Separate icon and gap mapping caused a
   7 px reversal in one five-pin test.
@@ -113,6 +119,9 @@
   route raw console close through the active window.
 
 ## Transfers and benchmarks
+
+- After `gh pr merge`, fetch before fast-forwarding and building main: a
+  stale origin/main built the old code once.
 
 - Transfer files with ApolloExplorer `acp`, not base64. Start
   `C:ApolloExplorerSrv` on the Amiga first. If `acp` cannot load Qt, run a

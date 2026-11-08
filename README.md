@@ -41,8 +41,9 @@ DockAwesome SYS:Prefs SYS:System
 DockAwesome --pip --size 32 --zoom 64
 ```
 
-**About** shows the version and build date. You can also run
-`DockAwesome --version` or `Version DockAwesome FILE FULL`.
+**About** shows the release version, or the build number for a local build,
+and the build date. You can also run `DockAwesome --version` or
+`Version DockAwesome FILE FULL`.
 
 | Mode | Background |
 | --- | --- |
@@ -104,8 +105,9 @@ The verified offsets are +17 and -1.
 ## Build and test
 
 The default toolchain is `~/ApolloCrossDevLocal/Compilers/GCC-6.50-Stable`.
-Set `TOOLCHAIN` to override it. Python 3 generates the build version from
-the local `.build-revision` counter.
+Set `TOOLCHAIN` to override it. Python 3 numbers local builds from the
+`.build-revision` counter ("Build 181" in About; `$VER` reads 0.181 so the
+Version command can parse it). Only a release package has a version.
 
 ```sh
 make host-test host-sanitize

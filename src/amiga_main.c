@@ -333,8 +333,9 @@ typedef struct App {
     VBlankState vblank;
     struct Interrupt vblank_interrupt;
     LONG vblank_bit;
-    ULONG vblank_field;
-    int vblank_open, vblank_armed, no_vsync;
+    ULONG vblank_field, vblank_check_field;
+    uint64_t vblank_check_at, vblank_armed_at;
+    int vblank_open, vblank_armed, vblank_rate_ok, no_vsync;
 } App;
 
 static void animation_cancel(App *app);
@@ -1569,12 +1570,25 @@ static void animation_schedule(App *app)
     if (!fast && !app->label_at) { animation_cancel(app); return; }
     if (fast && app->timer_pending && app->timer_label_only) animation_cancel(app);
     if (!app->timer_open || app->timer_pending || app->vblank_armed || app->timer_failed) return;
-    if (fast && delay == 20000 && app->vblank_open && !app->no_vsync) {
+    if (app->vblank_open) {
+        /* The curves count 20 ms ticks: follow the display only while its
+           fields measure 19-21 ms, so 60 Hz modes keep the timer. Checked
+           every 50 fields, so a screen mode change is noticed. */
+        ULONG fields = app->vblank.fields-app->vblank_check_field;
+        if (fields >= 50) {
+            uint64_t now = profile_clock();
+            uint64_t field_us = (now-app->vblank_check_at)*1000000/app->clock_hz/fields;
+            app->vblank_rate_ok = field_us >= 19000 && field_us <= 21000;
+            app->vblank_check_field += fields; app->vblank_check_at = now;
+        }
+    }
+    if (fast && delay == 20000 && app->vblank_open && app->vblank_rate_ok && !app->no_vsync) {
         /* One tick per display field. A field that passes before the read
            below only delays the tick by one field. */
         app->vblank.armed = 1;
         app->vblank_field = app->vblank.fields;
         app->vblank_armed = 1;
+        app->vblank_armed_at = profile_clock();
         return;
     }
     if (!fast) {
@@ -1605,7 +1619,10 @@ static int animation_step(App *app)
 {
     LONG error = 0;
     int closed;
-    if (app->vblank_armed && app->vblank.fields != app->vblank_field) {
+    if (app->vblank_armed && (app->vblank.fields != app->vblank_field ||
+            profile_clock()-app->vblank_armed_at > app->clock_hz*3/50)) {
+        /* No field for three periods: the interrupt is off; use the timer. */
+        if (app->vblank.fields == app->vblank_field) app->vblank_rate_ok = 0;
         app->vblank.armed = 0; app->vblank_armed = 0;
     } else {
         if (!app->timer_pending || !CheckIO((struct IORequest *)app->timer_io)) return 0;
@@ -2925,6 +2942,7 @@ static int animation_open(App *app)
         app->vblank_interrupt.is_Code = (void (*)())dock_vblank_entry;
         AddIntServer(INTB_VERTB,&app->vblank_interrupt);
         app->vblank_open = 1;
+        app->vblank_check_at = profile_clock(); app->vblank_check_field = app->vblank.fields;
     }
     app->stats.min_ticks = UINT64_MAX;
     {

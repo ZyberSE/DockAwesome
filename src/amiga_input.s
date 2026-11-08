@@ -73,5 +73,6 @@ _dock_vblank_entry:
     jsr -324(a6)            ; Signal(task, mask)
     move.l (sp)+,a6
 .vblank_done:
+    lea $dff000,a0          ; as the next server in the chain expects
     moveq #0,d0
     rts

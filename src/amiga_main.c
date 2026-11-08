@@ -351,6 +351,7 @@ typedef struct App {
     DockCache morph_cache;
     unsigned char *morph_pixels[2];
     int morph_flip;
+    int stack_close_press;
 } App;
 
 static void animation_cancel(App *app);
@@ -3716,8 +3717,14 @@ static void open_stack_view(App *app, int index)
 
 static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int *save, int *recreate)
 {
+    int was_active = app->gesture.active;
     DockGestureEffects effect = dock_gesture_update(&app->gesture, in);
     int index = pin_index(app, effect.pin_id);
+    /* Decide at the press whether it closes the stack: in native modes the
+       press activates the dock window, and the stack may finish closing on
+       that before the release arrives. */
+    if (!was_active && app->gesture.active)
+        app->stack_close_press = dock_ui_folder_open(app->ui) || dock_ui_folder_moving(app->ui);
     int movable = index >= 0 && !app->items[index].temporary && !app->items[index].stack;
     int commit = (effect.flags & DOCK_EFFECT_REORDER) && movable &&
         effect.target_slot >= 0 && effect.target_slot < stack_index(app);
@@ -3762,8 +3769,7 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
             item_window_action(app,item,WINDOW_FOCUS);
         /* A click on the open stack's close button (native modes; PiP
            consumes it in the handler) closes it rather than reopening. */
-        if (item->stack && (dock_ui_folder_open(app->ui) || dock_ui_folder_moving(app->ui)))
-            dock_ui_dismiss_popup(app->ui);
+        if (item->stack && app->stack_close_press) dock_ui_dismiss_popup(app->ui);
         else if (item->stack) open_stack_view(app,index);
         else if (!focused && !item->temporary) {
             if (launch_pin(item->path)) {

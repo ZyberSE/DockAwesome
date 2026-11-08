@@ -391,6 +391,15 @@ int amiga_display_present_tile(AmigaDisplay *d, struct Window *window, const Doc
         im->width != d->width || im->height != d->height ||
         x < 0 || y < 0 || width < 1 || height < 1 || width > d->width-x || height > d->height-y)
         return 0;
+    if (d->depth == 16 && d->rgba_to_rgb565 && window->RPort->BitMap &&
+        GetCyberMapAttr(window->RPort->BitMap,CYBRMATTR_PIXFMT) == PIXFMT_RGB16) {
+        for (row = 0; row < height; ++row) {
+            const unsigned char *source = im->pixels+((size_t)(y+row)*im->width+x)*4;
+            d->rgba_to_rgb565(d->upload+(size_t)row*width*2,source,width);
+        }
+        WritePixelArray(d->upload,0,0,width*2,window->RPort,x,y,width,height,RECTFMT_RAW);
+        return 1;
+    }
     for (row = 0; row < height; ++row) {
         const unsigned char *source = im->pixels+((size_t)(y+row)*im->width+x)*4;
         d->rgba_to_rgb24(d->upload+(size_t)row*stride,source,width);

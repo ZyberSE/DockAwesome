@@ -336,6 +336,10 @@ typedef struct App {
     ULONG vblank_field, vblank_check_field;
     uint64_t vblank_check_at, vblank_armed_at;
     int vblank_open, vblank_armed, vblank_rate_ok, no_vsync;
+    /* The close button that replaces the Folder Stack pin while it is
+       open, built with the surface for its settings and edge. */
+    DockCache stack_button;
+    int stack_button_shown;
 } App;
 
 static void animation_cancel(App *app);
@@ -344,6 +348,7 @@ static uint64_t profile_clock(void);
 static int viewport_limit(const App *app, DockEdge edge);
 static void input_invalidate(App *app);
 static void sync_input_ui(App *app);
+static void stack_button_build(App *app);
 
 static int intuition_extension(ULONG offset)
 {
@@ -1344,6 +1349,7 @@ static int open_surface(App *app)
         if (!app->drop_catcher) return 0;
     }
     shift_held_drops(app,0);
+    stack_button_build(app);
     return 1;
 }
 
@@ -3236,6 +3242,70 @@ static DockOverlay running_dot(const App *app, const DockPlacement *icon)
     return (DockOverlay){&dot,x,y};
 }
 
+/* A capsule from (ax,ay) to (bx,by) with radius r contains (x,y); no
+   division: the perpendicular test compares cross^2 with r^2*length^2. */
+static int in_capsule(int x, int y, int ax, int ay, int bx, int by, int r)
+{
+    long dx = bx-ax, dy = by-ay, px = x-ax, py = y-ay;
+    long dot = px*dx+py*dy, length = dx*dx+dy*dy, cross = px*dy-py*dx;
+    if (dot <= 0) return px*px+py*py <= (long)r*r;
+    if (dot >= length) { px = x-bx; py = y-by; return px*px+py*py <= (long)r*r; }
+    return (int64_t)cross*cross <= (int64_t)r*r*length;
+}
+
+/* While the Folder Stack is open its pin becomes a close button, as in the
+   macOS Dock: a dark rounded square with a light rim and a white chevron
+   toward the screen edge. It is drawn at the zoom size with 4x4 samples
+   per pixel and built into a cache like any icon, so it zooms and filters
+   like the others. Built with the surface: a 256 px source took 2.3 s on
+   the 68080 and stalled the first Folder Stack opening. */
+static void stack_button_build(App *app)
+{
+    int n = app->settings.max_size, s16 = n*8; /* positions in 1/8 px */
+    int radius = s16*22/100, rim = s16/40 > 8 ? s16/40 : 8, stroke = s16*9/200;
+    /* The chevron for a bottom dock ("v"), as percentages of the size. */
+    int ax = 32, ay = 42, bx = 50, by = 60, cx = 68, cy = 42, x, y, ok;
+    DockImage source = {n,n,NULL};
+    dock_cache_free(&app->stack_button);
+    dock_renderer_invalidate(&app->renderer);
+    if (stack_index(app) >= app->count) return;
+    if (app->edge != DOCK_EDGE_BOTTOM) {
+        /* ">" for a right dock, "<" for a left one: transpose, then mirror. */
+        int t;
+        t = ax; ax = ay; ay = t; t = bx; bx = by; by = t; t = cx; cx = cy; cy = t;
+        if (app->edge == DOCK_EDGE_LEFT) { ax = 100-ax; bx = 100-bx; cx = 100-cx; }
+    }
+    ax = ax*s16/100; ay = ay*s16/100; bx = bx*s16/100; by = by*s16/100; cx = cx*s16/100; cy = cy*s16/100;
+    if (!(source.pixels = malloc((size_t)n*n*4))) return;
+    for (y = 0; y < n; ++y) for (x = 0; x < n; ++x) {
+        unsigned char *p = source.pixels+((size_t)y*n+x)*4;
+        int square = 0, inner = 0, mark = 0, sx, sy, shade = 62-24*y/n, c;
+        for (sy = 0; sy < 4; ++sy) for (sx = 0; sx < 4; ++sx) {
+            int px = x*8+1+2*sx, py = y*8+1+2*sy, k;
+            for (k = 0; k < 2; ++k) {
+                /* The rounded square, then the same inset by the rim. */
+                int edge = k ? rim : 0, r = radius-edge;
+                int dx = px < edge+r ? edge+r-px : px >= s16-edge-r ? px-(s16-edge-r) : 0;
+                int dy = py < edge+r ? edge+r-py : py >= s16-edge-r ? py-(s16-edge-r) : 0;
+                if (px >= edge && py >= edge && px < s16-edge && py < s16-edge &&
+                    dx*dx+dy*dy <= r*r) { if (k) ++inner; else ++square; }
+            }
+            mark += in_capsule(px,py,ax,ay,bx,by,stroke) || in_capsule(px,py,bx,by,cx,cy,stroke);
+        }
+        /* Surface, a lighter rim between the outline and its inset, the mark. */
+        for (c = 0; c < 3; ++c) {
+            int base = shade+(c == 2 ? 4 : 0), light = base+46;
+            int value = square ? (base*inner+light*(square-inner))/square : 0;
+            value = (value*(16-mark)+(c == 2 ? 246 : 242)*mark)/16;
+            p[c] = (unsigned char)value;
+        }
+        p[3] = (unsigned char)((square*255+8)/16);
+    }
+    ok = dock_cache_build(&app->stack_button,&source,&app->settings);
+    free(source.pixels);
+    if (!ok) dock_cache_free(&app->stack_button);
+}
+
 static void draw(App *app)
 {
     uint64_t started = app->profile ? profile_clock() : 0;
@@ -3248,9 +3318,12 @@ static void draw(App *app)
     uint32_t selected = dock_gesture_pressed(&app->gesture);
     if (!selected) selected = app->flash_pin_id;
     app->renderer.pressed_item = 0;
+    app->stack_button_shown = dock_ui_folder_open(app->ui);
     for (i = 0; i < count; ++i) {
         int item = row_item(app,i);
         icons[i] = item == dragged ? NULL : &app->items[item].cache;
+        if (app->stack_button_shown && app->items[item].stack && icons[i] && app->stack_button.levels)
+            icons[i] = &app->stack_button;
         if (selected && selected == app->items[item].pin_id) app->renderer.pressed_item = i+1;
     }
     /* Running dots in slot order, then the dragged icon. */
@@ -3931,7 +4004,7 @@ static int acquire_workbench(App *app)
     dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
     dock_ui_set_fit_hook(app->ui,ui_fit,app);
     dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
-        app->renderer.pixels->encode565);
+        app->renderer.pixels->encode565,app->renderer.pixels->mix_half);
     app->workbench_closed = 0;
     prefs = current_ui_prefs(app);
     fit = ui_fit(app,&prefs);
@@ -3949,7 +4022,7 @@ static int acquire_workbench(App *app)
     if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
     dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
-        app->renderer.pixels->encode565);
+        app->renderer.pixels->encode565,app->renderer.pixels->mix_half);
     app->surface_error[0] = 0;
     return open_surface(app);
 }
@@ -4181,6 +4254,8 @@ static __attribute__((noinline)) void event_loop(App *app)
             apply_gesture(app, &in, &redraw, &save, &recreate);
         }
         if (update_drag_preview(app)) redraw = 1;
+        /* The Folder Stack pin swaps to its close button and back. */
+        if (dock_ui_folder_open(app->ui) != app->stack_button_shown) redraw = 1;
         if (save) save_config(app);
         if (!running) break;
         if (program_poll_result(app,&recreate)) redraw = 1;
@@ -4463,7 +4538,7 @@ int main(int argc, char **argv)
     if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
     dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
-        app->renderer.pixels->encode565);
+        app->renderer.pixels->encode565,app->renderer.pixels->mix_half);
     app->drop_port = CreateMsgPort();
     if (!app->drop_port) { message("Cannot open the Workbench drop port."); goto done; }
     i = open_surface(app);
@@ -4476,7 +4551,7 @@ int main(int argc, char **argv)
         if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
         dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
-        app->renderer.pixels->encode565);
+        app->renderer.pixels->encode565,app->renderer.pixels->mix_half);
         app->surface_error[0] = 0;
         i = open_surface(app);
     }
@@ -4533,6 +4608,7 @@ done:
         DeleteMsgPort(app->drop_port);
     }
     for (i = 0; i < app->count; ++i) item_free(&app->items[i]);
+    dock_cache_free(&app->stack_button);
     /* PiP, input, the drop receiver and the surface are released. */
     if (app->failed && app->surface_error[0]) message(app->surface_error);
     if (app->screen) UnlockPubScreen(NULL, app->screen);

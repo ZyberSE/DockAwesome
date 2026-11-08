@@ -205,6 +205,10 @@ typedef struct {
     uint64_t settle_ticks, settle_peak;
     ULONG settles, settle_ms[16];
     int settle_samples;
+    /* Damage rendering: draws, full draws, and pixel sums for the share of
+       the canvas composed and converted per frame. */
+    ULONG damage_frames, damage_full, conversion_frames;
+    uint64_t compose_pixels, conversion_pixels;
 } ProfileStats;
 typedef struct App {
     DockSettings settings;
@@ -298,6 +302,8 @@ typedef struct App {
     int saved_priority, priority_changed;
     ULONG menu_seen;
     int left, top, width, height, active, hovered;
+    /* --bench-sweep: a synthetic pointer replaces the real one while active. */
+    int bench_speed, bench_active, bench_x, bench_y;
 } App;
 
 static void animation_cancel(App *app);
@@ -1291,6 +1297,12 @@ static int pointer_inside(App *app, int *x, int *y)
 {
     int inside;
     struct Layer *layer;
+    if (app->bench_active) {
+        *x = app->bench_x; *y = app->bench_y;
+        return *x >= 0 && *x < app->width && *y >= 0 && *y < app->height &&
+            dock_edge_hover(&app->settings, app->edge, app->placement, app->count,
+                app->width, app->height, *x, *y);
+    }
     *x = app->screen->MouseX-app->left; *y = app->screen->MouseY-app->top;
     if (dock_ui_busy(app->ui)) return 0;
     inside = IntuitionBase->FirstScreen == app->screen && *x >= 0 && *x < app->width && *y >= 0 && *y < app->height;
@@ -2874,6 +2886,15 @@ static void profile_report(App *app)
            (unsigned long)compose_us, (unsigned long)present_us,
            (unsigned long)conversion_us, (unsigned long)upload_us);
     fflush(stdout);
+    {
+        uint64_t canvas = (uint64_t)app->width*app->height;
+        printf("Damage: frames=%lu full=%lu compose_pixels_avg=%lu%% conversion_pixels_avg=%lu%%\n",
+            (unsigned long)app->stats.damage_frames, (unsigned long)app->stats.damage_full,
+            (unsigned long)(app->stats.damage_frames && canvas ?
+                app->stats.compose_pixels*100/(canvas*app->stats.damage_frames) : 0),
+            (unsigned long)(app->stats.conversion_frames && canvas ?
+                app->stats.conversion_pixels*100/(canvas*app->stats.conversion_frames) : 0));
+    }
     printf("Workbench programs: polls=%lu changes=%lu roundtrip_us_avg=%lu max=%lu native_menu_suspends=%lu\n",
         (unsigned long)app->stats.program_polls, (unsigned long)app->stats.program_changes,
         (unsigned long)(app->stats.program_polls ? app->stats.program_poll_ticks*1000000/app->clock_hz/app->stats.program_polls : 0),
@@ -3000,6 +3021,10 @@ static void present_frame(void *context, const DockImage *frame)
             if (revealed > app->stats.drag_reveal_peak) app->stats.drag_reveal_peak = revealed;
         }
         converted = app->profile ? profile_clock() : 0;
+        if (app->profile) {
+            ++app->stats.conversion_frames;
+            app->stats.conversion_pixels += (uint64_t)frame->width*frame->height;
+        }
         app->pip_visible = amiga_pip_present(app->pip);
         if (!app->pip_visible) interaction_cancel(app);
         if (app->profile) {
@@ -3021,6 +3046,8 @@ static void present_frame(void *context, const DockImage *frame)
         app->stats.present_ticks += profile_clock()-started;
         app->stats.conversion_ticks += timing.conversion_ticks;
         app->stats.upload_ticks += timing.upload_ticks;
+        ++app->stats.conversion_frames;
+        app->stats.conversion_pixels += (uint64_t)frame->width*frame->height;
     } else amiga_display_present(app->display, app->window, frame);
 }
 
@@ -3063,6 +3090,10 @@ static void draw(App *app)
     }
     dock_renderer_draw(&app->renderer, &app->canvas, (app->snapshot || app->pip_mode) ? &app->backdrop : NULL,
         icons, placement, count, &app->settings);
+    if (app->profile) {
+        ++app->stats.damage_frames; ++app->stats.damage_full;
+        app->stats.compose_pixels += (uint64_t)app->width*app->height;
+    }
     for (i = 0; i < count; ++i)
         if (icons[i] && app->items[row_item(app,i)].running) draw_running_dot(app,&placement[i]);
     if (dragged >= 0 && !app->gesture.remove_armed) {
@@ -3978,11 +4009,57 @@ static __attribute__((noinline)) void event_loop(App *app)
     animation_cancel(app); live_cancel(app);
 }
 
+/* --bench-sweep: after the first frame, move a synthetic pointer along the
+   icon centre line from the first plate end to the other and back at speed
+   pixels per frame, leave the dock, and run until the row settles. WaitTOF
+   paces each frame, so a retired PiP buffer is always free. The backdrop is
+   not polled: this measures frame cost, not capture. */
+static void bench_sweep(App *app)
+{
+    DockRect plate;
+    int bottom = app->edge == DOCK_EDGE_BOTTOM, start, end, along, centre, phase = 0;
+    update_target(app);
+    if (app->pip_mode) live_capture(app,1);
+    if (app->failed) return;
+    draw(app);
+    app->frames = 0;
+    app->stats.render_ticks = app->stats.present_ticks = 0;
+    app->stats.conversion_ticks = app->stats.upload_ticks = 0;
+    app->stats.min_ticks = UINT64_MAX; app->stats.max_ticks = 0;
+    app->stats.damage_frames = app->stats.damage_full = app->stats.conversion_frames = 0;
+    app->stats.compose_pixels = app->stats.conversion_pixels = 0;
+    if (!app->count || !dock_edge_panel_rect(&app->settings,app->edge,app->placement,app->count,
+            app->width,app->height,&plate)) return;
+    start = bottom ? plate.left : plate.top;
+    end = (bottom ? plate.right : plate.bottom)-1;
+    centre = bottom ? app->placement[0].y+app->placement[0].size/2 :
+        app->placement[0].x+app->placement[0].size/2;
+    along = start;
+    app->bench_active = 1;
+    while (!(SetSignal(0,0) & SIGBREAKF_CTRL_C)) {
+        int changed = 0;
+        if (phase < 2) {
+            app->bench_x = bottom ? along : centre;
+            app->bench_y = bottom ? centre : along;
+            if (!phase && (along += app->bench_speed) > end) { along = end; phase = 1; }
+            else if (phase == 1 && (along -= app->bench_speed) < start) phase = 2;
+        } else app->bench_x = app->bench_y = -1;
+        update_target(app); animation_profile_begin(app);
+        if (animation_needed(app)) changed = animate_row(app);
+        if (phase == 2 && !changed && !animation_needed(app)) break;
+        WaitTOF();
+        if (changed) draw(app);
+        animation_profile_end(app);
+    }
+    app->bench_active = 0;
+}
+
 static void usage(void)
 {
     puts("DockAwesome [--config file] [--size pixels] [--zoom pixels] [--levels n]\n"
          "            [--snapshot | --opaque | --pip] [--ammx] [--profile]\n"
          "            [--pip-dump prefix] [--pip-x-offset n] [--pip-y-offset n]\n"
+         "            [--bench-sweep speed]\n"
          "            [Workbench paths...] [--version]\n"
          "Drop Workbench icons to pin them. Click a pin to open it.\n"
          "Drag to reorder. Drag out or press Delete to remove a pin.\n"
@@ -3992,7 +4069,9 @@ static void usage(void)
          "--pip needs SAGA RGB565, Apollo core 11900+, and Intuition/Layers V50.\n"
          "Saved PiP settings use snapshot mode when PiP is unavailable.\n"
          "--pip-x-offset and --pip-y-offset set alignment from -128 to 128.\n"
-         "--pip-dump writes prefix-source.ppm and prefix-composed.ppm on exit.");
+         "--pip-dump writes prefix-source.ppm and prefix-composed.ppm on exit.\n"
+         "--bench-sweep 1..64 sweeps a synthetic pointer at that many pixels per\n"
+         "frame, prints the profile and exits.");
 }
 
 int main(int argc, char **argv)
@@ -4062,6 +4141,11 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--pip")) { app->pip_mode = explicit_pip = 1; app->snapshot = 0; }
         else if (!strcmp(argv[i], "--ammx")) app->use_ammx = 1;
         else if (!strcmp(argv[i], "--profile")) app->profile = 1;
+        else if (!strcmp(argv[i], "--bench-sweep")) {
+            app->bench_speed = i+1 < argc ? bounded_option(argv[++i],1,64) : INT_MAX;
+            if (app->bench_speed == INT_MAX) { puts("--bench-sweep needs a speed from 1 to 64."); free(app); return 20; }
+            app->profile = 1;
+        }
         else if (!strcmp(argv[i], "--pip-x-offset") || !strcmp(argv[i], "--pip-y-offset")) {
             int is_x = !strcmp(argv[i], "--pip-x-offset");
             if (i+1 >= argc) { puts("PiP alignment needs an integer from -128 to 128."); free(app); return 20; }
@@ -4152,7 +4236,7 @@ int main(int argc, char **argv)
     }
     initial_count = app->count;
     for (i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--config") || !strcmp(argv[i], "--size") || !strcmp(argv[i], "--zoom") || !strcmp(argv[i], "--levels") || !strcmp(argv[i], "--pip-dump") || !strcmp(argv[i], "--pip-x-offset") || !strcmp(argv[i], "--pip-y-offset")) { ++i; continue; }
+        if (!strcmp(argv[i], "--config") || !strcmp(argv[i], "--size") || !strcmp(argv[i], "--zoom") || !strcmp(argv[i], "--levels") || !strcmp(argv[i], "--pip-dump") || !strcmp(argv[i], "--pip-x-offset") || !strcmp(argv[i], "--pip-y-offset") || !strcmp(argv[i], "--bench-sweep")) { ++i; continue; }
         if (!strncmp(argv[i], "--", 2)) continue;
         pin_path(app, argv[i], 0);
     }
@@ -4202,7 +4286,8 @@ int main(int argc, char **argv)
     }
     program_poll_open(app);
     workbench_notify_open(app);
-    event_loop(app);
+    if (app->bench_speed) bench_sweep(app);
+    else event_loop(app);
     workbench_notify_close(app);
     program_poll_close(app);
     status = app->failed ? 20 : 0;

@@ -1094,6 +1094,258 @@ static void test_icon_runs(void)
     dock_cache_free(&cache);
 }
 
+
+/* Shared render fixture for the goldens and damage tests: three synthetic
+   icons with opaque, translucent and transparent runs, a patterned backdrop,
+   and the app's running dot at the app's position. */
+enum { FIX_COUNT = 5, FIX_SCENARIOS = 3*2*2*2*2*2*4 };
+typedef struct {
+    DockSettings s;
+    DockCache cache[3];
+    int edge, width, height;
+    DockImage canvas, backdrop;
+    unsigned char *coverage;
+} RenderFixture;
+
+static unsigned char fixture_dot_pixels[] = {
+    175,179,188,32, 175,179,188,210, 175,179,188,32,
+    175,179,188,210, 175,179,188,255, 175,179,188,210,
+    175,179,188,32, 175,179,188,210, 175,179,188,32
+};
+static const DockImage fixture_dot = {3,3,fixture_dot_pixels};
+
+static uint32_t fnv1a(uint32_t h, const unsigned char *p, size_t n)
+{
+    while (n--) { h ^= *p++; h *= 16777619u; }
+    return h;
+}
+
+static void fixture_sources(RenderFixture *f)
+{
+    static unsigned char src[3][64*64*4];
+    unsigned seed = 99;
+    int k, x, y;
+    for (k = 0; k < 3; ++k) {
+        DockImage source = {64,64,src[k]};
+        for (y = 0; y < 64; ++y) for (x = 0; x < 64; ++x) {
+            unsigned char *q = src[k]+(y*64+x)*4;
+            int dx = x-32, dy = y-32, d = dx*dx+dy*dy;
+            seed = seed*1103515245u+12345u;
+            q[0] = (unsigned char)(x*4+k*60); q[1] = (unsigned char)(y*4); q[2] = (unsigned char)(seed>>16);
+            if (k == 0) q[3] = d < 500 ? 255 : d < 800 ? (unsigned char)(800-d) : 0;
+            else if (k == 1) {
+                q[3] = (x/6+y/6)%3 ? 255 : (x%7 ? 120 : 0);
+                if ((x+y)%11 == 0) { q[0] = 255; q[1] = 0; q[2] = 255; }
+                if (x < 4 || y < 4 || x > 59 || y > 59) q[3] = 0;
+            } else q[3] = d < 300 ? 255 : d < 900 ? (unsigned char)(seed>>24) : 0;
+        }
+        memset(&f->cache[k],0,sizeof(f->cache[k]));
+        assert(dock_cache_build(&f->cache[k],&source,&f->s));
+    }
+}
+
+static void fixture_open(RenderFixture *f, int edge)
+{
+    int cross, length, i;
+    f->edge = edge;
+    length = dock_viewport_length(&f->s,FIX_COUNT);
+    cross = f->s.max_size+2*f->s.padding+12;
+    if (cross < dock_panel_thickness(&f->s)+DOCK_DESKTOP_GAP) cross = dock_panel_thickness(&f->s)+DOCK_DESKTOP_GAP;
+    f->width = edge == DOCK_EDGE_BOTTOM ? length : cross;
+    f->height = edge == DOCK_EDGE_BOTTOM ? cross : length;
+    f->canvas = (DockImage){f->width,f->height,malloc((size_t)f->width*f->height*4)};
+    f->backdrop = (DockImage){f->width,f->height,malloc((size_t)f->width*f->height*4)};
+    f->coverage = malloc((size_t)f->width*f->height);
+    assert(f->canvas.pixels && f->backdrop.pixels && f->coverage);
+    for (i = 0; i < f->width*f->height; ++i) {
+        unsigned char *q = f->backdrop.pixels+(size_t)i*4;
+        q[0] = (unsigned char)(i*3); q[1] = (unsigned char)(i/f->width*5); q[2] = (unsigned char)(i*i>>7); q[3] = 255;
+    }
+}
+
+static void fixture_close(RenderFixture *f)
+{
+    free(f->canvas.pixels); free(f->backdrop.pixels); free(f->coverage);
+    f->canvas.pixels = f->backdrop.pixels = NULL; f->coverage = NULL;
+}
+
+/* The pointer on the icon centre line: at rest, at the left (top) end, the
+   middle, and the right (bottom) end of the resting row. */
+static void fixture_layout(const RenderFixture *f, int pointer, DockPlacement *p)
+{
+    DockPlacement rest[FIX_COUNT];
+    int bottom = f->edge == DOCK_EDGE_BOTTOM, along, centre;
+    assert(dock_edge_layout(&f->s,(DockEdge)f->edge,FIX_COUNT,f->width,f->height,0,0,0,rest));
+    if (!pointer) { memcpy(p,rest,sizeof(rest)); return; }
+    centre = bottom ? rest[0].y+rest[0].size/2 : rest[0].x+rest[0].size/2;
+    along = pointer == 1 ? (bottom ? rest[0].x : rest[0].y)+2 :
+        pointer == 2 ? (bottom ? f->width : f->height)/2 :
+        (bottom ? rest[FIX_COUNT-1].x : rest[FIX_COUNT-1].y)+rest[FIX_COUNT-1].size-3;
+    assert(dock_edge_layout(&f->s,(DockEdge)f->edge,FIX_COUNT,f->width,f->height,
+        bottom ? along : centre, bottom ? centre : along, 1, p));
+}
+
+static void fixture_dot_position(const RenderFixture *f, const DockPlacement *icon, int *x, int *y)
+{
+    int inset = (f->s.base_size-2*DOCK_ICON_INSET+4)/9;
+    *x = icon->x+icon->size/2-fixture_dot.width/2;
+    *y = icon->y+icon->size/2-fixture_dot.height/2;
+    if (inset < 2) inset = 2;
+    inset += DOCK_DESKTOP_GAP+f->s.edge_padding;
+    if (f->edge == DOCK_EDGE_BOTTOM) *y = f->height-1-inset-fixture_dot.height/2;
+    else if (f->edge == DOCK_EDGE_RIGHT) *x = f->width-1-inset-fixture_dot.width/2;
+    else *x = inset-fixture_dot.width/2;
+}
+
+static void fixture_icons(const RenderFixture *f, const DockCache **icons)
+{
+    int i;
+    for (i = 0; i < FIX_COUNT; ++i) icons[i] = &f->cache[i%3];
+}
+
+static uint32_t fixture_checksum(const RenderFixture *f)
+{
+    uint32_t h = fnv1a(2166136261u,f->canvas.pixels,(size_t)f->width*f->height*4);
+    return fnv1a(h,f->coverage,(size_t)f->width*f->height);
+}
+
+/* Running dots on slots 0 and 3, drawn after the frame the old way. */
+static const int fixture_running[FIX_COUNT] = {1,0,0,1,0};
+
+/* Pixel-exact checksums of canvas plus coverage, generated once with the
+   full-frame renderer before damage rendering existed. A change here is a
+   rendering regression, never a table update. */
+static const uint32_t render_goldens[FIX_SCENARIOS] = {
+    0x1d1a8288, 0x8f43232f, 0x84b7daf1, 0xf6a46096, 0x8ccc2510, 0x7e9af103,
+    0x48541d09, 0xb1cb84b1, 0x0494c9de, 0xa1bc6675, 0x0c206437, 0x14ce343e,
+    0x91e50f12, 0x7abf6a05, 0xffbf9ea1, 0xa0332381, 0x52a4e958, 0x6593849c,
+    0xb9e8109e, 0xfbcb9db9, 0x8943428c, 0x017f0ca4, 0xf5906712, 0x4606d36d,
+    0x5081cad2, 0x4c8d9536, 0x32bbbd4c, 0xe7116e51, 0x2c88ea52, 0x716072a2,
+    0xe981d0ba, 0x9a62975d, 0x1d1a8288, 0x8f43232f, 0x84b7daf1, 0xf6a46096,
+    0x8ccc2510, 0x7e9af103, 0x48541d09, 0xb1cb84b1, 0x0494c9de, 0xa1bc6675,
+    0x0c206437, 0x14ce343e, 0x91e50f12, 0x7abf6a05, 0xffbf9ea1, 0xa0332381,
+    0x52a4e958, 0x6593849c, 0xb9e8109e, 0xfbcb9db9, 0x8943428c, 0x017f0ca4,
+    0xf5906712, 0x4606d36d, 0x5081cad2, 0x4c8d9536, 0x32bbbd4c, 0xe7116e51,
+    0x2c88ea52, 0x716072a2, 0xe981d0ba, 0x9a62975d, 0xf6243960, 0x93ebc9ef,
+    0x1faf51cf, 0x5d73f400, 0x65808cc1, 0xdea8a89f, 0x21b068b4, 0x24c964ae,
+    0x5bc4096a, 0x16b8affd, 0xbf0af790, 0x69e4b268, 0x40bc840a, 0x1ddab627,
+    0xded4e918, 0xd5d4da1f, 0x6da0b0ef, 0x88b77216, 0xff4e1a8e, 0x594e2e1a,
+    0x2af548bc, 0xf6c226c9, 0x2db50018, 0xc2e68212, 0x2f103d81, 0x6b692344,
+    0x2a07ef21, 0x19a0bfd6, 0x15229b6f, 0x96fd2589, 0x3abef3cc, 0x03363b67,
+    0xf6243960, 0x93ebc9ef, 0x1faf51cf, 0x5d73f400, 0x65808cc1, 0xdea8a89f,
+    0x21b068b4, 0x24c964ae, 0x5bc4096a, 0x16b8affd, 0xbf0af790, 0x69e4b268,
+    0x40bc840a, 0x1ddab627, 0xded4e918, 0xd5d4da1f, 0x6da0b0ef, 0x88b77216,
+    0xff4e1a8e, 0x594e2e1a, 0x2af548bc, 0xf6c226c9, 0x2db50018, 0xc2e68212,
+    0x2f103d81, 0x6b692344, 0x2a07ef21, 0x19a0bfd6, 0x15229b6f, 0x96fd2589,
+    0x3abef3cc, 0x03363b67, 0xa09a8da0, 0x320a5771, 0xc5ce8c5c, 0x37f50b33,
+    0x855f4a7c, 0x94da8d1d, 0x058557c6, 0x5a295e86, 0xe8f48812, 0xa8119f73,
+    0xa6cdcc9e, 0x729fa74b, 0xa543c7ee, 0x42c7475f, 0x69c6bb4e, 0xe06782b6,
+    0xf3060da0, 0xdc05571d, 0x44276c8b, 0x46a963bc, 0xcc3aca7c, 0x15565c89,
+    0x4238423d, 0x401c4006, 0x3b600812, 0x6b3d00e7, 0x40e4e1f5, 0x7f46ecf4,
+    0xec1f47ee, 0x2c5e7f93, 0xe3e97e25, 0x0dccca36, 0xa09a8da0, 0x320a5771,
+    0xc5ce8c5c, 0x37f50b33, 0x855f4a7c, 0x94da8d1d, 0x058557c6, 0x5a295e86,
+    0xe8f48812, 0xa8119f73, 0xa6cdcc9e, 0x729fa74b, 0xa543c7ee, 0x42c7475f,
+    0x69c6bb4e, 0xe06782b6, 0xf3060da0, 0xdc05571d, 0x44276c8b, 0x46a963bc,
+    0xcc3aca7c, 0x15565c89, 0x4238423d, 0x401c4006, 0x3b600812, 0x6b3d00e7,
+    0x40e4e1f5, 0x7f46ecf4, 0xec1f47ee, 0x2c5e7f93, 0xe3e97e25, 0x0dccca36,
+    0x34f1533f, 0xb53f2f37, 0xed44f88f, 0x7a78565c, 0xe5c27c6c, 0x67af22e5,
+    0x80b0f800, 0x83adc3b8, 0xc09e7def, 0xb847f5f8, 0xed234cfc, 0x44a8ec69,
+    0x671b8c23, 0x26e4551a, 0x26acb5b8, 0xa2595644, 0x08498ab7, 0x8916a1cb,
+    0xd38bba85, 0x79dd5c57, 0x45b411b4, 0x7b201289, 0x53b19699, 0x6934bc4c,
+    0xcf85cf27, 0x0179602c, 0x02cd73a2, 0xabf3e26a, 0x67726a4b, 0x4c55a81e,
+    0x459cf039, 0x3cecabd0, 0x34f1533f, 0xb53f2f37, 0xed44f88f, 0x7a78565c,
+    0xe5c27c6c, 0x67af22e5, 0x80b0f800, 0x83adc3b8, 0xc09e7def, 0xb847f5f8,
+    0xed234cfc, 0x44a8ec69, 0x671b8c23, 0x26e4551a, 0x26acb5b8, 0xa2595644,
+    0x08498ab7, 0x8916a1cb, 0xd38bba85, 0x79dd5c57, 0x45b411b4, 0x7b201289,
+    0x53b19699, 0x6934bc4c, 0xcf85cf27, 0x0179602c, 0x02cd73a2, 0xabf3e26a,
+    0x67726a4b, 0x4c55a81e, 0x459cf039, 0x3cecabd0, 0xa251c330, 0x2abe5bc5,
+    0x760bb050, 0x6362271e, 0x4171878c, 0x3db54521, 0xbecd8bf6, 0x77634c17,
+    0xac482ba2, 0x0172ee0b, 0x5e274d22, 0x9ab16936, 0x3882933e, 0xc5e2d507,
+    0x43b3281e, 0x1ba68a87, 0x73bff1b0, 0x375f40fa, 0x65453aef, 0x1b7a5c65,
+    0xd828740c, 0x4b460796, 0x512a1bbd, 0xc6a2dd17, 0x8cb82222, 0x62b06fa0,
+    0xac2a2ee9, 0x74335ddd, 0x647c93be, 0xd453b05c, 0x8012cfc5, 0x6ae61b87,
+    0xa251c330, 0x2abe5bc5, 0x760bb050, 0x6362271e, 0x4171878c, 0x3db54521,
+    0xbecd8bf6, 0x77634c17, 0xac482ba2, 0x0172ee0b, 0x5e274d22, 0x9ab16936,
+    0x3882933e, 0xc5e2d507, 0x43b3281e, 0x1ba68a87, 0x73bff1b0, 0x375f40fa,
+    0x65453aef, 0x1b7a5c65, 0xd828740c, 0x4b460796, 0x512a1bbd, 0xc6a2dd17,
+    0x8cb82222, 0x62b06fa0, 0xac2a2ee9, 0x74335ddd, 0x647c93be, 0xd453b05c,
+    0x8012cfc5, 0x6ae61b87, 0xa46d6f02, 0x748eacb4, 0x1eb00470, 0xccae443d,
+    0xc755d1c0, 0xfa274994, 0x6c4d8328, 0x09c8b820, 0x442acffe, 0xa4ed2b9a,
+    0x1586f67b, 0x307b8197, 0xb5f122a2, 0xb56af412, 0x643dde80, 0x509ee914,
+    0x0785f749, 0x44a5b900, 0xb971d18f, 0x1bfb84ad, 0xd0a2b297, 0x4d732b38,
+    0xbdb26263, 0x2cc9be35, 0x6c542211, 0x1126c10e, 0x5d3bed00, 0xef67a227,
+    0x55211ad1, 0x992e462e, 0x735f7783, 0x845e1ec1, 0xa46d6f02, 0x748eacb4,
+    0x1eb00470, 0xccae443d, 0xc755d1c0, 0xfa274994, 0x6c4d8328, 0x09c8b820,
+    0x442acffe, 0xa4ed2b9a, 0x1586f67b, 0x307b8197, 0xb5f122a2, 0xb56af412,
+    0x643dde80, 0x509ee914, 0x0785f749, 0x44a5b900, 0xb971d18f, 0x1bfb84ad,
+    0xd0a2b297, 0x4d732b38, 0xbdb26263, 0x2cc9be35, 0x6c542211, 0x1126c10e,
+    0x5d3bed00, 0xef67a227, 0x55211ad1, 0x992e462e, 0x735f7783, 0x845e1ec1
+};
+
+static int fixture_scenario(int edge, int captured, int glass, int pressed, int center,
+                            int end_gap, int pointer)
+{
+    return ((((((edge*2+captured)*2+glass)*2+pressed)*2+center)*2+end_gap)*4)+pointer;
+}
+
+static void test_render_goldens(void)
+{
+    RenderFixture f;
+    uint32_t sums[FIX_SCENARIOS];
+    int edge, captured, glass, pressed, center, end_gap, pointer, i, print = getenv("DOCK_PRINT_GOLDENS") != NULL;
+    DockPanelShape *shape = calloc(1,sizeof(*shape));
+    assert(shape);
+    memset(&f,0,sizeof(f));
+    for (end_gap = 0; end_gap < 2; ++end_gap) {
+        f.s = dock_settings_default();
+        f.s.levels = 9; f.s.max_size = 64;
+        f.s.end_gap = end_gap ? 6 : 0;
+        fixture_sources(&f);
+        for (edge = DOCK_EDGE_BOTTOM; edge <= DOCK_EDGE_RIGHT; ++edge) {
+            fixture_open(&f,edge);
+            for (captured = 0; captured < 2; ++captured)
+            for (glass = 0; glass < 2; ++glass)
+            for (pressed = 0; pressed < 2; ++pressed)
+            for (center = 0; center < 2; ++center)
+            for (pointer = 0; pointer < 4; ++pointer) {
+                DockPlacement p[FIX_COUNT];
+                const DockCache *icons[FIX_COUNT];
+                fixture_layout(&f,pointer,p);
+                fixture_icons(&f,icons);
+                memset(f.canvas.pixels,0xa5,(size_t)f.width*f.height*4);
+                memset(f.coverage,0x5a,(size_t)f.width*f.height);
+                if (glass) {
+                    DockRenderer r;
+                    memset(&r,0,sizeof(r));
+                    r.pixels = dock_backend_portable(); r.coverage = f.coverage;
+                    r.pressed_item = pressed ? 2 : 0; r.center_panel = center; r.edge = (DockEdge)edge;
+                    dock_renderer_draw(&r,&f.canvas,captured ? &f.backdrop : NULL,icons,p,FIX_COUNT,&f.s);
+                    dock_renderer_release(&r);
+                } else dock_render_oriented_mask(&f.canvas,captured ? &f.backdrop : NULL,icons,p,FIX_COUNT,
+                    &f.s,NULL,shape,f.coverage,pressed ? 2 : 0,edge,center,NULL);
+                for (i = 0; i < FIX_COUNT; ++i) if (fixture_running[i]) {
+                    int x, y;
+                    fixture_dot_position(&f,&p[i],&x,&y);
+                    dock_blend_masked(&f.canvas,&fixture_dot,x,y,f.coverage);
+                }
+                sums[fixture_scenario(edge,captured,glass,pressed,center,end_gap,pointer)] = fixture_checksum(&f);
+            }
+            fixture_close(&f);
+        }
+        for (i = 0; i < 3; ++i) dock_cache_free(&f.cache[i]);
+    }
+    free(shape);
+    if (print) {
+        for (i = 0; i < FIX_SCENARIOS; ++i) printf("0x%08lx,%s", (unsigned long)sums[i], i%6 == 5 ? "\n" : " ");
+        return;
+    }
+    for (i = 0; i < FIX_SCENARIOS; ++i) {
+        if (sums[i] != render_goldens[i]) printf("Golden %d: 0x%08lx, expected 0x%08lx\n",
+            i,(unsigned long)sums[i],(unsigned long)render_goldens[i]);
+        assert(sums[i] == render_goldens[i]);
+    }
+}
+
 int main(void)
 {
     DockSettings defaults = dock_settings_default();
@@ -1103,6 +1355,7 @@ int main(void)
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();
     test_animation_and_pointer_anchor(); test_reference_timing_and_panel(); test_rounded_panel();
     test_convert(); test_native565(); test_key565(); test_overlay_coverage();
+    test_render_goldens();
     printf("All core tests passed: normalization, alpha, layout bounds, clipping, 65536 blends, reorder, renderer.\n");
     printf("Default cache: %lu bytes/icon; 20 icons: %lu bytes.\n",
         (unsigned long)dock_cache_bytes(&defaults),

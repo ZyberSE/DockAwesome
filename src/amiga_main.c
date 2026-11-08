@@ -3720,11 +3720,13 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
     int was_active = app->gesture.active;
     DockGestureEffects effect = dock_gesture_update(&app->gesture, in);
     int index = pin_index(app, effect.pin_id);
-    /* Decide at the press whether it closes the stack: in native modes the
-       press activates the dock window, and the stack may finish closing on
-       that before the release arrives. */
+    /* Decide at the press whether it closes the stack. In native modes the
+       press activates the dock window, which closes the stack, sometimes
+       at once (no backdrop) or before the release arrives; the button the
+       user pressed is the one last drawn. */
     if (!was_active && app->gesture.active)
-        app->stack_close_press = dock_ui_folder_open(app->ui) || dock_ui_folder_moving(app->ui);
+        app->stack_close_press = app->stack_button_shown ||
+            dock_ui_folder_open(app->ui) || dock_ui_folder_moving(app->ui);
     int movable = index >= 0 && !app->items[index].temporary && !app->items[index].stack;
     int commit = (effect.flags & DOCK_EFFECT_REORDER) && movable &&
         effect.target_slot >= 0 && effect.target_slot < stack_index(app);

@@ -734,7 +734,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
             if (e->ie_Code == SELECTUP && c->close_held) {
                 c->close_held = 0; e->ie_Class = IECLASS_NULL; continue;
             }
-            if (e->ie_Code == SELECTDOWN && c->close_valid && !c->held &&
+            if (e->ie_Code == SELECTDOWN && clean && c->close_valid && !c->held &&
                 IntuitionBase->FirstScreen == c->dock_screen &&
                 c->dock_screen->MouseX >= c->close_left && c->dock_screen->MouseX < c->close_right &&
                 c->dock_screen->MouseY >= c->close_top && c->dock_screen->MouseY < c->close_bottom) {

@@ -30,7 +30,7 @@ typedef int (*DockUIReadIcon)(const void *context, const char *path, DockImage *
 /* The caller keeps screen and the graphics/intuition libraries alive. */
 DockUI *dock_ui_create(struct Screen *screen, int window_shapes);
 void dock_ui_set_converters(DockUI *ui, DockConvertRGB24 encode, DockConvertRGB565 decode,
-    DockConvertRGB565 encode565, DockMixHalf mix_half);
+    DockConvertRGB565 encode565);
 /* Called with 1 before and 0 after a UI call that blocks the main task, such
    as the ASL drawer requester. Suspend PiP and input capture in between. */
 typedef void (*DockUIBlocking)(void *context, int blocking);
@@ -56,6 +56,8 @@ void dock_ui_popup_span(const DockUI *ui, int row, int *left, int *right);
 int dock_ui_folder_pending(const DockUI *ui);
 /* The Folder Stack view is open and not closing. */
 int dock_ui_folder_open(const DockUI *ui);
+/* The Folder Stack view is opening or closing. */
+int dock_ui_folder_moving(const DockUI *ui);
 ULONG dock_ui_folder_frame_delay(const DockUI *ui);
 int dock_ui_folder_step(DockUI *ui);
 void dock_ui_finish_folder_motion(DockUI *ui);

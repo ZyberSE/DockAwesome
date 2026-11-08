@@ -778,11 +778,12 @@ static void tint_popup_glass(DockUI *ui)
     const FolderView *folder = ui->popup_shape && ui->folder.path[0] ? &ui->folder : NULL;
     int radius = ui->popup_shape ? POPUP_RADIUS : 0, tint_shift = ui->glass_tint_shift;
     int width = glass->width, height = glass->height, y;
-    const uint32_t mask = (255U>>tint_shift)*UINT32_C(0x01010100);
     const uint32_t rim = (menu_colors[MENU_RIM]<<8)|255;
-    const uint32_t tint = glass_tint(tint_shift);
+    uint32_t mask, tint;
     if (!tint_shift || !glass->pixels) return;
     ui->glass_tint_shift = 0;
+    mask = (255U>>tint_shift)*UINT32_C(0x01010100);
+    tint = glass_tint(tint_shift);
     for (y = 0; y < height; ++y) {
         int lo, hi, inner_lo, inner_hi, x;
         uint32_t *row = (uint32_t *)glass->pixels+(size_t)y*width;

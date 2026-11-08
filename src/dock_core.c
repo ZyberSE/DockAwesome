@@ -518,10 +518,31 @@ static void logical_positions(const DockSettings *s, int count, int width, int m
     for (i = 0; i < count; ++i) out[i].x = positions[i]+shift;
 }
 
+/* Share of the full zoom (Q24) for an icon distance pixels from the
+   pointer. The macOS Dock, measured at 2x, grows the icons 1, 2 and 3
+   pitches away by 0.86, 0.48 and 0.04 of the zoom and the fourth not at all.
+   A Catmull-Rom curve through those samples is smooth, and its weights sum
+   to one at every phase, so the row's total growth never changes while the
+   pointer moves and icons outside the wave stay still. It dips below zero by
+   at most 0.008 between 3 and 4 pitches. offset is the pointer's distance
+   in pitches, Q16. */
+static int32_t wave_weight(int32_t offset)
+{
+    static const int32_t sample[6] = {256, 220, 123, 10, 0, 0}; /* Q8, by pitch */
+    int32_t q = offset < 0 ? -offset : offset, f = (q & 65535) >> 4, f2, f3;
+    int j = q >> 16;
+    if (j > 3) return 0;
+    /* Catmull-Rom basis for samples j-1 .. j+2, Q12 phase, Q24 weights. */
+    f2 = f*f; f3 = (f2 >> 12)*f;
+    return sample[j ? j-1 : 1]*((-f3+2*f2-(f<<12))/2/256)+
+        sample[j]*((3*f3-5*f2+(INT32_C(2)<<24))/2/256)+
+        sample[j+1]*((-3*f3+4*f2+(f<<12))/2/256)+sample[j+2]*((f3-f2)/2/256);
+}
+
 int dock_layout(const DockSettings *s, int count, int width, int height,
                 int mx, int my, int active, DockPlacement *out)
 {
-    int i, total, rest, start, pitch, reach, x, panel_top, panel_bottom, baseline, constrained = 0;
+    int i, total, rest, start, pitch, x, panel_top, panel_bottom, baseline, constrained = 0;
     int logical_size[DOCK_MAX_ITEMS];
     if (!dock_settings_valid(s) || !out || count < 0 || count > DOCK_MAX_ITEMS ||
         width < 1 || height < s->max_size + s->padding * 2) return 0;
@@ -540,24 +561,25 @@ int dock_layout(const DockSettings *s, int count, int width, int height,
             out[i] = (DockPlacement){x+extra_gap(s,count,i-1), y, s->base_size, 0};
         return 1;
     }
-    reach = pitch * 4;
     total = count > 1 ? s->end_gap : 0;
     for (i = 0; i < count; ++i) {
-        int distance = mx - (start+i*pitch+s->base_size/2+extra_gap(s,count,i-1));
+        /* Pointer offset in pitches (Q16), floored the same way for every
+           icon, so all icons see the same phase. */
+        int distance = mx-(start+i*pitch+s->base_size/2+extra_gap(s,count,i-1));
         int level = 0;
-        uint32_t weight = 0;
-        if (distance < 0) distance = -distance;
-        if (s->max_size > s->base_size && distance < reach) {
-            /* Rounded broad wave: smoothstep has zero slope at the peak and
-               tail, unlike the old narrow squared cusp. Fixed-point only. */
-            uint32_t t = (uint32_t)(reach-distance) * 256 / (uint32_t)reach;
-            weight = t * t * (768 - 2*t);
-            level = (int)(((uint32_t)(s->levels-1)*weight + (UINT32_C(1)<<23)) >> 24);
+        int32_t weight = 0;
+        if (s->max_size > s->base_size && distance > -4*pitch && distance < 4*pitch) {
+            int32_t offset = (int32_t)distance*65536;
+            weight = wave_weight(offset >= 0 ? offset/pitch : -((-offset+pitch-1)/pitch));
         }
+        if (weight > 0)
+            level = (int)(((uint32_t)(s->levels-1)*(uint32_t)weight + (UINT32_C(1)<<23)) >> 24);
         out[i].level = level;
         out[i].size = level_size(s, level);
+        /* The slightly negative tail stays in the logical size, so the row's
+           total growth is the same at every pointer position. */
         logical_size[i] = s->base_size*256+
-            (int)(((uint32_t)(s->max_size-s->base_size)*weight+UINT32_C(32768))>>16);
+            (int)(((s->max_size-s->base_size)*(weight/16)+2048)/4096);
         total += out[i].size;
     }
     for (i = 0; i+1 < count; ++i)

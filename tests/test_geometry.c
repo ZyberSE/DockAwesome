@@ -274,7 +274,9 @@ static void test_zoom_room_after_insertion(void)
         if (small[i].size > small_peak) small_peak = small[i].size;
         if (grown[i].size > grown_peak) grown_peak = grown[i].size;
     }
-    assert(small_peak == 45 && grown_peak >= s.max_size-2);
+    /* The macOS wave grows the row a little less, so the short row fits one
+       more pixel of zoom than the previous wave (45). */
+    assert(small_peak == 46 && grown_peak >= s.max_size-2);
 }
 
 static void test_stack_gap(void)

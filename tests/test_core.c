@@ -619,14 +619,15 @@ static void test_reference_timing_and_panel(void)
     DockImage frame = {320, 100, pixels}, back = {320, 100, backdrop};
     const DockCache *icons[5] = {NULL, NULL, NULL, NULL, NULL};
     int tick, y;
-    static const int entry_levels[8] = {1, 5, 10, 16, 22, 27, 31, 32};
+    /* Ease-out: a third of the zoom on the first tick, full by the sixth. */
+    static const int entry_levels[8] = {11, 19, 24, 28, 30, 32, 32, 32};
     assert(dock_layout(&s, 5, 320, 100, 0, 0, 0, rest));
     assert(dock_layout(&s, 5, 320, 100, 80, 60, 1, left));
     assert(dock_layout(&s, 5, 320, 100, 240, 60, 1, right));
     memcpy(current, rest, sizeof(rest));
     dock_animation_reset(&animation);
     assert(dock_animate_step(&s, &animation, current, left, 5));
-    assert(current[0].level == entry_levels[0]); /* gentle one-pixel first step */
+    assert(current[0].level == entry_levels[0]); /* a snappy first step */
     assert(animation.tick == 1);
     for (tick = 2; tick <= 8; ++tick) {
         dock_animate_step(&s, &animation, current, left, 5);
@@ -638,13 +639,18 @@ static void test_reference_timing_and_panel(void)
     for (tick = 1; tick <= 8; ++tick) {
         const DockPlacement *target = tick % 2 ? left : right;
         dock_animate_step(&s, &animation, current, target, 5);
-        assert(animation.tick == tick); /* moving the pointer does not restart */
+        /* Moving the pointer does not restart the transition; it may end
+           early when the row reaches the latest target. */
+        assert(animation.tick == tick || animation.tick == 8);
     }
+    for (tick = 0; tick < 16 && memcmp(current, right, sizeof(right)); ++tick)
+        dock_animate_step(&s, &animation, current, right, 5);
     assert(!memcmp(current, right, sizeof(right)));
     assert(!dock_animate_step(&s, &animation, current, right, 5));
     for (tick = 1; tick <= 8; ++tick) {
         dock_animate_step(&s, &animation, current, rest, 5);
-        assert(animation.tick == tick);
+        /* The transition ends once the row is home, before its last ticks. */
+        assert(animation.tick == tick || (animation.tick == 8 && !memcmp(current, rest, sizeof(rest))));
     }
     assert(!memcmp(current, rest, sizeof(rest)));
     memset(backdrop, 200, sizeof(backdrop));

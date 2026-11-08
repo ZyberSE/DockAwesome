@@ -466,9 +466,14 @@ icon centre). Share of the full zoom per icon from the pointer:
 | 3 | ~0.04 | 0.15 |
 | 4 | 0 | 0 |
 
-- [ ] Make the third icon from the pointer grow ~0.04 of the zoom instead
+- [x] Make the third icon from the pointer grow ~0.04 of the zoom instead
       of 0.15, keeping steps 0-2; add a geometry test for the profile.
+      Catmull-Rom wave; at Size 42, 195%: 1.00/0.88/0.45/0.03/0.
 - [ ] Check on the Vampire against the macOS screenshot.
+- [x] Entry: cubic ease-out over the same 8 ticks (user: macOS feels
+      snappier). Note: the macOS video in docs/macos-reference.md shows an
+      S-curve of about 150 ms, which the old smoothstep matched at Size 42
+      (158 ms measured); the ease-out is faster at the start than that.
 - Also reported: the entry feels less snappy than macOS. At Size 72 the
   8-tick entry took 332 ms before damage rendering (36 ms frames on a
   20 ms tick); re-measure after damage rendering before changing the curve.

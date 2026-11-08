@@ -21,13 +21,19 @@ The Nova artwork grew from about 52 to 102 px wide. The Finder artwork stayed
 Nova, Docker, and Kitty reached about 80, 112, 132, 132, 116, and 88 px.
 Resting artwork measured about 66 px.
 
-DockAwesome uses a smoothstep wave over four resting icon pitches on each
-side. At a shared midpoint, the factors are about 1.04, 1.32, 1.68, 1.96,
-1.96, 1.68, 1.32, and 1.04 before rounding.
+A 2x screenshot of a hovered macOS Dock (rest 96 px, hovered 187 px) gives
+the profile at an icon centre: the icons 1, 2 and 3 pitches away grow 0.84 to
+0.87, 0.47 to 0.49 and about 0.04 of the full zoom; the fourth stays at rest.
+DockAwesome uses a Catmull-Rom curve through 1, 0.86, 0.48 and 0.04 at whole
+pitches. Its weights sum to one at every pointer phase, so the row's total
+growth is constant and icons outside the wave do not move. At a shared
+midpoint the shares are about 0.96, 0.69 and 0.24 (the video above: 1.0,
+0.70 to 0.76 and 0.21 to 0.33).
 
 ## Timing and pointer placement
 
-A clear entry from 0.750 to 0.917 s shows these plate heights:
+A clear entry from 0.750 to 0.917 s shows these plate heights (an S-curve:
+half the change after about 80 ms, all of it after about 150 ms):
 
 ```text
 1835, 1839, 1863, 1910, 1970, 2003, 2089, 2112, 2143, 2152

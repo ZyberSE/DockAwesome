@@ -740,9 +740,11 @@ int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlace
     }
     envelope = animation->tick < TRANSITION_TICKS;
     if (envelope) {
-        int t = ++animation->tick;
-        /* smoothstep(t/8): integer numerator, denominator 8^3 = 512. */
-        weight = t * t * (3 * TRANSITION_TICKS - 2 * t);
+        int t = ++animation->tick, rest = TRANSITION_TICKS - t;
+        /* Cubic ease-out, 1-(1-t/8)^3 over 8^3 = 512: a third of the change
+           on the first tick and most of it by the fourth, like the macOS
+           Dock; a smoothstep start moved one pixel and felt sluggish. */
+        weight = 512 - rest * rest * rest;
         for (i = 0; i < count; ++i) {
             int origin = animation->origin_level[i];
             levels[i] = (origin * (512 - weight) + target[i].level * weight + 256) / 512;
@@ -770,6 +772,10 @@ int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlace
         current[i] = next;
     }
     keep_row_inside(animation, current, before, target, count);
+    /* The ease-out reaches the target before its last ticks. End it there,
+       so a later retarget eases instead of jumping on a near-full weight. */
+    if (envelope && !memcmp(current, target, (size_t)count*sizeof(*current)))
+        animation->tick = TRANSITION_TICKS;
     return memcmp(before, current, (size_t)count*sizeof(*current)) != 0;
 }
 

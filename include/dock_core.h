@@ -59,6 +59,8 @@ int dock_items_fit(const DockSettings *s, int count, int viewport_length);
 /* Normalizes visible alpha bounds to square boxes, retaining aspect ratio.
    Caller owns source. Failure leaves output empty. */
 int dock_cache_build(DockCache *out, const DockImage *source, const DockSettings *s);
+/* The same, with the artwork filling fill/256 of an icon's usual extent. */
+int dock_cache_build_scaled(DockCache *out, const DockImage *source, const DockSettings *s, int fill);
 /* One normalized image of size x size, as level 0 of a cache would be. */
 int dock_icon_build(DockImage *out, const DockImage *source, int size);
 void dock_cache_free(DockCache *cache);

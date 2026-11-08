@@ -397,6 +397,42 @@ static void test_icon_build(void)
     assert(!dock_icon_build(&icon,&source,DOCK_MIN_ICON_SIZE-1) && !icon.pixels);
 }
 
+/* A scaled build keeps the box sizes and shrinks the artwork about the
+   centre: an opaque square fills 56 of a 64 px box at full fill, 50 at 230. */
+static void test_scaled_fill(void)
+{
+    unsigned char pixels[16*16*4];
+    DockImage source = {16,16,pixels};
+    DockSettings s = dock_settings_default();
+    DockCache full, scaled;
+    int l, i;
+    for (i = 0; i < 16*16; ++i) {
+        pixels[i*4] = 40; pixels[i*4+1] = 80; pixels[i*4+2] = 120; pixels[i*4+3] = 255;
+    }
+    s.base_size = 32; s.max_size = 64;
+    assert(dock_cache_build(&full,&source,&s));
+    assert(dock_cache_build_scaled(&scaled,&source,&s,256));
+    for (l = 0; l < full.levels; ++l)
+        assert(!memcmp(full.image[l].pixels,scaled.image[l].pixels,
+            (size_t)full.image[l].width*full.image[l].height*4));
+    dock_cache_free(&scaled);
+    assert(!dock_cache_build_scaled(&scaled,&source,&s,0) && !scaled.levels);
+    assert(dock_cache_build_scaled(&scaled,&source,&s,230));
+    for (l = 0; l < full.levels; ++l) {
+        const DockImage *a = &full.image[l], *b = &scaled.image[l];
+        int n = a->width, wa = 0, wb = 0, x;
+        assert(b->width == n && b->height == n);
+        for (x = 0; x < n; ++x) {
+            wa += a->pixels[((size_t)(n/2)*n+x)*4+3] > 127;
+            wb += b->pixels[((size_t)(n/2)*n+x)*4+3] > 127;
+        }
+        assert(wb < wa && wb >= wa*230/256-1);
+        if (n == 64) assert(wa == 56 && wb == 50);
+    }
+    dock_cache_free(&full);
+    dock_cache_free(&scaled);
+}
+
 /* Bicubic resampling: exact at 1:1, flat areas stay flat when
    enlarged, and reductions average fine stripes instead of aliasing. */
 static void test_resampling(void)
@@ -1783,7 +1819,7 @@ int main(void)
     DockSettings defaults = dock_settings_default();
     test_normalize(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_animation_no_overlap(); test_layout(); test_blend();
     test_mix(); test_pressed_artwork(); test_side_panel_coverage(); test_reorder(); test_renderer();
-    test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build(); test_icon_runs();
+    test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build(); test_scaled_fill(); test_icon_runs();
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();
     test_animation_and_pointer_anchor(); test_reference_timing_and_panel(); test_rounded_panel();
     test_convert(); test_native565(); test_key565(); test_overlay_coverage();

@@ -3286,18 +3286,18 @@ static int in_capsule(int x, int y, int ax, int ay, int bx, int by, int r)
 }
 
 /* While the Folder Stack is open its pin becomes a close button, as in the
-   macOS Dock: smoked glass a little smaller than the icon, with a light rim
-   and a white chevron toward the screen edge. It is drawn at the zoom size
-   with 4x4 samples per pixel and built into a cache like any icon, so it
-   zooms and filters like the others. Built with the surface: a 256 px
+   macOS Dock: smoked glass a little smaller than an icon (the cache scales
+   it to 90%, since it fits any artwork to the box), with a light rim and a
+   thin, soft white chevron toward the screen edge. It is drawn at the zoom
+   size with 4x4 samples per pixel and built into a cache like any icon, so
+   it zooms and filters like the others. Built with the surface: a 256 px
    source took 2.3 s on the 68080 and stalled the first Folder Stack
    opening. */
 static void stack_button_build(App *app)
 {
     enum { SURFACE = 44, SURFACE_ALPHA = 176, RIM = 132, RIM_ALPHA = 220, MARK = 212 };
     int n = app->settings.max_size, s16 = n*8; /* positions in 1/8 px */
-    int lo = s16/20, hi = s16-lo, side = hi-lo; /* the square, inset on all sides */
-    int radius = side*22/100, rim = side/40 > 8 ? side/40 : 8, stroke = side*26/1000;
+    int radius = s16*22/100, rim = s16/40 > 8 ? s16/40 : 8, stroke = s16*26/1000;
     /* The chevron for a bottom dock ("v"), as percentages of the size. */
     int ax = 36, ay = 44, bx = 50, by = 58, cx = 64, cy = 44, x, y, ok;
     DockImage source = {n,n,NULL};
@@ -3320,7 +3320,7 @@ static void stack_button_build(App *app)
             int px = x*8+1+2*sx, py = y*8+1+2*sy, k;
             for (k = 0; k < 2; ++k) {
                 /* The rounded square, then the same inset by the rim. */
-                int edge = lo+(k ? rim : 0), far = hi-(k ? rim : 0), r = radius-(k ? rim : 0);
+                int edge = k ? rim : 0, far = s16-edge, r = radius-edge;
                 int dx = px < edge+r ? edge+r-px : px >= far-r ? px-(far-r) : 0;
                 int dy = py < edge+r ? edge+r-py : py >= far-r ? py-(far-r) : 0;
                 if (px >= edge && py >= edge && px < far && py < far &&
@@ -3338,7 +3338,7 @@ static void stack_button_build(App *app)
         }
         p[3] = (unsigned char)((alpha+8)/16);
     }
-    ok = dock_cache_build(&app->stack_button,&source,&app->settings);
+    ok = dock_cache_build_scaled(&app->stack_button,&source,&app->settings,230);
     free(source.pixels);
     if (!ok) dock_cache_free(&app->stack_button);
 }

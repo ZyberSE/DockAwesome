@@ -2,6 +2,8 @@
 
 ## Communication
 
+- A local build is "build N", not a version. Versions exist only for
+  release packages (for example "1.0 beta 1").
 - Reply to the user in Swedish, in plain words. Present comparisons as
   "icon one, two, three steps from the pointer" with sizes in pixels, not
   internal terms such as falloff, tail or neighbour index.

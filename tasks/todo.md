@@ -516,3 +516,19 @@ icon centre). Share of the full zoom per icon from the pointer:
       now grows equally above and below for accents, descenders and the
       label's own ink. Build 186 installed (build 184 in
       WBStartup/Disabled/DockAwesome-build184.old).
+
+## Folder Stack motion and close button (2026-11-08)
+
+- [x] Open in Workbench glyph drawn with 4x4 antialiasing.
+- [x] The stack grows from its pin with a strip reveal (open 160 ms, close
+      130 ms, cubic ease-out); measured on the Vampire at open 176 ms in 8
+      frames and close 140 ms in 6, about 1 ms per frame.
+- [x] While open, the pin morphs into a flat close button with a chevron
+      toward the screen edge, and back when it closes.
+- [x] Codex review fixes: no clicks in the unrevealed part, the close button
+      consumes its press in PiP mode, closes (not reopens) in native modes,
+      and keeps its release across shutdown. Final Codex review clean.
+- [x] Build 207 installed in WBStartup (build 186 in
+      WBStartup/Disabled/DockAwesome-build186.old); click on the pin opens,
+      click on the close button closes and stays closed. Old rollbacks
+      0.178, build180 and build184 are locked by Workbench until a reboot.

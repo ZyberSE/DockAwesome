@@ -9,7 +9,10 @@ struct RastPort;
 typedef struct AmigaDisplay AmigaDisplay;
 AmigaDisplay *amiga_display_open(struct Screen *screen, int width, int height);
 void amiga_display_close(AmigaDisplay *display);
-void amiga_display_set_converters(AmigaDisplay *display, DockConvertRGB24 encode, DockConvertRGB565 decode);
+/* encode565 writes big-endian RGB565, used for direct uploads to RGB16
+   bitmaps; NULL keeps the RGB24 upload. */
+void amiga_display_set_converters(AmigaDisplay *display, DockConvertRGB24 encode, DockConvertRGB565 decode,
+    DockConvertRGB565 encode565);
 int amiga_display_capture(AmigaDisplay *display, DockImage *image, int x, int y);
 /* Native RGB16 cache: -1 unsupported/changed bitmap, 0 equal, 1 copied.
    A valid check limits comparison in canvas coordinates. Damage still

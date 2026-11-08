@@ -129,6 +129,10 @@ typedef struct {
     volatile int external_dragged, external_cancelled;
     ULONG external_seconds, external_micros;
     volatile int right_held, menu_cancelled, ui_busy, popup_open, popup_dismiss;
+    /* The Folder Stack's close button in screen coordinates, while it is
+       shown: a press there closes the stack and the pair is consumed. */
+    volatile int close_valid, close_held;
+    volatile int close_left, close_top, close_right, close_bottom;
     volatile ULONG menu_serial;
     uint32_t menu_pin_id;
     int menu_x, menu_y;
@@ -336,6 +340,18 @@ typedef struct App {
     ULONG vblank_field, vblank_check_field;
     uint64_t vblank_check_at, vblank_armed_at;
     int vblank_open, vblank_armed, vblank_rate_ok, no_vsync;
+    /* The close button that replaces the Folder Stack pin while it is
+       open, built with the surface for its settings and edge. */
+    DockCache stack_button;
+    int stack_button_shown;
+    /* The pin morphs between the stack's icon (0) and the close button
+       (256) over eight animation ticks. Two frames alternate so the
+       renderer sees a new image each tick. */
+    int morph;
+    DockCache morph_cache;
+    unsigned char *morph_pixels[2];
+    int morph_flip;
+    int stack_close_press;
 } App;
 
 static void animation_cancel(App *app);
@@ -344,6 +360,7 @@ static uint64_t profile_clock(void);
 static int viewport_limit(const App *app, DockEdge edge);
 static void input_invalidate(App *app);
 static void sync_input_ui(App *app);
+static void stack_button_build(App *app);
 
 static int intuition_extension(ULONG offset)
 {
@@ -666,7 +683,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
     InputContext *c = context;
     int moved = 0, notify = 0;
     /* A held, external or right-button state can end on another screen. */
-    int engaged = c->held || c->external_held || c->right_held;
+    int engaged = c->held || c->external_held || c->right_held || c->close_held;
     for (e = events; e; e = e->ie_NextEvent) {
         if (e->ie_Class == IECLASS_NULL && c->shell_close &&
             e->ie_EventAddress == c->shell_close) {
@@ -713,6 +730,18 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
                 c->right_held = 0; e->ie_Class = IECLASS_NULL; continue;
             }
             if (e->ie_Code == MENUDOWN && c->right_held) {
+                e->ie_Class = IECLASS_NULL; continue;
+            }
+            if (e->ie_Code == SELECTUP && c->close_held) {
+                c->close_held = 0; e->ie_Class = IECLASS_NULL; continue;
+            }
+            if (e->ie_Code == SELECTDOWN && clean && c->close_valid && !c->held &&
+                IntuitionBase->FirstScreen == c->dock_screen &&
+                c->dock_screen->MouseX >= c->close_left && c->dock_screen->MouseX < c->close_right &&
+                c->dock_screen->MouseY >= c->close_top && c->dock_screen->MouseY < c->close_bottom) {
+                /* The close button owns this pair; the main task dismisses
+                   the Folder Stack as for a right-click outside it. */
+                c->close_held = c->popup_dismiss = 1;
                 e->ie_Class = IECLASS_NULL; continue;
             }
             if (e->ie_Code == MENUDOWN && c->popup_open &&
@@ -803,7 +832,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
     }
     /* Pointer motion on another screen cannot change the dock. The live
        timer still notices when the dock screen returns to the front. */
-    if (notify && (engaged || c->held || c->external_held || c->right_held ||
+    if (notify && (engaged || c->held || c->external_held || c->right_held || c->close_held ||
         IntuitionBase->FirstScreen == c->dock_screen)) Signal(c->task, c->signal);
     return events;
 }
@@ -1280,7 +1309,7 @@ static int open_surface(App *app)
     if (!app->display || !image_alloc(&app->canvas, app->width, app->height) ||
         ((app->snapshot || app->pip_mode) && !image_alloc(&app->backdrop, app->width, app->height))) return 0;
     amiga_display_set_converters(app->display,app->renderer.pixels->rgba_to_rgb24,
-        app->renderer.pixels->decode565);
+        app->renderer.pixels->decode565,app->renderer.pixels->encode565);
     app->active = 0; app->hovered = -1;
     memset(app->placement, 0, sizeof(app->placement));
     if (!dock_edge_layout(&app->settings, app->edge, app->count, app->width, app->height,
@@ -1344,6 +1373,7 @@ static int open_surface(App *app)
         if (!app->drop_catcher) return 0;
     }
     shift_held_drops(app,0);
+    stack_button_build(app);
     return 1;
 }
 
@@ -1376,6 +1406,7 @@ static int pointer_inside(App *app, int *x, int *y)
 
 static int animation_needed(const App *app)
 {
+    if (app->morph != (dock_ui_folder_open(app->ui) ? 256 : 0)) return 1;
     return (app->moving_item && app->held_icon.level != app->held_target.level) ||
         memcmp(row_placement(app), app->target, sizeof(*app->placement)*row_count(app)) != 0;
 }
@@ -1448,8 +1479,15 @@ static void update_hover_label(App *app)
 static int animate_row(App *app)
 {
     DockPlacement *row = app->moving_item ? app->moving_placement : app->placement;
+    int morph_target = dock_ui_folder_open(app->ui) ? 256 : 0;
     int changed = dock_edge_animate(&app->settings, app->edge, &app->animation,
         row, app->target, row_count(app));
+    if (app->morph != morph_target) {
+        /* Six ticks, about as long as the Folder Stack motion. */
+        app->morph = app->morph < morph_target ? (app->morph+43 < 256 ? app->morph+43 : 256) :
+            (app->morph > 43 ? app->morph-43 : 0);
+        changed = 1;
+    }
     if (app->moving_item && app->held_icon.level != app->held_target.level)
         changed |= dock_animate_step(&app->settings, &app->held_animation,
             &app->held_icon, &app->held_target, 1);
@@ -1582,7 +1620,9 @@ static void animation_schedule(App *app)
             app->vblank_check_field += fields; app->vblank_check_at = now;
         }
     }
-    if (fast && delay == 20000 && app->vblank_open && app->vblank_rate_ok && !app->no_vsync) {
+    /* Zoom ticks and Folder Stack motion frames (timed, 4 ms requests)
+       both follow the display. */
+    if (fast && delay <= 20000 && app->vblank_open && app->vblank_rate_ok && !app->no_vsync) {
         /* One tick per display field. A field that passes before the read
            below only delays the tick by one field. */
         app->vblank.armed = 1;
@@ -3234,6 +3274,126 @@ static DockOverlay running_dot(const App *app, const DockPlacement *icon)
     return (DockOverlay){&dot,x,y};
 }
 
+/* A capsule from (ax,ay) to (bx,by) with radius r contains (x,y); no
+   division: the perpendicular test compares cross^2 with r^2*length^2. */
+static int in_capsule(int x, int y, int ax, int ay, int bx, int by, int r)
+{
+    long dx = bx-ax, dy = by-ay, px = x-ax, py = y-ay;
+    long dot = px*dx+py*dy, length = dx*dx+dy*dy, cross = px*dy-py*dx;
+    if (dot <= 0) return px*px+py*py <= (long)r*r;
+    if (dot >= length) { px = x-bx; py = y-by; return px*px+py*py <= (long)r*r; }
+    return (int64_t)cross*cross <= (int64_t)r*r*length;
+}
+
+/* While the Folder Stack is open its pin becomes a close button, as in the
+   macOS Dock: a dark rounded square with a light rim and a white chevron
+   toward the screen edge. It is drawn at the zoom size with 4x4 samples
+   per pixel and built into a cache like any icon, so it zooms and filters
+   like the others. Built with the surface: a 256 px source took 2.3 s on
+   the 68080 and stalled the first Folder Stack opening. */
+static void stack_button_build(App *app)
+{
+    int n = app->settings.max_size, s16 = n*8; /* positions in 1/8 px */
+    int radius = s16*22/100, rim = s16/40 > 8 ? s16/40 : 8, stroke = s16*9/200;
+    /* The chevron for a bottom dock ("v"), as percentages of the size. */
+    int ax = 32, ay = 42, bx = 50, by = 60, cx = 68, cy = 42, x, y, ok;
+    DockImage source = {n,n,NULL};
+    dock_cache_free(&app->stack_button);
+    dock_renderer_invalidate(&app->renderer);
+    if (stack_index(app) >= app->count) return;
+    if (app->edge != DOCK_EDGE_BOTTOM) {
+        /* ">" for a right dock, "<" for a left one: transpose, then mirror. */
+        int t;
+        t = ax; ax = ay; ay = t; t = bx; bx = by; by = t; t = cx; cx = cy; cy = t;
+        if (app->edge == DOCK_EDGE_LEFT) { ax = 100-ax; bx = 100-bx; cx = 100-cx; }
+    }
+    ax = ax*s16/100; ay = ay*s16/100; bx = bx*s16/100; by = by*s16/100; cx = cx*s16/100; cy = cy*s16/100;
+    if (!(source.pixels = malloc((size_t)n*n*4))) return;
+    for (y = 0; y < n; ++y) for (x = 0; x < n; ++x) {
+        unsigned char *p = source.pixels+((size_t)y*n+x)*4;
+        /* An even surface: a gradient this faint bands in RGB565. */
+        int square = 0, inner = 0, mark = 0, sx, sy, shade = 46, c;
+        for (sy = 0; sy < 4; ++sy) for (sx = 0; sx < 4; ++sx) {
+            int px = x*8+1+2*sx, py = y*8+1+2*sy, k;
+            for (k = 0; k < 2; ++k) {
+                /* The rounded square, then the same inset by the rim. */
+                int edge = k ? rim : 0, r = radius-edge;
+                int dx = px < edge+r ? edge+r-px : px >= s16-edge-r ? px-(s16-edge-r) : 0;
+                int dy = py < edge+r ? edge+r-py : py >= s16-edge-r ? py-(s16-edge-r) : 0;
+                if (px >= edge && py >= edge && px < s16-edge && py < s16-edge &&
+                    dx*dx+dy*dy <= r*r) { if (k) ++inner; else ++square; }
+            }
+            mark += in_capsule(px,py,ax,ay,bx,by,stroke) || in_capsule(px,py,bx,by,cx,cy,stroke);
+        }
+        /* Surface, a lighter rim between the outline and its inset, the mark. */
+        for (c = 0; c < 3; ++c) {
+            int base = shade+(c == 2 ? 4 : 0), light = base+46;
+            int value = square ? (base*inner+light*(square-inner))/square : 0;
+            value = (value*(16-mark)+(c == 2 ? 246 : 242)*mark)/16;
+            p[c] = (unsigned char)value;
+        }
+        p[3] = (unsigned char)((square*255+8)/16);
+    }
+    ok = dock_cache_build(&app->stack_button,&source,&app->settings);
+    free(source.pixels);
+    if (!ok) dock_cache_free(&app->stack_button);
+}
+
+/* The stack pin's image between its icon and the close button: alpha
+   weighted, so soft edges do not darken. Full progress uses the button. */
+static const DockCache *stack_morph(App *app, const DockCache *icon, int level)
+{
+    const DockImage *a, *b;
+    DockImage *out;
+    int t = app->morph, i;
+    if (t >= 256 || level < 0 || level >= icon->levels || level >= app->stack_button.levels)
+        return t >= 128 ? &app->stack_button : icon;
+    a = &icon->image[level]; b = &app->stack_button.image[level];
+    if (a->width != b->width || a->height != b->height ||
+        a->width > DOCK_MAX_ICON_SIZE || a->height > DOCK_MAX_ICON_SIZE) return t >= 128 ? &app->stack_button : icon;
+    app->morph_flip ^= 1;
+    if (!app->morph_pixels[app->morph_flip] &&
+        !(app->morph_pixels[app->morph_flip] = malloc((size_t)DOCK_MAX_ICON_SIZE*DOCK_MAX_ICON_SIZE*4)))
+        return t >= 128 ? &app->stack_button : icon;
+    memset(&app->morph_cache,0,sizeof(app->morph_cache));
+    app->morph_cache.levels = level+1;
+    out = &app->morph_cache.image[level];
+    *out = (DockImage){a->width,a->height,app->morph_pixels[app->morph_flip]};
+    for (i = 0; i < a->width*a->height; ++i) {
+        const unsigned char *p = a->pixels+i*4, *q = b->pixels+i*4;
+        unsigned char *o = out->pixels+i*4;
+        unsigned int wa, wb, sum, c;
+        if ((p[3]&q[3]) == 255) {
+            /* Both opaque, as most pixels are: a plain blend, no divide. */
+            for (c = 0; c < 3; ++c) o[c] = (unsigned char)((p[c]*(256-t)+q[c]*t+128)>>8);
+            o[3] = 255;
+            continue;
+        }
+        wa = p[3]*(256-t); wb = q[3]*t; sum = wa+wb;
+        if (!sum) { memset(o,0,4); continue; }
+        for (c = 0; c < 3; ++c) o[c] = (unsigned char)((p[c]*wa+q[c]*wb+sum/2)/sum);
+        o[3] = (unsigned char)((sum+128)>>8);
+    }
+    return &app->morph_cache;
+}
+
+/* Tell the input handler where the close button is while it is shown. */
+static void publish_close_button(App *app, const DockPlacement *placement, int count)
+{
+    int i, valid = 0, left = 0, top = 0, right = 0, bottom = 0;
+    if (app->stack_button_shown && app->pip_mode && !app->moving_item)
+        for (i = 0; i < count; ++i) if (app->items[row_item(app,i)].stack) {
+            left = app->left+placement[i].x; top = app->top+placement[i].y;
+            right = left+placement[i].size; bottom = top+placement[i].size;
+            valid = 1;
+        }
+    Disable();
+    app->input_context.close_left = left; app->input_context.close_top = top;
+    app->input_context.close_right = right; app->input_context.close_bottom = bottom;
+    app->input_context.close_valid = valid;
+    Enable();
+}
+
 static void draw(App *app)
 {
     uint64_t started = app->profile ? profile_clock() : 0;
@@ -3246,9 +3406,13 @@ static void draw(App *app)
     uint32_t selected = dock_gesture_pressed(&app->gesture);
     if (!selected) selected = app->flash_pin_id;
     app->renderer.pressed_item = 0;
+    app->stack_button_shown = dock_ui_folder_open(app->ui);
+    publish_close_button(app,placement,count);
     for (i = 0; i < count; ++i) {
         int item = row_item(app,i);
         icons[i] = item == dragged ? NULL : &app->items[item].cache;
+        if (app->items[item].stack && icons[i] && app->stack_button.levels && app->morph)
+            icons[i] = stack_morph(app,icons[i],placement[i].level);
         if (selected && selected == app->items[item].pin_id) app->renderer.pressed_item = i+1;
     }
     /* Running dots in slot order, then the dragged icon. */
@@ -3362,7 +3526,9 @@ static void remove_input(App *app)
     if (app->handler_added) {
         /* The application owns the swallowed DOWN until its physical UP.
            Wait without spinning; never leak an unmatched release to another app. */
-        while (app->input_context.held || app->input_context.right_held) Wait(app->input_context.signal);
+        Disable(); app->input_context.close_valid = 0; Enable();
+        while (app->input_context.held || app->input_context.right_held || app->input_context.close_held)
+            Wait(app->input_context.signal);
         app->input_io->io_Command = IND_REMHANDLER;
         app->input_io->io_Data = &app->input_handler;
         DoIO((struct IORequest *)app->input_io);
@@ -3551,8 +3717,16 @@ static void open_stack_view(App *app, int index)
 
 static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int *save, int *recreate)
 {
+    int was_active = app->gesture.active;
     DockGestureEffects effect = dock_gesture_update(&app->gesture, in);
     int index = pin_index(app, effect.pin_id);
+    /* Decide at the press whether it closes the stack. In native modes the
+       press activates the dock window, which closes the stack, sometimes
+       at once (no backdrop) or before the release arrives; the button the
+       user pressed is the one last drawn. */
+    if (!was_active && app->gesture.active)
+        app->stack_close_press = app->stack_button_shown ||
+            dock_ui_folder_open(app->ui) || dock_ui_folder_moving(app->ui);
     int movable = index >= 0 && !app->items[index].temporary && !app->items[index].stack;
     int commit = (effect.flags & DOCK_EFFECT_REORDER) && movable &&
         effect.target_slot >= 0 && effect.target_slot < stack_index(app);
@@ -3595,7 +3769,10 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
         Item *item = &app->items[index];
         int focused = item->running && (item->kind == PIN_PROGRAM || item->owner) &&
             item_window_action(app,item,WINDOW_FOCUS);
-        if (item->stack) open_stack_view(app,index);
+        /* A click on the open stack's close button (native modes; PiP
+           consumes it in the handler) closes it rather than reopening. */
+        if (item->stack && app->stack_close_press) dock_ui_dismiss_popup(app->ui);
+        else if (item->stack) open_stack_view(app,index);
         else if (!focused && !item->temporary) {
             if (launch_pin(item->path)) {
                 record_launch(app,item->pin_id);
@@ -3928,7 +4105,8 @@ static int acquire_workbench(App *app)
     if (!app->ui) { UnlockPubScreen(NULL,app->screen); app->screen = NULL; return 0; }
     dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
     dock_ui_set_fit_hook(app->ui,ui_fit,app);
-    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
+        app->renderer.pixels->encode565);
     app->workbench_closed = 0;
     prefs = current_ui_prefs(app);
     fit = ui_fit(app,&prefs);
@@ -3945,7 +4123,8 @@ static int acquire_workbench(App *app)
 #ifdef DOCK_AMMX
     if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
-    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
+        app->renderer.pixels->encode565);
     app->surface_error[0] = 0;
     return open_surface(app);
 }
@@ -4177,6 +4356,8 @@ static __attribute__((noinline)) void event_loop(App *app)
             apply_gesture(app, &in, &redraw, &save, &recreate);
         }
         if (update_drag_preview(app)) redraw = 1;
+        /* The Folder Stack pin swaps to its close button and back. */
+        if (dock_ui_folder_open(app->ui) != app->stack_button_shown) redraw = 1;
         if (save) save_config(app);
         if (!running) break;
         if (program_poll_result(app,&recreate)) redraw = 1;
@@ -4197,7 +4378,11 @@ static __attribute__((noinline)) void event_loop(App *app)
         due = live_due(app);
         if (due) program_poll_schedule(app);
         if (app->pip_mode) {
-            if (!app->failed && (due || redraw || app->gesture_redraw || !app->pip_visible)) {
+            /* The moving Folder Stack covers the zoom headroom above the
+               plate, never the plate: every poll would see it change and
+               redraw the whole dock. Poll again once it stands still. */
+            if (!app->failed && (due || redraw || app->gesture_redraw || !app->pip_visible) &&
+                !(dock_ui_folder_moving(app->ui) && app->pip_visible)) {
                 if (live_capture(app,redraw || app->gesture_redraw)) redraw = 1;
                 live_cancel(app);
             }
@@ -4458,7 +4643,8 @@ int main(int argc, char **argv)
 #ifdef DOCK_AMMX
     if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
-    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
+        app->renderer.pixels->encode565);
     app->drop_port = CreateMsgPort();
     if (!app->drop_port) { message("Cannot open the Workbench drop port."); goto done; }
     i = open_surface(app);
@@ -4470,7 +4656,8 @@ int main(int argc, char **argv)
 #ifdef DOCK_AMMX
         if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
-        dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+        dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
+        app->renderer.pixels->encode565);
         app->surface_error[0] = 0;
         i = open_surface(app);
     }
@@ -4527,6 +4714,8 @@ done:
         DeleteMsgPort(app->drop_port);
     }
     for (i = 0; i < app->count; ++i) item_free(&app->items[i]);
+    dock_cache_free(&app->stack_button);
+    free(app->morph_pixels[0]); free(app->morph_pixels[1]);
     /* PiP, input, the drop receiver and the surface are released. */
     if (app->failed && app->surface_error[0]) message(app->surface_error);
     if (app->screen) UnlockPubScreen(NULL, app->screen);

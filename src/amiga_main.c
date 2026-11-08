@@ -209,6 +209,9 @@ typedef struct {
        the canvas composed and converted per frame. */
     ULONG damage_frames, damage_full, conversion_frames;
     uint64_t compose_pixels, conversion_pixels;
+    /* --damage-check: draws compared, and frames that differ from a full
+       composition or a full conversion. */
+    ULONG check_frames, compose_mismatch, convert_mismatch;
 } ProfileStats;
 typedef struct App {
     DockSettings settings;
@@ -304,6 +307,18 @@ typedef struct App {
     int left, top, width, height, active, hovered;
     /* --bench-sweep: a synthetic pointer replaces the real one while active. */
     int bench_speed, bench_active, bench_x, bench_y;
+    /* PiP: damage not yet converted into each buffer, whether a coverage
+       mask was active in that buffer's last conversion, and a row of
+       coverage that masks are applied to (app->coverage stays the
+       renderer's output). */
+    DockDamage pip_pending[2];
+    int pip_masked[2];
+    unsigned char *scratch;
+    /* --damage-check: a full reference frame and conversion per draw. */
+    int damage_check;
+    DockRenderer check_renderer;
+    DockImage check_canvas;
+    unsigned char *check_coverage, *check565;
 } App;
 
 static void animation_cancel(App *app);
@@ -1176,6 +1191,11 @@ static void close_surface(App *app)
     if (app->shape) { DisposeRegion(app->shape); app->shape = NULL; }
     if (app->shape_pending) { DisposeRegion(app->shape_pending); app->shape_pending = NULL; }
     free(app->source565); app->source565 = NULL;
+    free(app->scratch); app->scratch = NULL;
+    free(app->check_canvas.pixels); memset(&app->check_canvas,0,sizeof(app->check_canvas));
+    free(app->check_coverage); app->check_coverage = NULL;
+    free(app->check565); app->check565 = NULL;
+    dock_renderer_release(&app->check_renderer);
     app->renderer.coverage = NULL;
     free(app->coverage); app->coverage = NULL;
     free(app->drag_mask); app->drag_mask = NULL;
@@ -1250,17 +1270,30 @@ static int open_surface(App *app)
                      0, 0, 0, app->placement)) return 0;
     memcpy(app->target, app->placement, sizeof(app->target));
     dock_animation_reset(&app->animation);
+    dock_damage_set_full(&app->pip_pending[0]); dock_damage_set_full(&app->pip_pending[1]);
+    app->pip_masked[0] = app->pip_masked[1] = 0;
+    if (app->damage_check) {
+        if (!image_alloc(&app->check_canvas, app->width, app->height)) return 0;
+        if (app->pip_mode) {
+            app->check_coverage = malloc((size_t)app->width*app->height);
+            app->check565 = malloc((size_t)app->width*app->height*2);
+            if (!app->check_coverage || !app->check565) return 0;
+        }
+        app->check_renderer.pixels = app->renderer.pixels;
+        app->check_renderer.coverage = app->check_coverage;
+    }
     if (app->pip_mode) {
         app->source565 = malloc((size_t)app->width*app->height*2);
         app->coverage = calloc((size_t)app->width, app->height);
         app->drag_mask = calloc((size_t)app->width, app->height);
+        app->scratch = malloc((size_t)app->width);
         app->renderer.coverage = app->coverage;
         /* PiP owns all visible pixels. The native receiver only has a
            nonempty shape while accepting a Workbench drag. */
         app->shape = NewRegion();
         app->stats.shape_rects = region_rect_count(app->shape);
         if (app->stats.shape_rects > app->stats.shape_rects_peak) app->stats.shape_rects_peak = app->stats.shape_rects;
-        if (!app->source565 || !app->coverage || !app->drag_mask || !app->shape) return 0;
+        if (!app->source565 || !app->coverage || !app->drag_mask || !app->scratch || !app->shape) return 0;
         app->pip = amiga_pip_open(app->screen, app->left, app->top, app->width,
             app->height, right_padding, app->surface_error, sizeof(app->surface_error));
         if (!app->pip) return 0;
@@ -2899,6 +2932,10 @@ static void profile_report(App *app)
             (unsigned long)(app->stats.conversion_frames && canvas ?
                 app->stats.conversion_pixels*100/(canvas*app->stats.conversion_frames) : 0));
     }
+    if (app->damage_check)
+        printf("Damage check: frames=%lu compose_mismatch=%lu convert_mismatch=%lu\n",
+            (unsigned long)app->stats.check_frames, (unsigned long)app->stats.compose_mismatch,
+            (unsigned long)app->stats.convert_mismatch);
     printf("Workbench programs: polls=%lu changes=%lu roundtrip_us_avg=%lu max=%lu native_menu_suspends=%lu\n",
         (unsigned long)app->stats.program_polls, (unsigned long)app->stats.program_changes,
         (unsigned long)(app->stats.program_polls ? app->stats.program_poll_ticks*1000000/app->clock_hz/app->stats.program_polls : 0),
@@ -2968,73 +3005,127 @@ static void profile_close(App *app)
     TimerBase = NULL;
 }
 
+/* Coverage masks for one row span of a PiP conversion, applied to the
+   scratch copy: the native drag image under a Workbench drag, the popup or
+   an owned dialog over the dock, and the keyed tail past the window. */
+typedef struct {
+    App *app;
+    DockRect clip;
+    int popup, visible_width, count, ui_revealed;
+    ULONG revealed;
+} PipMask;
+
+static void pip_mask(void *context, int y, int left, int right, unsigned char *span)
+{
+    PipMask *m = context;
+    App *app = m->app;
+    int width = app->width;
+    if (app->drag_mask_live) {
+        const unsigned char *mask = app->drag_mask+(size_t)y*width;
+        const unsigned char *first = memchr(mask+left,1,(size_t)(right-left));
+        int x;
+        if (first) for (x = (int)(first-mask); x < right; ++x)
+            if (mask[x] && span[x-left]) { span[x-left] = 0; if (m->count) ++m->revealed; }
+    }
+    if (y >= m->clip.top && y < m->clip.bottom) {
+        int a, b;
+        if (m->popup) {
+            dock_ui_popup_span(app->ui,y-m->clip.top,&a,&b);
+            a += m->clip.left; b += m->clip.left;
+        } else { a = m->clip.left; b = m->clip.right; }
+        if (a < 0) a = 0;
+        if (b > width) b = width;
+        if (a < left) a = left;
+        if (b > right) b = right;
+        if (b > a) {
+            if (m->count && !m->ui_revealed)
+                m->ui_revealed = memchr(span+a-left,255,(size_t)(b-a)) != NULL;
+            memset(span+a-left,0,(size_t)(b-a));
+        }
+    }
+    if (m->visible_width < right) {
+        int a = m->visible_width > left ? m->visible_width : left;
+        memset(span+a-left,0,(size_t)(right-a));
+    }
+}
+
+/* Pixels dock_convert565_damage converts: rows times 8-aligned spans. */
+static uint64_t conversion_pixels(const DockDamage *damage, int width, int height)
+{
+    uint64_t pixels = 0;
+    int i;
+    if (damage->full) return (uint64_t)width*height;
+    for (i = 0; i < damage->count; ++i) {
+        const DockRect *r = &damage->rect[i];
+        int right = r->right+7 < width ? (r->right+7)&~7 : width;
+        pixels += (uint64_t)(right-(r->left&~7))*(uint64_t)(r->bottom-r->top);
+    }
+    return pixels;
+}
+
 static void present_frame(void *context, const DockImage *frame)
 {
     App *app = context;
     if (app->pip_mode) {
-        DockRect clip;
-        int y, popup, visible_width = app->window->Width, ui_revealed = 0;
-        ULONG revealed = 0;
+        PipMask mask;
+        DockDamage *pending;
+        int back, masked, stride;
         unsigned char *buffer;
         uint64_t started = app->profile ? profile_clock() : 0, encoded, converted;
         if (pip_blocked_by_screen_or_menu(app)) return;
         encoded = app->profile ? profile_clock() : 0;
         buffer = amiga_pip_back_buffer(app->pip);
-        popup = dock_ui_popup_bounds(app->ui,&clip);
-        if (popup) {
-            clip.left -= app->left; clip.right -= app->left;
-            clip.top -= app->top; clip.bottom -= app->top;
-        } else clip = app->dialog_clip;
-        for (y = 0; y < frame->height; ++y) {
-            unsigned char *coverage = app->coverage+(size_t)y*frame->width;
-            if (app->drag_mask_live) {
-                const unsigned char *mask = app->drag_mask+(size_t)y*frame->width;
-                const unsigned char *first = memchr(mask,1,frame->width);
-                int x;
-                if (first) for (x = first-mask; x < frame->width; ++x)
-                    if (mask[x] && coverage[x]) { coverage[x] = 0; ++revealed; }
-            }
-            if (y >= clip.top && y < clip.bottom) {
-                int left, right;
-                if (popup) {
-                    dock_ui_popup_span(app->ui,y-clip.top,&left,&right);
-                    left += clip.left;
-                    right += clip.left;
-                } else {
-                    left = clip.left;
-                    right = clip.right;
-                }
-                if (left < 0) left = 0;
-                if (right > frame->width) right = frame->width;
-                if (right > left) {
-                    if (app->profile && !ui_revealed)
-                        ui_revealed = memchr(coverage+left,255,(size_t)(right-left)) != NULL;
-                    memset(coverage+left,0,(size_t)(right-left));
-                }
-            }
-            if (visible_width < frame->width)
-                memset(coverage+visible_width,0,(size_t)(frame->width-visible_width));
-            app->renderer.pixels->encode565(buffer+(size_t)y*amiga_pip_stride(app->pip),
-                frame->pixels+(size_t)y*frame->width*4, frame->width);
-            /* Uncovered pixels show the native plane, including owned UI. */
-            app->renderer.pixels->key565(buffer+(size_t)y*amiga_pip_stride(app->pip),
-                coverage, frame->width);
-        }
-        if (app->profile && revealed) {
-            ++app->stats.drag_reveal_frames;
-            if (revealed > app->stats.drag_reveal_peak) app->stats.drag_reveal_peak = revealed;
-        }
-        converted = app->profile ? profile_clock() : 0;
+        back = amiga_pip_back_index(app->pip);
+        stride = amiga_pip_stride(app->pip);
+        pending = &app->pip_pending[back];
+        memset(&mask,0,sizeof(mask));
+        mask.app = app; mask.visible_width = app->window->Width; mask.count = app->profile;
+        mask.popup = dock_ui_popup_bounds(app->ui,&mask.clip);
+        if (mask.popup) {
+            mask.clip.left -= app->left; mask.clip.right -= app->left;
+            mask.clip.top -= app->top; mask.clip.bottom -= app->top;
+        } else mask.clip = app->dialog_clip;
+        /* A mask can change any covered pixel, so a masked frame converts
+           whole, and so does the next conversion into a buffer that holds
+           a masked frame. */
+        masked = app->drag_mask_live || mask.popup ||
+            (mask.clip.right > mask.clip.left && mask.clip.bottom > mask.clip.top);
+        if (masked || app->pip_masked[back]) dock_damage_set_full(pending);
         if (app->profile) {
             ++app->stats.conversion_frames;
-            app->stats.conversion_pixels += (uint64_t)frame->width*frame->height;
+            app->stats.conversion_pixels += conversion_pixels(pending,frame->width,frame->height);
         }
+        dock_convert565_damage(buffer,stride,frame,app->coverage,pending,app->scratch,
+            app->renderer.pixels->encode565,app->renderer.pixels->key565,pip_mask,&mask);
+        /* This buffer now holds the current frame, whether or not the
+           present below succeeds. */
+        dock_damage_clear(pending);
+        app->pip_masked[back] = masked;
+        if (app->check565) {
+            PipMask reference = mask;
+            DockDamage whole;
+            int y;
+            reference.count = 0;
+            dock_damage_set_full(&whole);
+            dock_convert565_damage(app->check565,frame->width*2,frame,app->coverage,&whole,app->scratch,
+                app->renderer.pixels->encode565,app->renderer.pixels->key565,pip_mask,&reference);
+            for (y = 0; y < frame->height; ++y)
+                if (memcmp(buffer+(size_t)y*stride,app->check565+(size_t)y*frame->width*2,(size_t)frame->width*2)) {
+                    ++app->stats.convert_mismatch;
+                    break;
+                }
+        }
+        if (app->profile && mask.revealed) {
+            ++app->stats.drag_reveal_frames;
+            if (mask.revealed > app->stats.drag_reveal_peak) app->stats.drag_reveal_peak = mask.revealed;
+        }
+        converted = app->profile ? profile_clock() : 0;
         app->pip_visible = amiga_pip_present(app->pip);
         if (!app->pip_visible) interaction_cancel(app);
         if (app->profile) {
             uint64_t finished = profile_clock();
-            if (app->pip_visible && ui_revealed) {
-                if (popup) ++app->stats.popup_reveal_frames;
+            if (app->pip_visible && mask.ui_revealed) {
+                if (mask.popup) ++app->stats.popup_reveal_frames;
                 else ++app->stats.dialog_reveal_frames;
             }
             app->stats.present_ticks += finished-started;
@@ -3106,6 +3197,28 @@ static void draw(App *app)
     app->renderer.overlays = overlays; app->renderer.overlay_count = overlay_count;
     dock_renderer_draw(&app->renderer, &app->canvas, (app->snapshot || app->pip_mode) ? &app->backdrop : NULL,
         icons, placement, count, &app->settings);
+    /* Both PiP buffers miss this damage until a conversion reaches them;
+       a skipped present keeps accumulating. */
+    if (app->pip_mode) {
+        dock_damage_merge(&app->pip_pending[0], &app->renderer.damage, app->width, app->height);
+        dock_damage_merge(&app->pip_pending[1], &app->renderer.damage, app->width, app->height);
+    }
+    if (app->check_canvas.pixels) {
+        /* A second renderer that starts over every frame is the reference. */
+        DockRenderer *check = &app->check_renderer;
+        check->pressed_item = app->renderer.pressed_item;
+        check->center_panel = app->renderer.center_panel;
+        check->edge = app->renderer.edge;
+        check->overlays = overlays; check->overlay_count = overlay_count;
+        dock_renderer_backdrop_changed(check);
+        dock_renderer_draw(check, &app->check_canvas, (app->snapshot || app->pip_mode) ? &app->backdrop : NULL,
+            icons, placement, count, &app->settings);
+        check->overlays = NULL; check->overlay_count = 0;
+        ++app->stats.check_frames;
+        if (memcmp(app->check_canvas.pixels, app->canvas.pixels, (size_t)app->width*app->height*4) ||
+            (app->coverage && memcmp(app->check_coverage, app->coverage, (size_t)app->width*app->height)))
+            ++app->stats.compose_mismatch;
+    }
     app->renderer.overlays = NULL; app->renderer.overlay_count = 0;
     if (app->profile) {
         const DockDamage *damage = &app->renderer.damage;
@@ -4078,7 +4191,7 @@ static void usage(void)
     puts("DockAwesome [--config file] [--size pixels] [--zoom pixels] [--levels n]\n"
          "            [--snapshot | --opaque | --pip] [--ammx] [--profile]\n"
          "            [--pip-dump prefix] [--pip-x-offset n] [--pip-y-offset n]\n"
-         "            [--bench-sweep speed]\n"
+         "            [--bench-sweep speed] [--damage-check]\n"
          "            [Workbench paths...] [--version]\n"
          "Drop Workbench icons to pin them. Click a pin to open it.\n"
          "Drag to reorder. Drag out or press Delete to remove a pin.\n"
@@ -4090,7 +4203,8 @@ static void usage(void)
          "--pip-x-offset and --pip-y-offset set alignment from -128 to 128.\n"
          "--pip-dump writes prefix-source.ppm and prefix-composed.ppm on exit.\n"
          "--bench-sweep 1..64 sweeps a synthetic pointer at that many pixels per\n"
-         "frame, prints the profile and exits.");
+         "frame, prints the profile and exits. --damage-check compares every\n"
+         "frame with a full composition and PiP conversion and reports mismatches.");
 }
 
 int main(int argc, char **argv)
@@ -4160,6 +4274,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--pip")) { app->pip_mode = explicit_pip = 1; app->snapshot = 0; }
         else if (!strcmp(argv[i], "--ammx")) app->use_ammx = 1;
         else if (!strcmp(argv[i], "--profile")) app->profile = 1;
+        else if (!strcmp(argv[i], "--damage-check")) app->damage_check = app->profile = 1;
         else if (!strcmp(argv[i], "--bench-sweep")) {
             app->bench_speed = i+1 < argc ? bounded_option(argv[++i],1,64) : INT_MAX;
             if (app->bench_speed == INT_MAX) { puts("--bench-sweep needs a speed from 1 to 64."); free(app); return 20; }

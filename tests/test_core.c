@@ -1493,6 +1493,85 @@ static unsigned fuzz_next(unsigned *seed, unsigned range)
     return (*seed>>8)%range;
 }
 
+/* A constant keyed tail, like the PiP transport padding, plus a band that
+   an owned popup or drag reveal can switch on. */
+typedef struct { int visible, band, band_left, band_right; } TestMask;
+
+static void test_mask(void *context, int y, int left, int right, unsigned char *span)
+{
+    const TestMask *m = context;
+    int x;
+    for (x = left; x < right; ++x)
+        if (x >= m->visible || (m->band && y >= 3 && x >= m->band_left && x < m->band_right)) span[x-left] = 0;
+}
+
+/* Q4: two buffers with per-buffer pending damage, random skipped and failed
+   presents and a switching mask. After every conversion the back buffer
+   equals a full conversion of the current frame; coverage is never written. */
+static void test_conversion_double_buffer(void)
+{
+    enum { W = 70, H = 21, STRIDE = W*2+18, FRAMES = 6000 };
+    static unsigned char frame_pixels[W*H*4], coverage[W*H], saved[W*H], scratch[W];
+    static unsigned char buffer[2][STRIDE*H], reference[STRIDE*H];
+    DockImage frame = {W,H,frame_pixels};
+    DockDamage pending[2], whole, d;
+    TestMask mask = {W-6,0,10,30};
+    int masked[2] = {0,0}, front = 1, k, i, y, conversions = 0, partial = 0;
+    unsigned seed = 77;
+    for (i = 0; i < W*H*4; ++i) frame_pixels[i] = (unsigned char)fuzz_next(&seed,256);
+    for (i = 0; i < W*H; ++i) coverage[i] = (unsigned char)(fuzz_next(&seed,3) ? 255 : 0);
+    memset(buffer,0x3c,sizeof(buffer));
+    dock_damage_set_full(&pending[0]); dock_damage_set_full(&pending[1]); dock_damage_set_full(&whole);
+    for (k = 0; k < FRAMES; ++k) {
+        int rects = (int)fuzz_next(&seed,4), back = front^1, x;
+        dock_damage_clear(&d);
+        for (i = 0; i < rects; ++i) {
+            DockRect r;
+            r.left = (int)fuzz_next(&seed,W); r.top = (int)fuzz_next(&seed,H);
+            r.right = r.left+1+(int)fuzz_next(&seed,12); r.bottom = r.top+1+(int)fuzz_next(&seed,5);
+            if (r.right > W) r.right = W;
+            if (r.bottom > H) r.bottom = H;
+            for (y = r.top; y < r.bottom; ++y) for (x = r.left; x < r.right; ++x) {
+                unsigned char *q = frame_pixels+(y*W+x)*4;
+                q[0] = (unsigned char)fuzz_next(&seed,256); q[1] = (unsigned char)fuzz_next(&seed,256);
+                q[2] = (unsigned char)fuzz_next(&seed,256);
+                if (!fuzz_next(&seed,8)) { q[0] = 255; q[1] = 0; q[2] = 255; } /* keyed magenta */
+                coverage[y*W+x] = (unsigned char)(fuzz_next(&seed,3) ? 255 : fuzz_next(&seed,2) ? 0 : 7);
+            }
+            dock_damage_add(&d,r,W,H);
+        }
+        if (!fuzz_next(&seed,40)) mask.band = !mask.band;
+        dock_damage_merge(&pending[0],&d,W,H);
+        dock_damage_merge(&pending[1],&d,W,H);
+        if (!fuzz_next(&seed,6)) continue; /* skipped present: PiP suspended */
+        if (mask.band || masked[back]) dock_damage_set_full(&pending[back]);
+        if (!pending[back].full) ++partial;
+        memcpy(saved,coverage,sizeof(coverage));
+        dock_convert565_damage(buffer[back],STRIDE,&frame,coverage,&pending[back],scratch,
+            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask);
+        dock_damage_clear(&pending[back]);
+        masked[back] = mask.band;
+        assert(!memcmp(saved,coverage,sizeof(coverage)));
+        dock_convert565_damage(reference,STRIDE,&frame,coverage,&whole,scratch,
+            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask);
+        for (y = 0; y < H; ++y) assert(!memcmp(buffer[back]+y*STRIDE,reference+y*STRIDE,W*2));
+        ++conversions;
+        if (fuzz_next(&seed,8)) front = back; /* else a failed present keeps the same back buffer */
+    }
+    assert(conversions > FRAMES/2 && partial > conversions/2);
+    /* Spans widen to 8-pixel multiples and clamp to the width; padding
+       past each row is never written. */
+    for (y = 0; y < H; ++y) for (i = W*2; i < STRIDE; ++i) assert(buffer[0][y*STRIDE+i] == 0x3c && buffer[1][y*STRIDE+i] == 0x3c);
+    dock_damage_clear(&d);
+    dock_damage_add(&d,(DockRect){9,2,10,3},W,H);
+    memset(reference,0x3c,sizeof(reference));
+    dock_convert565_damage(reference,STRIDE,&frame,NULL,&d,scratch,dock_rgba_to_rgb565_c,dock_rgb565_key_c,NULL,NULL);
+    for (i = 0; i < STRIDE*H; ++i) {
+        int row = i/STRIDE, x = i%STRIDE/2;
+        assert((reference[i] != 0x3c) <= (row == 2 && x >= 8 && x < 16));
+    }
+}
+
 /* Damage fuzz: an incremental renderer (glass) and a damage-only redraw
    without glass both equal a fresh full render plus overlays, byte for byte,
    on every frame. */
@@ -1635,7 +1714,7 @@ int main(void)
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();
     test_animation_and_pointer_anchor(); test_reference_timing_and_panel(); test_rounded_panel();
     test_convert(); test_native565(); test_key565(); test_overlay_coverage();
-    test_render_goldens(0); test_render_goldens(1); test_damage_add(); test_damage_divider(); test_damage_fuzz();
+    test_render_goldens(0); test_render_goldens(1); test_damage_add(); test_damage_divider(); test_damage_fuzz(); test_conversion_double_buffer();
     printf("All core tests passed: normalization, alpha, layout bounds, clipping, 65536 blends, reorder, renderer.\n");
     printf("Default cache: %lu bytes/icon; 20 icons: %lu bytes.\n",
         (unsigned long)dock_cache_bytes(&defaults),

@@ -20,6 +20,21 @@ void dock_damage_set_full(DockDamage *d);
 void dock_damage_add(DockDamage *d, DockRect r, int width, int height);
 void dock_damage_merge(DockDamage *dst, const DockDamage *src, int width, int height);
 
+/* Converts the damaged regions of frame (RGBA) to keyed big-endian RGB565
+   in buffer, or the whole frame when damage is full. Each row span widens
+   to multiples of 8 pixels (clamped to the width) so the AMMX kernels stay
+   on whole quads and octets; widened or overlapping spans are harmless
+   because encode plus key is idempotent per pixel. The coverage span is
+   copied to scratch (width bytes), mask may clear it, then key uses it:
+   coverage itself is never written. A NULL coverage counts as covered. */
+typedef void (*DockCoverageMask)(void *context, int y, int left, int right,
+                                 unsigned char *coverage_span);
+void dock_convert565_damage(unsigned char *buffer, int stride,
+    const DockImage *frame, const unsigned char *coverage,
+    const DockDamage *damage, unsigned char *scratch,
+    DockConvertRGB565 encode, DockKeyRGB565 key,
+    DockCoverageMask mask, void *context);
+
 /* An image blended over the frame after the icons, with coverage: running
    dots and the dragged icon. */
 typedef struct { const DockImage *image; int x, y; } DockOverlay;

@@ -57,6 +57,38 @@ void dock_damage_merge(DockDamage *dst, const DockDamage *src, int width, int he
     for (i = 0; i < src->count && !dst->full; ++i) dock_damage_add(dst, src->rect[i], width, height);
 }
 
+void dock_convert565_damage(unsigned char *buffer, int stride,
+    const DockImage *frame, const unsigned char *coverage,
+    const DockDamage *damage, unsigned char *scratch,
+    DockConvertRGB565 encode, DockKeyRGB565 key,
+    DockCoverageMask mask, void *context)
+{
+    DockRect whole;
+    int i, n, y, width;
+    if (!buffer || !frame || !frame->pixels || frame->width < 1 || frame->height < 1 ||
+        !damage || !scratch || !encode || !key) return;
+    width = frame->width;
+    whole = (DockRect){0, 0, width, frame->height};
+    n = damage->full ? 1 : damage->count;
+    for (i = 0; i < n; ++i) {
+        const DockRect *r = damage->full ? &whole : &damage->rect[i];
+        int left = r->left > 0 ? r->left & ~7 : 0;
+        int right = r->right < width ? r->right : width;
+        int top = r->top > 0 ? r->top : 0, bottom = r->bottom < frame->height ? r->bottom : frame->height;
+        right = right+7 < width ? (right+7) & ~7 : width;
+        if (left >= right) continue;
+        for (y = top; y < bottom; ++y) {
+            unsigned char *out = buffer+(size_t)y*stride+(size_t)left*2;
+            unsigned long count = (unsigned long)(right-left);
+            if (coverage) memcpy(scratch, coverage+(size_t)y*width+left, count);
+            else memset(scratch, 255, count);
+            if (mask) mask(context, y, left, right, scratch);
+            encode(out, frame->pixels+((size_t)y*width+left)*4, count);
+            key(out, scratch, count);
+        }
+    }
+}
+
 static int clamp_int(int64_t v)
 {
     return v < INT_MIN ? INT_MIN : v > INT_MAX ? INT_MAX : (int)v;

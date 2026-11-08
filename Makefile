@@ -9,6 +9,11 @@ AMIGA_OBJDUMP ?= $(TOOLCHAIN)/bin/m68k-amigaos-objdump
 HOST_CC ?= cc
 PYTHON ?= python3
 ACP ?= acp
+# A release name such as "1.0 beta 1" replaces the local build counter.
+RELEASE ?=
+empty :=
+space := $(empty) $(empty)
+RELEASE_FILE = $(subst $(space),,$(subst beta,b,$(RELEASE)))
 AMMX ?= 0
 
 HOST_FLAGS := -std=c99 -O2 -Wall -Wextra -Werror -pedantic -Iinclude
@@ -31,7 +36,7 @@ AMIGA_C_OBJECTS := $(patsubst src/%.c,$(AMIGA_OBJDIR)/%.o,$(AMIGA_C_SOURCES))
 AMIGA_OBJECTS := $(AMIGA_C_OBJECTS) $(AMIGA_OBJDIR)/amiga_input.o $(AMIGA_ASM_OBJECTS)
 
 .DEFAULT_GOAL := all
-.PHONY: all amiga host-test host-bench host-sanitize check-toolchain verify package deploy clean
+.PHONY: all amiga host-test host-bench host-sanitize check-toolchain verify package deploy release clean
 all: amiga
 amiga: $(AMIGA_OUTPUT) $(AMIGA_OUTPUT).info
 
@@ -56,7 +61,7 @@ $(AMIGA_OBJDIR)/ammx.o: src/ammx.s Makefile | check-toolchain
 	"$(AMIGA_AS)" -Fhunk -m68080 -opt-speed -o "$@" "$<"
 
 $(AMIGA_OUTPUT): $(AMIGA_OBJECTS) tools/build-version.py Makefile
-	"$(PYTHON)" tools/build-version.py "$(notdir $@)" "$(AMIGA_OBJDIR)/build_version.c"
+	"$(PYTHON)" tools/build-version.py "$(if $(RELEASE),DockAwesome,$(notdir $@))" "$(AMIGA_OBJDIR)/build_version.c" "$(RELEASE)"
 	"$(AMIGA_CC)" $(AMIGA_INCLUDES) $(AMIGA_FLAGS) $(CPU_FLAGS) -c "$(AMIGA_OBJDIR)/build_version.c" -o "$(AMIGA_OBJDIR)/build_version.o"
 	"$(AMIGA_CC)" $(CPU_FLAGS) -noixemul -Wl,-u,___stkinit $(AMIGA_OBJECTS) "$(AMIGA_OBJDIR)/build_version.o" -o "$@"
 
@@ -122,6 +127,19 @@ package: amiga
 deploy: amiga
 	@test -n "$(AMIGA_DEST)" || { echo "Set AMIGA_DEST to host:volume:." >&2; exit 1; }
 	"$(ACP)" "$(AMIGA_OUTPUT).info" "$(AMIGA_OUTPUT)" "$(AMIGA_DEST)"
+
+# Test release: stage the 68080 build as DockAwesome with its icon and notes
+# in build/release/DockAwesome. Pack that drawer with LhA on the Amiga.
+release:
+	@test -n "$(RELEASE)" || { echo 'Set RELEASE, for example: make release RELEASE="1.0 beta 1"' >&2; exit 1; }
+	$(RM) build/DockAwesome080
+	$(MAKE) AMMX=1 RELEASE="$(RELEASE)" amiga
+	$(RM) -r build/release
+	@mkdir -p build/release/DockAwesome
+	cp build/DockAwesome080 build/release/DockAwesome/DockAwesome
+	cp build/DockAwesome080.info build/release/DockAwesome/DockAwesome.info
+	cp release/ReadMe.txt README.md build/release/DockAwesome/
+	@echo "Staged build/release/DockAwesome for DockAwesome-$(RELEASE_FILE).lha"
 
 clean:
 	$(RM) -r build

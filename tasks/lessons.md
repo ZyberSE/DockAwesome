@@ -135,3 +135,12 @@
   or Workbench stalls startup with "has not yet returned" and the later
   WBStartup programs (AmiMCP included) never start. Check it with
   GetDiskObject/FindToolType on the installed icon.
+- Time outline (diskfont) fonts cold, right after a reboot: a warm cache
+  hid an 11 s open. Prerender static UI text instead of opening outline
+  fonts on demand.
+- Probes that draw text must use the ULONG Text/TextLength wrappers from
+  amiga_text.h; the NDK UWORD inlines hung a probe on ApolloOS.
+- The ApolloOS source in ~/GitRepos/ApolloOS is older than R9.5 (Intuition
+  LVOs differ by one slot). Verify OS behavior with a probe on the target.
+- Workbench reset notifications on ApolloOS come from screennotify.library
+  (AddWorkbenchClient, type 3), not Intuition's SNOTIFY_BEFORE_CLOSEWB.

@@ -338,3 +338,51 @@ processes do not, and nothing is special-cased per program.
 
 0.156 (installed in WBStartup) implements the above. Apps without a program
 file cannot be kept as pins. Disabled/ holds locked old binaries to delete.
+
+## Test release 1.0 beta 1
+
+- [x] Release versions: RELEASE replaces the build counter in About and
+      $VER ("DockAwesome 1.0 (08.11.2026) beta 1"); About credits Reine
+      "ZyBeR" Delwall. 68080 only.
+- [x] make release stages DockAwesome, its icon, ReadMe.txt and README.md.
+- [x] Packed with LhA 2.15 on the Amiga; Lhasa tests it and every file
+      matches the staged build. ~/Downloads/DockAwesome-1.0b1.lha
+      (103,621 bytes, SHA-256 02412cd2...0d0cfdf).
+- [x] 1.0 beta 1 installed as ApolloOS:WBStartup/DockAwesome (same bytes
+      as the archive) and started through Workbench. Disabled/ holds the
+      locked DockAwesome-0156.old; delete it after a reboot.
+
+## About typography and speed
+
+- [x] Vera Sans through diskfont made the first About after a reboot take
+      ~11 s (measured: open fonts 11,243 ms, window 3 ms, measure 0 ms,
+      draw 5 ms). Later opens were fast only while the fonts stayed cached.
+- [x] tools/make-about-font.py renders Vera Sans (Bold 20, 12, 11, 13 px,
+      ASCII 32-126) into src/about_font.c; About composes lines from it and
+      blits them with BltTemplateAlpha. No font files are needed at run
+      time; without cybergraphics alpha it falls back to the screen font.
+- [x] Credit on two lines with spacing; the name is regular weight.
+- [x] About redesigned and prerendered; installed for the user's check.
+
+## Settings limits, Save feedback and Workbench resets
+
+- [x] Size slider maximum follows the largest Size that fits the draft's
+      edge, Scale and Folder Stack (main's fit hook, same dock_items_fit as
+      Save); Scale stops at the 192 px zoom. The icon cache budget is a
+      quarter of free memory (at least 16 MB) instead of a fixed 16 MB.
+- [x] Save shows a busy pointer and progress in the Settings title. Measured
+      for 11 pins: icon loading 267 ms, cache 36->70 2,250 ms, 64->125
+      6,444 ms; the cache build is the cost.
+- [x] Workbench resets (resolution changes): Intuition on ApolloOS R9.5 sent
+      no BEFORE_CLOSEWB (probe: 0 messages), so the dock is a
+      screennotify.library Workbench client (type 3; FALSE before close,
+      TRUE after open, also after a failed close). It releases its windows,
+      UI and screen lock, waits, then reopens with the backend chosen for
+      the new screen and lowers Size if needed.
+- [x] Vampire: CloseWorkbench() from a separate process succeeded, Workbench
+      reopened, and the dock reopened on the new screen with no requester.
+- [x] User check: a real resolution change in ScreenMode prefs works.
+
+Release archive rebuilt: ~/Downloads/DockAwesome-1.0b1.lha (119,699 bytes,
+SHA-256 111bc02f...8afed359), packed with LhA on the Amiga; every file
+matches build/release/DockAwesome.

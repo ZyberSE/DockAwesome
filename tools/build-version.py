@@ -23,14 +23,24 @@ def next_revision():
     return revision
 
 
-name, output = sys.argv[1:]
-major, minor = divmod(next_revision(), 65536)
-version = f"{major}.{minor}"
+# Usage: build-version.py name output [release]
+# A release such as "1.0 beta 1" replaces the local build counter. $VER keeps
+# the number before the date, where the Version command reads it.
+name, output, *rest = sys.argv[1:]
+release = rest[0].strip() if rest and rest[0].strip() else ""
 built = date.today()
+if release:
+    version = release
+    number, _, suffix = release.partition(" ")
+    tag = f"{name} {number} ({built:%d.%m.%Y})" + (f" {suffix}" if suffix else "")
+else:
+    major, minor = divmod(next_revision(), 65536)
+    version = f"{major}.{minor}"
+    tag = f"{name} {version} ({built:%d.%m.%Y})"
 Path(output).write_text(
     '#include "amiga_version.h"\n'
     f'const char dock_build_version[] = "Version {version}";\n'
     f'const char dock_build_date[] = "Built {built.isoformat()}";\n'
-    f'const char dock_build_tag[] = DOCK_BUILD_TAG_PREFIX "{name} {version} ({built:%d.%m.%Y})";\n',
+    f'const char dock_build_tag[] = DOCK_BUILD_TAG_PREFIX "{tag}";\n',
     encoding="ascii",
 )

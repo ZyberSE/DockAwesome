@@ -262,6 +262,12 @@ typedef struct App {
     struct Screen *screen;
     struct Window *window;
     struct MsgPort *drop_port, *input_port;
+    /* screennotify.library Workbench client: close before Workbench closes
+       (a resolution change) and reopen after it opens again. */
+    struct Library *screen_notify;
+    struct MsgPort *workbench_port;
+    APTR workbench_client;
+    int workbench_closed, window_shapes, explicit_ammx;
     int held_drops; /* Leading queued drops already in screen coordinates. */
     struct AppWindow *appwindow;
     struct IOStdReq *input_io;
@@ -902,6 +908,7 @@ static __attribute__((noinline)) int load_icon_mode(const App *app, const char *
             FreeDiskObject(icon); return 0;
         }
         width = im->Width; height = im->Height;
+        if (!app->screen) { FreeDiskObject(icon); return 0; } /* Workbench is closed. */
         rgb = calloc(256*3, sizeof(*rgb));
         if (!rgb) { FreeDiskObject(icon); return 0; }
         if (!image_alloc(out, width, height)) { free(rgb); FreeDiskObject(icon); return 0; }
@@ -2670,6 +2677,38 @@ static void ui_blocking(void *context, int blocking)
     amiga_pip_suspend(app->pip); app->pip_visible = 0; input_publish(app);
 }
 
+/* The largest Size whose row fits the draft's edge and whose cache fits the
+   memory budget, with the same rules apply_preferences uses to save. */
+static int ui_fit(void *context, const DockUIPrefs *draft)
+{
+    const App *app = (const App *)context;
+    int has_stack = stack_index(app) < app->count;
+    int count = app->count+(!!draft->folder[0]-has_stack), size;
+    int available = viewport_limit(app,(DockEdge)draft->edge);
+    DockSettings s = app->settings;
+    s.end_gap = draft->folder[0] ? STACK_DIVIDER_GAP : 0;
+    for (size = DOCK_MAX_ICON_SIZE; size > DOCK_MIN_ICON_SIZE; --size) {
+        s.base_size = size;
+        s.max_size = dock_scaled_size(size,draft->scale_percent);
+        if (!s.max_size || s.max_size > DOCK_MAX_ICON_SIZE) continue;
+        s.levels = s.max_size-size+1;
+        if (s.levels < 2) s.levels = 2;
+        if (s.levels > DOCK_MAX_LEVELS) s.levels = DOCK_MAX_LEVELS;
+        if (dock_items_fit(&s,count,available)) return size;
+    }
+    return DOCK_MIN_ICON_SIZE;
+}
+
+static int displayed_scale(const App *app);
+
+/* The saved preferences as Settings shows them. */
+static DockUIPrefs current_ui_prefs(const App *app)
+{
+    DockUIPrefs prefs = {app->settings.base_size,displayed_scale(app),app->edge,{0}};
+    strcpy(prefs.folder,app->prefs.folder);
+    return prefs;
+}
+
 static int pip_blocked_by_screen_or_menu(App *app)
 {
     int menu = native_menu_held(app);
@@ -3494,7 +3533,11 @@ static int apply_preferences(App *app, const DockUIPrefs *prefs)
         if (!swap) { message("Not enough memory to apply settings."); return 0; }
         for (i = 0; i < app->count; ++i) {
             DockImage image = {0};
+            char status[64];
             if (change_stack && i == slot) continue;
+            /* Rebuilding takes seconds at large sizes: show progress. */
+            snprintf(status,sizeof(status),"Resizing icons %d/%d...",i+1,app->count);
+            dock_ui_set_busy(app->ui,status);
             ok = (app->items[i].stack ? load_stack_icon(app,app->items[i].path,&image) :
                 load_icon(app,app->items[i].path,&image,NULL)) && dock_cache_build(&swap[i],&image,&next);
             free(image.pixels);
@@ -3502,17 +3545,21 @@ static int apply_preferences(App *app, const DockUIPrefs *prefs)
                 int j;
                 for (j = 0; j <= i; ++j) dock_cache_free(&swap[j]);
                 free(swap);
+                dock_ui_set_busy(app->ui,NULL);
                 message("Cannot resize the icons. Settings are unchanged.");
                 return 0;
             }
         }
     }
+    if (change_stack && prefs->folder[0]) dock_ui_set_busy(app->ui,"Reading Folder Stack...");
     if (change_stack && prefs->folder[0] && !prepare_stack(app,prefs->folder,&next,&stack)) {
         if (swap) for (i = 0; i < old_count; ++i) dock_cache_free(&swap[i]);
         free(swap);
+        dock_ui_set_busy(app->ui,NULL);
         message("Cannot open this drawer. Choose another one.");
         return 0;
     }
+    dock_ui_set_busy(app->ui,"Opening the dock...");
     close_surface(app);
     if (swap) for (i = 0; i < app->count; ++i) {
         if (change_stack && i == slot) continue;
@@ -3548,7 +3595,142 @@ static int apply_preferences(App *app, const DockUIPrefs *prefs)
         free(swap);
     }
     dock_cache_free(&stack.cache);
+    dock_ui_set_busy(app->ui,NULL);
     return ok;
+}
+
+/* screennotify.library: AddWorkbenchClient/RemWorkbenchClient and its
+   message. Type 3 is Workbench; value FALSE: about to close (reply once
+   every window on it is closed), TRUE: open again. A close that fails is
+   followed by TRUE as well. */
+enum { WORKBENCH_NOTIFY_TYPE = 3 };
+typedef struct { struct Message message; ULONG type; APTR value; } WorkbenchNotify;
+
+static void workbench_notify_open(App *app)
+{
+    app->screen_notify = OpenLibrary((STRPTR)"screennotify.library",1);
+    if (!app->screen_notify) return;
+    app->workbench_port = CreateMsgPort();
+    if (app->workbench_port)
+        app->workbench_client = LP2(0x36, APTR, AddWorkbenchClient, struct MsgPort *, app->workbench_port, a0,
+            LONG, 0, d0, , app->screen_notify);
+    if (!app->workbench_client) {
+        if (app->workbench_port) DeleteMsgPort(app->workbench_port);
+        app->workbench_port = NULL;
+        CloseLibrary(app->screen_notify);
+        app->screen_notify = NULL;
+    }
+}
+
+static void workbench_notify_close(App *app)
+{
+    struct Message *msg;
+    if (app->workbench_client) {
+        /* Removal fails while a message is outstanding: reply and retry. */
+        while (!LP1(0x3c, BOOL, RemWorkbenchClient, APTR, app->workbench_client, a0, , app->screen_notify)) {
+            while ((msg = GetMsg(app->workbench_port))) ReplyMsg(msg);
+            Delay(2);
+        }
+    }
+    if (app->workbench_port) {
+        while ((msg = GetMsg(app->workbench_port))) ReplyMsg(msg);
+        DeleteMsgPort(app->workbench_port);
+    }
+    if (app->screen_notify) CloseLibrary(app->screen_notify);
+    app->workbench_client = NULL; app->workbench_port = NULL; app->screen_notify = NULL;
+}
+
+/* Release everything on the Workbench screen so it can close. Icon caches
+   and pins stay; they do not depend on the screen. */
+static void release_workbench(App *app)
+{
+    interaction_cancel(app);
+    close_surface(app);
+    dock_ui_destroy(app->ui); app->ui = NULL;
+    if (app->screen) UnlockPubScreen(NULL,app->screen);
+    app->screen = NULL;
+    app->workbench_closed = 1;
+}
+
+static void select_backend(App *app)
+{
+    app->pip_mode = app->requested_backend == BACKEND_PIP;
+    app->snapshot = app->requested_backend == BACKEND_SNAPSHOT;
+    app->use_ammx = app->explicit_ammx;
+    if (app->pip_mode) {
+#ifdef DOCK_AMMX
+        if (app->window_shapes && GetBitMapAttr(app->screen->RastPort.BitMap,BMA_DEPTH) == 16) app->use_ammx = 1;
+        else
+#endif
+        { app->pip_mode = 0; app->snapshot = 1; }
+    }
+    app->renderer.pixels = dock_backend_portable();
+#ifdef DOCK_AMMX
+    if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
+#endif
+}
+
+static DockUIPrefs current_ui_prefs(const App *app);
+
+/* Reopen on the new Workbench screen. The backend follows the new screen
+   mode; a Size that no longer fits is lowered to the largest that does. */
+static int acquire_workbench(App *app)
+{
+    DockUIPrefs prefs;
+    int fit;
+    app->screen = LockPubScreen(NULL);
+    if (!app->screen) return 0;
+    select_backend(app);
+    app->ui = dock_ui_create(app->screen,app->window_shapes);
+    if (!app->ui) { UnlockPubScreen(NULL,app->screen); app->screen = NULL; return 0; }
+    dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
+    dock_ui_set_fit_hook(app->ui,ui_fit,app);
+    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+    app->workbench_closed = 0;
+    prefs = current_ui_prefs(app);
+    fit = ui_fit(app,&prefs);
+    if (fit < app->settings.base_size) {
+        prefs.size = fit;
+        return apply_preferences(app,&prefs);
+    }
+    if (open_surface(app)) return 1;
+    close_surface(app);
+    if (!app->pip_mode) return 0;
+    app->pip_mode = 0; app->snapshot = 1;
+    app->use_ammx = app->explicit_ammx;
+    app->renderer.pixels = dock_backend_portable();
+#ifdef DOCK_AMMX
+    if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
+#endif
+    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+    app->surface_error[0] = 0;
+    return open_surface(app);
+}
+
+/* Returns 1 when the dock reopened and needs its first frame. */
+static int workbench_notify_poll(App *app)
+{
+    WorkbenchNotify *msg;
+    int reopened = 0;
+    if (!app->workbench_port) return 0;
+    while ((msg = (WorkbenchNotify *)GetMsg(app->workbench_port))) {
+        int closing = msg->type == WORKBENCH_NOTIFY_TYPE && !msg->value;
+        int opened = msg->type == WORKBENCH_NOTIFY_TYPE && msg->value;
+        if (closing && !app->workbench_closed) release_workbench(app);
+        ReplyMsg(&msg->message);
+        if (opened && app->workbench_closed) {
+            if (acquire_workbench(app)) reopened = 1;
+            else {
+                /* Stay closed until the next Workbench change. */
+                close_surface(app);
+                dock_ui_destroy(app->ui); app->ui = NULL;
+                if (app->screen) UnlockPubScreen(NULL,app->screen);
+                app->screen = NULL;
+                app->workbench_closed = 1;
+            }
+        }
+    }
+    return reopened;
 }
 
 static __attribute__((noinline)) void event_loop(App *app)
@@ -3562,7 +3744,21 @@ static __attribute__((noinline)) void event_loop(App *app)
     animation_profile_end(app);
     animation_schedule(app); live_schedule(app);
     while (running) {
-        ULONG signals = Wait((1UL<<app->window->UserPort->mp_SigBit) |
+        ULONG workbench = app->workbench_port ? 1UL<<app->workbench_port->mp_SigBit : 0;
+        if (app->workbench_closed) {
+            /* Nothing is on screen: wait for Workbench to open again. */
+            ULONG closed_signals = Wait(workbench|SIGBREAKF_CTRL_C);
+            if (closed_signals & SIGBREAKF_CTRL_C) break;
+            if (workbench_notify_poll(app)) {
+                update_target(app);
+                if (app->pip_mode) live_capture(app,1);
+                if (app->failed) break;
+                draw(app);
+                animation_schedule(app); live_schedule(app);
+            }
+            continue;
+        }
+        ULONG signals = Wait(workbench | (1UL<<app->window->UserPort->mp_SigBit) |
             (1UL<<app->drop_port->mp_SigBit) | (1UL<<app->timer_port->mp_SigBit) |
             (app->live_port ? (1UL<<app->live_port->mp_SigBit) : 0) |
             (app->program_replies ? (1UL<<app->program_replies->mp_SigBit) : 0) |
@@ -3574,6 +3770,15 @@ static __attribute__((noinline)) void event_loop(App *app)
         int dismiss_popup;
         ++app->stats.wakes; app->gesture_redraw = 0;
         if (signals & SIGBREAKF_CTRL_C) break;
+        if ((signals & workbench) && (workbench_notify_poll(app) || app->workbench_closed)) {
+            if (app->workbench_closed) continue;
+            update_target(app);
+            if (app->pip_mode) live_capture(app,1);
+            if (app->failed) break;
+            draw(app);
+            animation_schedule(app); live_schedule(app);
+            continue;
+        }
         if (app->status_notify && (signals & (1UL<<app->status_notify_bit)))
             status_observe_windows(app);
         if (IntuitionBase->FirstScreen != app->screen || native_menu_held(app))
@@ -3591,8 +3796,7 @@ static __attribute__((noinline)) void event_loop(App *app)
         update_drop_catcher(app);
         while (dock_ui_poll(app->ui,&action)) {
             if (action.type == DOCK_UI_SETTINGS) {
-                DockUIPrefs initial = {app->settings.base_size,displayed_scale(app),app->edge,{0}};
-                strcpy(initial.folder,app->prefs.folder);
+                DockUIPrefs initial = current_ui_prefs(app);
                 if (!dock_ui_open_settings(app->ui,&initial)) message("Cannot open Settings on this screen.");
             } else if (action.type == DOCK_UI_ABOUT) {
                 if (!dock_ui_open_about(app->ui)) message("Cannot open About.");
@@ -3795,6 +3999,12 @@ int main(int argc, char **argv)
     int explicit_pip = 0, explicit_ammx;
     if (!app) return 20;
     app->settings = dock_settings_default(); app->input_bit = -1;
+    {
+        /* The icon cache may use a quarter of the free memory, at least the
+           portable 16 MB default; a fixed budget refused sizes that fit. */
+        size_t budget = (size_t)AvailMem(MEMF_ANY)/4;
+        if (budget > app->settings.cache_limit) app->settings.cache_limit = budget;
+    }
     strcpy(app->config, DEFAULT_CONFIG);
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--help")) { usage(); free(app); return 0; }
@@ -3872,6 +4082,7 @@ int main(int argc, char **argv)
     app->requested_backend = app->pip_mode ? BACKEND_PIP :
         app->snapshot ? BACKEND_SNAPSHOT : BACKEND_OPAQUE;
     explicit_ammx = app->use_ammx;
+    app->explicit_ammx = explicit_ammx;
     explicit_pip |= !!app->pip_dump[0];
 #ifndef DOCK_AMMX
     if (app->use_ammx) { puts("Use the DockAwesome080 build for --ammx."); free(app); return 20; }
@@ -3886,6 +4097,7 @@ int main(int argc, char **argv)
         message("Needs AmigaOS 3.x, graphics/intuition V39 and icon/workbench V44 or newer."); goto done;
     }
     window_shapes = intuition_extension(858) && LayersBase->lib_Version >= 50;
+    app->window_shapes = window_shapes;
     app->screen = LockPubScreen(NULL);
     if (!app->screen) { message("Cannot access the Workbench screen."); goto done; }
     if (app->pip_mode) {
@@ -3905,6 +4117,7 @@ int main(int argc, char **argv)
     app->ui = dock_ui_create(app->screen,window_shapes);
     if (!app->ui) { message("Cannot set up the dock controls."); goto done; }
     dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
+    dock_ui_set_fit_hook(app->ui,ui_fit,app);
     {
         DockSettings configured = app->settings;
         int count = app->prefs.count+!!app->prefs.folder[0];
@@ -3985,7 +4198,9 @@ int main(int argc, char **argv)
         }
     }
     program_poll_open(app);
+    workbench_notify_open(app);
     event_loop(app);
+    workbench_notify_close(app);
     program_poll_close(app);
     status = app->failed ? 20 : 0;
 done:

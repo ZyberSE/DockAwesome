@@ -108,6 +108,9 @@ make AMMX=1 package
 ```
 
 Builds go in `build/`. Packages go in `build/dist/DockAwesome/`.
+`make release RELEASE="1.0 beta 1"` builds the 68080 release with that
+version in About and `$VER`, and stages it in `build/release/DockAwesome`.
+Pack that drawer with LhA on the Amiga: `LHA -r a DockAwesome-1.0b1.lha RAM:Release/ DockAwesome`.
 With ApolloExplorer running on the Amiga, use
 `make AMMX=1 deploy AMIGA_DEST=amiga:RAM:` to copy both files with `acp`.
 Run the AMMX probe on Vampire. `--profile` reports frame and upload times.

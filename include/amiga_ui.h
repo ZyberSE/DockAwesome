@@ -34,6 +34,13 @@ void dock_ui_set_converters(DockUI *ui, DockConvertRGB24 encode, DockConvertRGB5
    as the ASL drawer requester. Suspend PiP and input capture in between. */
 typedef void (*DockUIBlocking)(void *context, int blocking);
 void dock_ui_set_blocking_hook(DockUI *ui, DockUIBlocking hook, void *context);
+/* Returns the largest Size the dock can show for a draft (its edge, scale
+   and Folder Stack). Settings never offer a larger Size. */
+typedef int (*DockUIFit)(void *context, const DockUIPrefs *draft);
+/* Shows work in progress in the open dialog: a busy pointer and the status
+   as its title. NULL restores the normal pointer and title. */
+void dock_ui_set_busy(DockUI *ui, const char *status);
+void dock_ui_set_fit_hook(DockUI *ui, DockUIFit hook, void *context);
 void dock_ui_destroy(DockUI *ui);
 ULONG dock_ui_signal_mask(const DockUI *ui);
 int dock_ui_open_popup(DockUI *ui, DockEdge edge, int anchor_x, int anchor_y,

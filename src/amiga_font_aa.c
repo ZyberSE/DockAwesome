@@ -114,6 +114,15 @@ void amiga_font_aa_draw(const AmigaFontAA *font, DockImage *target,
     }
 }
 
+void amiga_alpha_template_blit(struct Library *cyber, struct RastPort *target,
+    const unsigned char *alpha, int width, int height, int left, int top)
+{
+    /* ApolloOS cybergraphics.library V51 BltTemplateAlpha. */
+    LP8NR(0xde, DockBltTemplateAlpha, APTR, (APTR)alpha, a0,
+        LONG, 0, d0, LONG, width, d1, struct RastPort *, target, a1,
+        LONG, left, d2, LONG, top, d3, LONG, width, d4, LONG, height, d5, , cyber);
+}
+
 int amiga_font_aa_blit(AmigaFontAA *font, struct Library *cyber,
     struct RastPort *target, const char *text, int left, int top)
 {

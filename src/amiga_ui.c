@@ -1,6 +1,7 @@
 #include "amiga_ui.h"
 #include "amiga_display.h"
 #include "amiga_font_aa.h"
+#include "about_font.h"
 #include "amiga_folder.h"
 #include "amiga_text.h"
 #include "amiga_version.h"
@@ -74,10 +75,15 @@ static const MenuItem shell_items[] = {
     {"New Shell", DOCK_UI_NEW_SHELL}, {"Show Shell", DOCK_UI_SHOW_SHELL},
     {"Quit", DOCK_UI_QUIT_SHELL}
 };
-static const char *const about_lines[] = {
-    "DockAwesome", dock_build_version, dock_build_date, "Created by Reine Delwall"
+/* About typography: Vera Sans, prerendered and antialiased (about_font.c),
+   because opening it through diskfont takes about 11 s after a reboot.
+   gap: space after the line; the larger gap separates the credit. */
+static const struct { const char *text; int style, gap; } about_lines[] = {
+    {"DockAwesome",ABOUT_TITLE,8}, {dock_build_version,ABOUT_BODY,3},
+    {dock_build_date,ABOUT_SMALL,16}, {"Created by",ABOUT_SMALL,3},
+    {"Reine \"ZyBeR\" Delwall",ABOUT_NAME,0}
 };
-enum { ABOUT_LINES = sizeof(about_lines)/sizeof(about_lines[0]), ABOUT_LINE_GAP = 6 };
+enum { ABOUT_LINES = sizeof(about_lines)/sizeof(about_lines[0]), ABOUT_MARGIN = 18 };
 enum {
     FOLDER_COLS = 12, FOLDER_ROWS = 10, FOLDER_SCALE_ONE = 256,
     FOLDER_SCALE_START = 224, FOLDER_SCALE_CLOSED = 128,
@@ -120,7 +126,8 @@ typedef struct {
 
 typedef struct {
     struct Gadget *slider[SLIDER_COUNT], *readout[SLIDER_COUNT], *position, *path;
-    int limit[SLIDER_COUNT];
+    int limit[SLIDER_COUNT]; /* What fits now. */
+    int cap[SLIDER_COUNT];   /* Slider range, raised for larger saved values. */
     char value[SLIDER_COUNT][16];
 } SettingsView;
 
@@ -154,6 +161,9 @@ struct DockUI {
     int carry_left, carry_top;
     DockUIBlocking blocking;
     void *blocking_context;
+    DockUIFit fit;
+    void *fit_context;
+    char dialog_title[64], busy_title[96];
     struct Gadget *gadgets;
     struct Library *asl;
     DockUIPrefs draft;
@@ -1384,6 +1394,24 @@ int dock_ui_folder_step(DockUI *ui)
     return 0;
 }
 
+void dock_ui_set_busy(DockUI *ui, const char *status)
+{
+    if (!ui || !ui->dialog) return;
+    if (status) {
+        strncpy(ui->busy_title,status,sizeof(ui->busy_title)-1);
+        ui->busy_title[sizeof(ui->busy_title)-1] = 0;
+    }
+    SetWindowTitles(ui->dialog,(STRPTR)(status ? ui->busy_title : ui->dialog_title),(UBYTE *)~0);
+    SetWindowPointer(ui->dialog,WA_BusyPointer,status != NULL,WA_PointerDelay,FALSE,TAG_DONE);
+}
+
+void dock_ui_set_fit_hook(DockUI *ui, DockUIFit hook, void *context)
+{
+    if (!ui) return;
+    ui->fit = hook;
+    ui->fit_context = context;
+}
+
 void dock_ui_set_blocking_hook(DockUI *ui, DockUIBlocking hook, void *context)
 {
     if (!ui) return;
@@ -1841,6 +1869,8 @@ static int position_index(int edge)
     return edge == DOCK_EDGE_LEFT ? 0 : edge == DOCK_EDGE_RIGHT ? 2 : 1;
 }
 
+static void update_limits(DockUI *ui, int live);
+
 int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
 {
     static const char *const slider_labels[] = {"_Size","Sc_ale"};
@@ -1860,8 +1890,9 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
     ui->draft.scale_percent = clamp(initial->scale_percent,DOCK_SCALE_ONE,DOCK_MAX_SCALE);
     if (initial->edge != DOCK_EDGE_LEFT && initial->edge != DOCK_EDGE_RIGHT)
         ui->draft.edge = DOCK_EDGE_BOTTOM;
-    s->limit[SIZE_SLIDER] = ui->draft.size > SIZE_SLIDER_MAX ? ui->draft.size : SIZE_SLIDER_MAX;
-    s->limit[SCALE_SLIDER] = ui->draft.scale_percent > SCALE_SLIDER_MAX ? ui->draft.scale_percent : SCALE_SLIDER_MAX;
+    s->cap[SIZE_SLIDER] = ui->draft.size > SIZE_SLIDER_MAX ? ui->draft.size : SIZE_SLIDER_MAX;
+    s->cap[SCALE_SLIDER] = ui->draft.scale_percent > SCALE_SLIDER_MAX ? ui->draft.scale_percent : SCALE_SLIDER_MAX;
+    update_limits(ui,0);
 
     line = ui->font_height > ui->font.ta_YSize ? ui->font_height : ui->font.ta_YSize;
     row = line+8;
@@ -1870,7 +1901,8 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
         ui->screen->WBorLeft-ui->screen->WBorRight;
     height = 5*row+line+4*MARGIN+2*GAP+4;
     if (width < 300) return 0;
-    ui->dialog = w = open_dialog(ui,"Dock Settings",width,height,
+    strcpy(ui->dialog_title,"Dock Settings");
+    ui->dialog = w = open_dialog(ui,ui->dialog_title,width,height,
         BUTTONIDCMP|CYCLEIDCMP|SLIDERIDCMP|STRINGIDCMP|IDCMP_VANILLAKEY);
     if (!w) return 0;
     ui->asl = OpenLibrary((STRPTR)AslName,38);
@@ -1881,8 +1913,8 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
     right = w->Width-w->BorderRight-MARGIN;
     x = left+text_length32(&measure,"Position")+MARGIN;
     y = w->BorderTop+MARGIN;
-    format_slider(s->value[SIZE_SLIDER],SIZE_SLIDER,s->limit[SIZE_SLIDER]);
-    format_slider(s->value[SCALE_SLIDER],SCALE_SLIDER,s->limit[SCALE_SLIDER]);
+    format_slider(s->value[SIZE_SLIDER],SIZE_SLIDER,s->cap[SIZE_SLIDER]);
+    format_slider(s->value[SCALE_SLIDER],SCALE_SLIDER,s->cap[SCALE_SLIDER]);
     readout = text_length32(&measure,s->value[SIZE_SLIDER]);
     i = text_length32(&measure,s->value[SCALE_SLIDER]);
     readout = (readout > i ? readout : i)+8;
@@ -1948,20 +1980,88 @@ fail:
     return 0;
 }
 
+/* Prerendered lines need cybergraphics alpha; otherwise use the screen
+   font, with a soft bold for the title. */
+static int about_prerendered(const DockUI *ui)
+{
+    return ui->text_alpha != NULL;
+}
+
+static int about_height(const DockUI *ui, int line)
+{
+    return about_prerendered(ui) ? about_font[about_lines[line].style].height :
+        ui->draw->dri_Font->tf_YSize;
+}
+
+/* Extent of a prerendered line: *left is the first covered column
+   relative to the pen start. */
+static int about_extent(int style, const char *text, int *left)
+{
+    const AboutFace *face = &about_font[style];
+    const unsigned char *c;
+    int pen = 0, lo = 0, hi = 0;
+    for (c = (const unsigned char *)text; *c; ++c) {
+        const AboutGlyph *glyph;
+        if (*c < ABOUT_FIRST_CHAR || *c > ABOUT_LAST_CHAR) continue;
+        glyph = &face->glyphs[*c-ABOUT_FIRST_CHAR];
+        if (glyph->width) {
+            if (pen+glyph->bearing < lo) lo = pen+glyph->bearing;
+            if (pen+glyph->bearing+glyph->width > hi) hi = pen+glyph->bearing+glyph->width;
+        }
+        pen += glyph->advance;
+    }
+    *left = lo;
+    return hi-lo;
+}
+
+static int about_width(const DockUI *ui, struct RastPort *rp, int line)
+{
+    int left;
+    if (about_prerendered(ui)) return about_extent(about_lines[line].style,about_lines[line].text,&left);
+    return text_length32(rp,about_lines[line].text);
+}
+
+static void about_draw(DockUI *ui, struct RastPort *rp, int line, int center, int top)
+{
+    const char *text = about_lines[line].text;
+    if (about_prerendered(ui)) {
+        const AboutFace *face = &about_font[about_lines[line].style];
+        const unsigned char *c;
+        int left, width = about_extent(about_lines[line].style,text,&left), pen = -left, y, x;
+        unsigned char *alpha = width > 0 ? calloc((size_t)width*face->height,1) : NULL;
+        if (!alpha) return;
+        for (c = (const unsigned char *)text; *c; ++c) {
+            const AboutGlyph *glyph;
+            if (*c < ABOUT_FIRST_CHAR || *c > ABOUT_LAST_CHAR) continue;
+            glyph = &face->glyphs[*c-ABOUT_FIRST_CHAR];
+            for (y = 0; y < face->height; ++y) {
+                const unsigned char *src = face->coverage+glyph->offset+(size_t)y*glyph->width;
+                unsigned char *dst = alpha+(size_t)y*width+pen+glyph->bearing;
+                for (x = 0; x < glyph->width; ++x) if (src[x] > dst[x]) dst[x] = src[x];
+            }
+            pen += glyph->advance;
+        }
+        amiga_alpha_template_blit(ui->text_alpha,rp,alpha,width,face->height,center-width/2,top);
+        free(alpha);
+        return;
+    }
+    SetSoftStyle(rp,about_lines[line].style == ABOUT_TITLE ? FSF_BOLD : FS_NORMAL,FSF_BOLD);
+    Move(rp,center-text_length32(rp,text)/2,top+ui->draw->dri_Font->tf_Baseline);
+    text32(rp,text);
+    SetSoftStyle(rp,FS_NORMAL,FSF_BOLD);
+}
+
 static void paint_about(DockUI *ui)
 {
     struct Window *w = ui->dialog;
     struct RastPort *rp = w->RPort;
-    int i, y;
+    int i, y = w->BorderTop+ABOUT_MARGIN;
     SetFont(rp,ui->draw->dri_Font);
     SetDrMd(rp,JAM1);
     SetAPen(rp,ui->draw->dri_Pens[TEXTPEN]);
-    y = w->BorderTop+12+rp->TxBaseline;
     for (i = 0; i < ABOUT_LINES; ++i) {
-        const char *line = about_lines[i];
-        Move(rp,(w->Width-text_length32(rp,line))/2,y);
-        text32(rp,line);
-        y += ui->font_height+ABOUT_LINE_GAP;
+        about_draw(ui,rp,i,w->Width/2,y);
+        y += about_height(ui,i)+about_lines[i].gap;
     }
 }
 
@@ -1969,17 +2069,18 @@ int dock_ui_open_about(DockUI *ui)
 {
     struct RastPort measure;
     struct Gadget *previous;
-    int i, width = 224, height, button_width, button_height;
+    int i, width = 240, height = 2*ABOUT_MARGIN, button_width, button_height;
     if (!ui || ui->dialog || !ready(ui)) return 0;
     dock_ui_close_popup(ui);
     InitRastPort(&measure); SetFont(&measure,ui->draw->dri_Font);
     for (i = 0; i < ABOUT_LINES; ++i) {
-        int line_width = text_length32(&measure,about_lines[i])+36;
+        int line_width = about_width(ui,&measure,i)+2*ABOUT_MARGIN+16;
         if (line_width > width) width = line_width;
+        height += about_height(ui,i)+about_lines[i].gap;
     }
     button_width = ui->font_width*10;
     button_height = ui->font_height+12;
-    height = ABOUT_LINES*(ui->font_height+ABOUT_LINE_GAP)+button_height+24;
+    height += button_height+10; /* 16 px between the credit and the button. */
     ui->dialog = open_dialog(ui,"About",width,height,BUTTONIDCMP);
     if (!ui->dialog) return 0;
     previous = CreateContext(&ui->gadgets);
@@ -2121,6 +2222,39 @@ static int popup_poll(DockUI *ui, DockUIAction *result)
     return DOCK_UI_NONE;
 }
 
+/* Keep the draft within what the dock can show: Size up to the largest that
+   fits this edge, scale and Folder Stack, and Scale up to the 192 px zoom.
+   cap holds the slider ranges, raised for larger saved values. */
+static void update_limits(DockUI *ui, int live)
+{
+    SettingsView *s = &ui->settings;
+    DockUIPrefs probe = ui->draft;
+    int slider, size_max = s->cap[SIZE_SLIDER], scale_max = s->cap[SCALE_SLIDER];
+    if (live && s->path) {
+        const struct StringInfo *input = s->path->SpecialInfo;
+        strcpy(probe.folder,(const char *)input->Buffer);
+    }
+    if (ui->fit) {
+        int fit = ui->fit(ui->fit_context,&probe);
+        if (fit < size_max) size_max = fit;
+    }
+    if (size_max < slider_min[SIZE_SLIDER]) size_max = slider_min[SIZE_SLIDER];
+    if (ui->draft.size > size_max) ui->draft.size = size_max;
+    while (scale_max > DOCK_SCALE_ONE &&
+        (unsigned int)(dock_scaled_size(ui->draft.size,scale_max)-1) >= DOCK_MAX_ICON_SIZE) --scale_max;
+    if (ui->draft.scale_percent > scale_max) ui->draft.scale_percent = scale_max;
+    s->limit[SIZE_SLIDER] = size_max;
+    s->limit[SCALE_SLIDER] = scale_max;
+    if (!live) return;
+    for (slider = 0; slider < SLIDER_COUNT; ++slider) {
+        int value = slider == SIZE_SLIDER ? ui->draft.size : ui->draft.scale_percent;
+        GT_SetGadgetAttrs(s->slider[slider],ui->dialog,NULL,
+            GTSL_Max,s->limit[slider],GTSL_Level,value,TAG_DONE);
+        format_slider(s->value[slider],slider,value);
+        GT_SetGadgetAttrs(s->readout[slider],ui->dialog,NULL,GTTX_Text,(ULONG)s->value[slider],TAG_DONE);
+    }
+}
+
 static void update_slider(DockUI *ui, int slider, int value)
 {
     SettingsView *s = &ui->settings;
@@ -2130,6 +2264,7 @@ static void update_slider(DockUI *ui, int slider, int value)
     *setting = value;
     format_slider(s->value[slider],slider,value);
     GT_SetGadgetAttrs(s->readout[slider],ui->dialog,NULL,GTTX_Text,(ULONG)s->value[slider],TAG_DONE);
+    update_limits(ui,1);
 }
 
 static int settings_key(DockUI *ui, UWORD code)
@@ -2141,12 +2276,13 @@ static int settings_key(DockUI *ui, UWORD code)
             break;
         case 13: return DOCK_UI_SAVE;
         case 27: return DOCK_UI_CANCEL;
-        case 'b': case 'B': browse_folder(ui); break;
-        case 'c': case 'C': set_folder_text(ui,""); break;
+        case 'b': case 'B': browse_folder(ui); update_limits(ui,1); break;
+        case 'c': case 'C': set_folder_text(ui,""); update_limits(ui,1); break;
         case 'p': case 'P': {
             int choice = (position_index(ui->draft.edge)+(code == 'p' ? 1 : 2))%3;
             ui->draft.edge = settings_edges[choice];
             GT_SetGadgetAttrs(s->position,ui->dialog,NULL,GTCY_Active,choice,TAG_DONE);
+            update_limits(ui,1);
             break;
         }
         case 's': case 'S': case 'a': case 'A': {
@@ -2186,10 +2322,12 @@ static int dialog_poll(DockUI *ui)
             else if (cls == IDCMP_MOUSEMOVE || cls == IDCMP_GADGETDOWN || cls == IDCMP_GADGETUP) {
                 if (g == ui->settings.slider[SIZE_SLIDER]) update_slider(ui,SIZE_SLIDER,code);
                 else if (g == ui->settings.slider[SCALE_SLIDER]) update_slider(ui,SCALE_SLIDER,code);
-                else if (id == GID_POSITION && code < sizeof(settings_edges)/sizeof(settings_edges[0]))
+                else if (id == GID_POSITION && code < sizeof(settings_edges)/sizeof(settings_edges[0])) {
                     ui->draft.edge = settings_edges[code];
-                else if (id == GID_BROWSE) browse_folder(ui);
-                else if (id == GID_CLEAR) set_folder_text(ui,"");
+                    update_limits(ui,1);
+                } else if (id == GID_BROWSE) { browse_folder(ui); update_limits(ui,1); }
+                else if (id == GID_CLEAR) { set_folder_text(ui,""); update_limits(ui,1); }
+                else if (id == GID_PATH) update_limits(ui,1);
                 else if (id == GID_SAVE) action = DOCK_UI_SAVE;
             }
         }

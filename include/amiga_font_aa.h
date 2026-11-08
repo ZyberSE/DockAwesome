@@ -12,6 +12,10 @@ AmigaFontAA *amiga_font_aa_create(const struct TextFont *font);
 void amiga_font_aa_free(AmigaFontAA *font);
 void amiga_font_aa_draw(const AmigaFontAA *font, DockImage *target,
     const char *text, int left, int top, uint32_t color);
+/* Blends a ready grayscale template (width bytes per row) with the
+   RastPort's foreground color. */
+void amiga_alpha_template_blit(struct Library *cyber, struct RastPort *target,
+    const unsigned char *alpha, int width, int height, int left, int top);
 /* Blends a grayscale template with the RastPort's foreground color. */
 int amiga_font_aa_blit(AmigaFontAA *font, struct Library *cyber,
     struct RastPort *target, const char *text, int left, int top);

@@ -33,9 +33,6 @@ int dock_edge_animate(const DockSettings *settings, DockEdge edge,
 int dock_edge_hover(const DockSettings *settings, DockEdge edge,
     const DockPlacement *placement, int count, int width, int height,
     int x, int y);
-int dock_edge_slot(const DockSettings *settings, DockEdge edge,
-    const DockPlacement *placement, int count, int width, int height,
-    int x, int y);
 /* External insertion uses stable resting centers, independent of the
    current animation. Returns 0..count, or -1 outside the drop band. */
 int dock_edge_insertion_slot(const DockSettings *settings, DockEdge edge,

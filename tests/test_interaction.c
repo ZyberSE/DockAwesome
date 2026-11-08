@@ -98,13 +98,11 @@ static void test_geometry(void)
     int gap, x, y;
     assert(dock_layout(&s, 3, 384, 92, 0, 0, 0, p));
     gap = p[0].x+p[0].size+s.gap/2; y = 92-s.padding-s.base_size/2;
-    assert(dock_interaction_slot(&s, p, 3, 384, 92, gap, y) >= 0);
     assert(!dock_interaction_outside(&s, p, 3, 384, 92, gap, y, 24));
     x = p[0].x-s.padding-24;
     assert(!dock_interaction_outside(&s, p, 3, 384, 92, x, y, 24));
     assert(dock_interaction_outside(&s, p, 3, 384, 92, x-1, y, 24));
     assert(dock_interaction_outside(&s, p, 3, 384, 92, gap, -100, 24));
-    assert(dock_interaction_slot(&s, p, 3, 384, 92, gap, -100) == -1);
 }
 
 int main(void)

@@ -34,6 +34,7 @@
   Preserve corner samples when adjusting the straight rim.
 - Keep the right PiP transport padding separate from the 3 px screen gap.
 - Compare original PNG alpha with the decoded icon before changing scaling.
+- Use a Vampire screenshot as the baseline for Workbench icon comparisons.
 - Keep running dots small and sharp, near the screen-side icon baseline.
 
 ## PiP and Intuition
@@ -104,3 +105,33 @@
   actual item clears the dot. Test unpinned app discovery separately.
 - Check Shell close dispatch separately from its indicator. ApolloOS can
   route raw console close through the active window.
+
+## Transfers and benchmarks
+
+- Transfer files with ApolloExplorer `acp`, not base64. Start
+  `C:ApolloExplorerSrv` on the Amiga first. If `acp` cannot load Qt, run a
+  copy next to a `Frameworks` link to the app bundle and set
+  `DYLD_FRAMEWORK_PATH`. Uploads to `host:RAM:` work; downloads keep only the
+  text before the second colon, so fetch a volume root.
+- Benchmark cache builds with the real decoded pins and live settings. A
+  synthetic icon overstated translucent pixels and hid where time went.
+- 64-bit math in per-tap code becomes library calls on the 68k.
+- Give delegated native fixes an independent review before deploying.
+  Fixes for blocking and bounded waits can move the risk to exit time:
+  never exit while the system can still signal the task or call our code.
+
+## Icons
+
+- Match the pinned icons: 48x48 PNG icons whose artwork fills about 44x44,
+  with a selected image (ApolloOS darkens it and adds an active detail).
+- Show distinct design options side by side before installing an icon.
+  Use Workbench colors; neon colors read as non-Amiga.
+- At 48 px, use one bold symbol with a strong silhouette that fills the
+  canvas. Small scenes (plates, rows, shelves) read as clutter.
+- After a rejected design, offer several distinct concepts at real size on
+  the real backdrop instead of iterating on the same idea.
+- Base the program icon on the actual dock. Keep the Amiga reference small.
+- A WBStartup program that keeps running needs the DONOTWAIT tooltype,
+  or Workbench stalls startup with "has not yet returned" and the later
+  WBStartup programs (AmiMCP included) never start. Check it with
+  GetDiskObject/FindToolType on the installed icon.

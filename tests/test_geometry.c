@@ -80,14 +80,11 @@ static void test_interaction(void)
             actual_point((DockEdge)edge,vx,vy,&x,&y);
             assert(dock_edge_hover(&s,(DockEdge)edge,p,N,w,h,x,y) ==
                 dock_hover_contains(&s,v,N,LONG,CROSS,vx,vy));
-            assert(dock_edge_slot(&s,(DockEdge)edge,p,N,w,h,x,y) ==
-                dock_interaction_slot(&s,v,N,LONG,CROSS,vx,vy));
             assert(dock_edge_outside(&s,(DockEdge)edge,p,N,w,h,x,y,5) ==
                 dock_interaction_outside(&s,v,N,LONG,CROSS,vx,vy,5));
         }
         assert(dock_edge_outside(&s,(DockEdge)edge,p,N,w,h,INT_MIN,INT_MAX,0));
         assert(!dock_edge_hover(&s,(DockEdge)edge,p,N,w,h,INT_MIN,INT_MAX));
-        assert(dock_edge_slot(&s,(DockEdge)edge,p,N,w,h,INT_MIN,INT_MAX) == -1);
     }
 }
 
@@ -183,7 +180,6 @@ static void test_counts_and_invalid(void)
             assert(dock_edge_panel_rect(&s,(DockEdge)edge,guarded.p,count,w,h,&r));
         }
         assert(dock_edge_layout(&s,(DockEdge)edge,0,LONG,LONG,0,0,0,guarded.p));
-        assert(dock_edge_slot(&s,(DockEdge)edge,NULL,0,LONG,LONG,20,20) == -1);
     }
     assert(!dock_edge_layout(&s,(DockEdge)99,1,LONG,CROSS,20,20,1,guarded.p));
     assert(!dock_edge_layout(&s,DOCK_EDGE_LEFT,DOCK_MAX_ITEMS+1,CROSS,LONG,20,20,1,guarded.p));

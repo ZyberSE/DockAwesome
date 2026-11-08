@@ -2,6 +2,7 @@
    Shape changes and ownership checks run in the application task, never from
    the input handler. No per-drag allocation, timer, patch or input replay. */
 #include "amiga_drop_catcher.h"
+#include "amiga_abi.h"
 #include <exec/ports.h>
 #include <devices/inputevent.h>
 #include <proto/input.h>
@@ -113,13 +114,6 @@ ULONG dock_backfill_paint(struct Hook *hook, struct RastPort *port,
     return 0;
 }
 
-static struct Region *set_shape(struct Window *window, struct Region *shape)
-{
-    return LP3(0x35a, struct Region *, ChangeWindowShape,
-        struct Window *, window, a0, struct Region *, shape, a1,
-        struct Hook *, NULL, a2, , IntuitionBase);
-}
-
 static int screen_is_front(struct Screen *screen)
 {
     ULONG key = LockIBase(0);
@@ -214,7 +208,7 @@ unsigned int amiga_drop_catcher_cancel(AmigaDropCatcher *c)
     if (!c) return 0;
     c->waiting = 0;
     if (!c->active) return c->failed ? AMIGA_DROP_ERROR : 0;
-    previous = set_shape(c->window, c->normal);
+    previous = amiga_change_window_shape(c->window, c->normal);
     if (previous != c->catch_region && previous != c->normal) {
         c->failed = 1;
         return AMIGA_DROP_ERROR;
@@ -266,7 +260,7 @@ unsigned int amiga_drop_catcher_update(AmigaDropCatcher *c,
                 c->backing,0,0,c->width,c->height,0xc0,0xff,NULL);
             WaitBlit();
             c->backing_valid = 1;
-            previous = set_shape(c->window, c->catch_region);
+            previous = amiga_change_window_shape(c->window, c->catch_region);
             c->active = 1;
             if (previous != c->normal) { c->failed = 1; return flags | AMIGA_DROP_ERROR; }
             flags |= AMIGA_DROP_STARTED;

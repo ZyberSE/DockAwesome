@@ -217,6 +217,235 @@ static void test_alpha_fringe(void)
     dock_cache_free(&cache);
 }
 
+static void test_faint_shadows(void)
+{
+    enum { WIDTH = 16, BOX = 20, INSET = 2 };
+    unsigned char pixels[WIDTH*WIDTH*4] = {0};
+    DockImage source = {WIDTH,WIDTH,pixels};
+    DockSettings settings = dock_settings_default();
+    DockCache cache;
+    unsigned char *image;
+
+    settings.base_size = settings.max_size = BOX;
+    pixels[3] = pixels[(WIDTH*WIDTH-1)*4+3] = 255;
+    pixels[(1*WIDTH+1)*4+3] = 80;
+    pixels[(9*WIDTH+9)*4+3] = 80;
+    pixels[(9*WIDTH+10)*4] = 150;
+    pixels[(9*WIDTH+10)*4+3] = 80;
+    pixels[(12*WIDTH+12)*4+3] = 200;
+    assert(dock_cache_build(&cache,&source,&settings));
+    image = cache.image[0].pixels+(INSET*BOX+INSET)*4;
+    assert(image[(1*BOX+1)*4+3] == 80);
+    assert(image[(9*BOX+9)*4+3] == 0);
+    assert(image[(9*BOX+10)*4+3] == 80);
+    assert(image[(12*BOX+12)*4+3] == 200);
+    dock_cache_free(&cache);
+
+    pixels[3] = pixels[(WIDTH*WIDTH-1)*4+3] = 100;
+    pixels[(12*WIDTH+12)*4+3] = 100;
+    assert(dock_cache_build(&cache,&source,&settings));
+    image = cache.image[0].pixels+(INSET*BOX+INSET)*4;
+    assert(image[(9*BOX+9)*4+3] == 80);
+    dock_cache_free(&cache);
+}
+
+/* Shadow clearing runs at source resolution. A soft edge one source pixel
+   from solid artwork must survive enlargement, and a detached shadow must
+   clear at every level even when downscaling thins the solid strokes. */
+static void test_scaled_shadows(void)
+{
+    enum { EDGE = 8, LINE = 32 };
+    unsigned char edge[EDGE*EDGE*4] = {0};
+    unsigned char line[LINE*LINE*4] = {0};
+    DockImage source = {EDGE,EDGE,edge};
+    DockSettings s = dock_settings_default();
+    DockCache cache;
+    int i, x, y;
+
+    s.base_size = 16; s.max_size = 48; s.levels = 5;
+    for (y = 2; y < 4; ++y) {
+        edge[(y*EDGE+2)*4+3] = edge[(y*EDGE+3)*4+3] = 255;
+        edge[(y*EDGE+4)*4+3] = 80;
+    }
+    assert(dock_cache_build(&cache,&source,&s));
+    for (i = 0; i < cache.levels; ++i) {
+        const DockImage *image = &cache.image[i];
+        int n = image->width, w = (n*(s.base_size-2*DOCK_ICON_INSET)+s.base_size/2)/s.base_size;
+        int right = (n-w)/2+w-1, mid = n/2;
+        /* The rightmost artwork column samples the faint source column. */
+        assert(image->pixels[((size_t)mid*n+right)*4+3] == 80);
+    }
+    dock_cache_free(&cache);
+
+    for (y = 0; y < LINE; ++y) {
+        unsigned char *p = line+((size_t)y*LINE+4)*4;
+        p[0] = p[1] = p[2] = 255; p[3] = 255;
+        if (y >= 10 && y < 18)
+            for (x = 20; x < 28; ++x) line[((size_t)y*LINE+x)*4+3] = 100;
+    }
+    source = (DockImage){LINE,LINE,line};
+    assert(dock_cache_build(&cache,&source,&s));
+    for (i = 0; i < cache.levels; ++i) {
+        const DockImage *image = &cache.image[i];
+        for (x = 0; x < image->width*image->height; ++x) {
+            const unsigned char *p = image->pixels+(size_t)x*4;
+            if (p[3]) assert(p[0] == 255 && p[1] == 255 && p[2] == 255);
+        }
+    }
+    dock_cache_free(&cache);
+}
+
+/* Dark glass enclosed by a solid frame is artwork, not a shadow, and a
+   cleared detached shadow must not offset or shrink the visible artwork. */
+static void test_enclosed_glass_and_centering(void)
+{
+    enum { N = 24 };
+    unsigned char pixels[N*N*4];
+    DockImage source = {N,N,pixels};
+    DockSettings s = dock_settings_default();
+    DockCache cache;
+    const DockImage *image;
+    int x, y, left = N, right = -1, top = N, bottom = -1;
+
+    memset(pixels,0,sizeof(pixels));
+    for (y = 0; y < N; ++y)
+        for (x = 0; x < N; ++x) {
+            unsigned char *p = pixels+(y*N+x)*4;
+            int frame = x < 2 || y < 2 || x >= N-2 || y >= N-2;
+            if (frame) { p[0] = p[1] = p[2] = 200; p[3] = 255; }
+            else { p[0] = p[1] = p[2] = 20; p[3] = 128; }
+        }
+    s.base_size = s.max_size = N+2*DOCK_ICON_INSET;
+    assert(dock_cache_build(&cache,&source,&s));
+    image = &cache.image[0];
+    for (y = 4; y < N-4; ++y)
+        for (x = 4; x < N-4; ++x)
+            assert(image->pixels[((size_t)(y+DOCK_ICON_INSET)*image->width+x+DOCK_ICON_INSET)*4+3] == 128);
+    dock_cache_free(&cache);
+
+    memset(pixels,0,sizeof(pixels));
+    for (y = 0; y < 16; ++y)
+        for (x = 0; x < 16; ++x) {
+            unsigned char *p = pixels+(y*N+x)*4;
+            p[0] = 220; p[1] = 120; p[2] = 40; p[3] = 255;
+        }
+    for (y = 20; y < N; ++y)
+        for (x = 20; x < N; ++x) pixels[(y*N+x)*4+3] = 60;
+    s.base_size = 32; s.max_size = 64; s.levels = 5;
+    assert(dock_cache_build(&cache,&source,&s));
+    image = &cache.image[0];
+    for (y = 0; y < image->height; ++y)
+        for (x = 0; x < image->width; ++x)
+            if (image->pixels[((size_t)y*image->width+x)*4+3]) {
+                if (x < left) left = x;
+                if (x > right) right = x;
+                if (y < top) top = y;
+                if (y > bottom) bottom = y;
+            }
+    assert(left == DOCK_ICON_INSET && top == DOCK_ICON_INSET);
+    assert(right == image->width-1-DOCK_ICON_INSET && bottom == image->height-1-DOCK_ICON_INSET);
+    dock_cache_free(&cache);
+}
+
+/* levels=2 with a wide zoom range: the overlap push must not carry the
+   animated row off the surface (it reached 65 px past it before). */
+static void test_animation_stays_inside(void)
+{
+    DockSettings s = dock_settings_default();
+    int count, length = 1220;
+    s.base_size = 54; s.max_size = 169; s.levels = 2;
+    for (count = 2; count <= 20; ++count) {
+        DockPlacement current[DOCK_MAX_ITEMS], target[DOCK_MAX_ITEMS];
+        DockAnimation animation;
+        int mx, tick, i;
+        if (!dock_layout(&s,count,length,200,0,0,0,current)) continue;
+        dock_animation_reset(&animation);
+        for (mx = 0; mx < length; mx += 7) {
+            if (!dock_layout(&s,count,length,200,mx,100,1,target)) break;
+            for (tick = 0; tick < 3; ++tick) {
+                dock_animate_step(&s,&animation,current,target,count);
+                for (i = 0; i < count; ++i)
+                    assert(current[i].x >= 0 && current[i].x+current[i].size <= length);
+            }
+        }
+    }
+}
+
+/* A single icon equals level 0 of a cache with the same resting size. */
+static void test_icon_build(void)
+{
+    unsigned char pixels[20*14*4];
+    DockImage source = {20,14,pixels}, icon;
+    DockSettings s = dock_settings_default();
+    DockCache cache;
+    int i;
+    for (i = 0; i < 20*14*4; ++i) pixels[i] = (unsigned char)(i*37+11);
+    s.base_size = 40; s.max_size = 80;
+    assert(dock_cache_build(&cache,&source,&s));
+    assert(dock_icon_build(&icon,&source,40));
+    assert(icon.width == 40 && icon.height == 40);
+    assert(!memcmp(icon.pixels,cache.image[0].pixels,40*40*4));
+    free(icon.pixels);
+    dock_cache_free(&cache);
+    assert(!dock_icon_build(&icon,&source,DOCK_MIN_ICON_SIZE-1) && !icon.pixels);
+}
+
+/* Bicubic resampling: exact at 1:1, flat areas stay flat when
+   enlarged, and reductions average fine stripes instead of aliasing. */
+static void test_resampling(void)
+{
+    enum { W = 13, H = 11, FLAT = 8, STRIPES = 64 };
+    unsigned char exact[W*H*4], flat[FLAT*FLAT*4], stripes[STRIPES*STRIPES*4];
+    DockSettings s = dock_settings_default();
+    DockImage source = {W,H,exact};
+    DockCache cache;
+    unsigned int seed = 7;
+    int i, x, y;
+
+    for (i = 0; i < W*H*4; ++i) {
+        seed = seed*1103515245U+12345U;
+        exact[i] = (unsigned char)(64+(seed>>16)%192);
+    }
+    s.base_size = s.max_size = W+2*DOCK_ICON_INSET;
+    assert(dock_cache_build(&cache,&source,&s));
+    for (y = 0; y < H; ++y)
+        for (x = 0; x < W; ++x) {
+            const unsigned char *p = cache.image[0].pixels+
+                ((size_t)(y+(s.base_size-H)/2)*s.base_size+x+DOCK_ICON_INSET)*4;
+            assert(!memcmp(p,exact+(y*W+x)*4,4));
+        }
+    dock_cache_free(&cache);
+
+    for (i = 0; i < FLAT*FLAT; ++i) {
+        flat[i*4] = 100; flat[i*4+1] = 150; flat[i*4+2] = 200; flat[i*4+3] = 180;
+    }
+    source = (DockImage){FLAT,FLAT,flat};
+    s.base_size = 16; s.max_size = 64; s.levels = 5;
+    assert(dock_cache_build(&cache,&source,&s));
+    for (i = 0; i < cache.levels; ++i) {
+        const DockImage *image = &cache.image[i];
+        for (x = 0; x < image->width*image->height; ++x) {
+            const unsigned char *p = image->pixels+(size_t)x*4;
+            if (p[3]) assert(p[0] == 100 && p[1] == 150 && p[2] == 200 && p[3] == 180);
+        }
+    }
+    dock_cache_free(&cache);
+
+    for (y = 0; y < STRIPES; ++y)
+        for (x = 0; x < STRIPES; ++x) {
+            unsigned char *p = stripes+((size_t)y*STRIPES+x)*4;
+            p[0] = p[1] = p[2] = (unsigned char)(x&1 ? 255 : 0); p[3] = 255;
+        }
+    source = (DockImage){STRIPES,STRIPES,stripes};
+    s.base_size = s.max_size = 16; s.levels = 2;
+    assert(dock_cache_build(&cache,&source,&s));
+    for (x = 0; x < 16*16; ++x) {
+        const unsigned char *p = cache.image[0].pixels+(size_t)x*4;
+        if (p[3]) assert(p[0] >= 116 && p[0] <= 140);
+    }
+    dock_cache_free(&cache);
+}
+
 static void test_distant_icon_motion(void)
 {
     DockSettings s = dock_settings_default();
@@ -404,9 +633,9 @@ static void test_reference_timing_and_panel(void)
     assert(!memcmp(current, rest, sizeof(rest)));
     memset(backdrop, 200, sizeof(backdrop));
     for (y = 0; y < 320 * 100; ++y) backdrop[y*4+3] = 255;
-    dock_render(&frame, &back, icons, rest, 5, &s, NULL);
+    dock_render_oriented_mask(&frame, &back, icons, rest, 5, &s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0);
     for (y = 0; y < 100; ++y) memcpy(center+y*4, pixels+(y*320+160)*4, 4);
-    dock_render(&frame, &back, icons, left, 5, &s, NULL);
+    dock_render_oriented_mask(&frame, &back, icons, left, 5, &s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0);
     for (y = 0; y < 100; ++y) {
         assert(!memcmp(center+y*4, pixels+(y*320+160)*4, 4));
         if (y < 100-DOCK_DESKTOP_GAP-dock_panel_thickness(&s))
@@ -431,10 +660,10 @@ static void test_rounded_panel(void)
     for (x = 0; x < W * H; ++x) {
         back[x*4] = 120; back[x*4+1] = 100; back[x*4+2] = 80; back[x*4+3] = 255;
     }
-    dock_render_cached(&frame, &backdrop, icons, p, 5, &s, NULL, shape);
+    dock_render_oriented_mask(&frame, &backdrop, icons, p, 5, &s, NULL, shape, NULL, 0, DOCK_EDGE_BOTTOM, 0);
     assert(shape->radius == 11);
     memcpy(reference, pixels, sizeof(pixels));
-    dock_render(&frame, &backdrop, icons, p, 5, &s, NULL);
+    dock_render_oriented_mask(&frame, &backdrop, icons, p, 5, &s, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0);
     assert(!memcmp(reference, pixels, sizeof(pixels))); /* cached and analytic masks agree */
     for (y = TOP; y < BOTTOM; ++y) for (x = LEFT; x < RIGHT; ++x) {
         int mx = LEFT + RIGHT - 1 - x, my = TOP + BOTTOM - 1 - y;
@@ -459,11 +688,11 @@ static void test_rounded_panel(void)
     }
     assert(fractional > 10); /* coverage antialiasing, not binary stair steps */
     assert(dock_layout(&s, 5, W, H, 80, 60, 1, p));
-    dock_render_cached(&frame, &backdrop, icons, p, 5, &s, NULL, shape);
+    dock_render_oriented_mask(&frame, &backdrop, icons, p, 5, &s, NULL, shape, NULL, 0, DOCK_EDGE_BOTTOM, 0);
     assert(shape->radius == 11); /* width animation reuses radius-only masks */
     assert(!memcmp(pixels+BOTTOM*W*4, back+BOTTOM*W*4, (H-BOTTOM)*W*4));
     frame.width = frame.height = 1;
-    dock_render_cached(&frame, NULL, NULL, NULL, 0, &s, NULL, shape);
+    dock_render_oriented_mask(&frame, NULL, NULL, NULL, 0, &s, NULL, shape, NULL, 0, DOCK_EDGE_BOTTOM, 0);
     assert(pixels[0] == 32 && pixels[3] == 255);
     free(shape);
 }
@@ -607,10 +836,10 @@ static void test_overlay_coverage(void)
         backdrop.pixels[i*4+2] = 255; backdrop.pixels[i*4+3] = 255;
     }
     icon.levels = 1; icon.image[0].width = icon.image[0].height = 4; icon.image[0].pixels = icon_pixels;
-    dock_render_cached(&frame, &backdrop, icons, &place, 1, &settings, NULL, NULL);
+    dock_render_oriented_mask(&frame, &backdrop, icons, &place, 1, &settings, NULL, NULL, NULL, 0, DOCK_EDGE_BOTTOM, 0);
     memcpy(plain, frame.pixels, 100*100*4);
     memset(mask, 0xa5, 100*100);
-    dock_render_cached_mask(&frame, &backdrop, icons, &place, 1, &settings, NULL, NULL, mask);
+    dock_render_oriented_mask(&frame, &backdrop, icons, &place, 1, &settings, NULL, NULL, mask, 0, DOCK_EDGE_BOTTOM, 0);
     assert(!memcmp(plain, frame.pixels, 100*100*4));
     assert(mask[8*100+48] == 255 && mask[8*100+49] == 255 && mask[8*100+50] == 0);
     assert(mask[70*100+50] == 255 && mask[0] == 0 && mask[99*100+50] == 0);
@@ -717,13 +946,6 @@ static void test_reorder(void)
     assert(!dock_reorder(items, sizeof(items[0]), 3, -1, 1));
 }
 
-static void presented(void *context, const DockImage *frame)
-{
-    int *calls = (int *)context;
-    assert(frame->pixels && frame->width == 320);
-    ++*calls;
-}
-
 static void test_clipped_divider(void)
 {
     unsigned char pixels[32*32*4+16];
@@ -804,17 +1026,17 @@ static void test_renderer(void)
     unsigned char *pixels = (unsigned char *)malloc(320 * 128 * 4);
     unsigned char *back = (unsigned char *)malloc(320 * 128 * 4);
     DockImage frame = {320, 128, pixels}, backdrop = {320, 128, back};
-    int calls = 0, i;
-    DockRenderer r = {.pixels = dock_backend_portable(), .output = {&calls, presented}};
+    int i;
+    DockRenderer r = {.pixels = dock_backend_portable()};
     assert(pixels && back);
     for (i = 0; i < 320 * 128; ++i) {
         back[i*4] = 200; back[i*4+1] = 100; back[i*4+2] = 50; back[i*4+3] = 255;
     }
     dock_renderer_draw(&r, &frame, &backdrop, NULL, NULL, 0, &s);
-    assert(calls == 1 && !memcmp(pixels, back, 320 * 4));
+    assert(!memcmp(pixels, back, 320 * 4));
     assert(pixels[(100 * 320 + 160) * 4] == 110);
     dock_renderer_draw(&r, &frame, NULL, NULL, NULL, 0, &s);
-    assert(calls == 2 && pixels[0] == 32 && pixels[3] == 255);
+    assert(pixels[0] == 32 && pixels[3] == 255);
     free(pixels); free(back);
 }
 
@@ -823,6 +1045,7 @@ int main(void)
     DockSettings defaults = dock_settings_default();
     test_normalize(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_layout(); test_blend();
     test_mix(); test_pressed_artwork(); test_side_panel_coverage(); test_reorder(); test_renderer();
+    test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build();
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();
     test_animation_and_pointer_anchor(); test_reference_timing_and_panel(); test_rounded_panel();
     test_convert(); test_native565(); test_key565(); test_overlay_coverage();

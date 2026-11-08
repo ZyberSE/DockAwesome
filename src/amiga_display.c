@@ -23,6 +23,7 @@ struct AmigaDisplay {
     DockConvertRGB565 rgb565_to_rgba;
     int width, height, depth, stride;
     unsigned char *upload, *lookup;
+    int shared_lookup;
     ULONG palette[256 * 3];
     struct RastPort temp;
     struct BitMap *temp_bitmap;
@@ -30,6 +31,66 @@ struct AmigaDisplay {
     struct RastPort frame;
     struct BitMap *frame_bitmap;
 };
+
+/* One palette lookup serves every display on the same palette. Building it
+   costs about one million distance tests, so transient surfaces reuse it. */
+static struct {
+    int refs, count;
+    ULONG palette[256 * 3];
+    unsigned char table[4096];
+} *lookup_cache;
+
+static unsigned char *build_lookup(AmigaDisplay *d, int n)
+{
+    unsigned char *lookup;
+    int r, g, b, i;
+    if (lookup_cache && lookup_cache->count == n &&
+        !memcmp(lookup_cache->palette, d->palette, sizeof(ULONG) * 3 * n)) {
+        ++lookup_cache->refs;
+        d->shared_lookup = 1;
+        return lookup_cache->table;
+    }
+    if (!lookup_cache) {
+        lookup_cache = malloc(sizeof(*lookup_cache));
+        if (lookup_cache) {
+            lookup_cache->refs = 1;
+            lookup_cache->count = n;
+            memcpy(lookup_cache->palette, d->palette, sizeof(ULONG) * 3 * n);
+            lookup = lookup_cache->table;
+            d->shared_lookup = 1;
+        } else lookup = NULL;
+    } else lookup = malloc(4096);
+    if (lookup) for (r = 0; r < 16; ++r) for (g = 0; g < 16; ++g) for (b = 0; b < 16; ++b) {
+        long best_error = 0x7fffffffL;
+        int best = 0;
+        for (i = 0; i < n; ++i) {
+            long dr = r * 17 - (d->palette[i*3] >> 24);
+            long dg = g * 17 - (d->palette[i*3+1] >> 24);
+            long db = b * 17 - (d->palette[i*3+2] >> 24);
+            long error = 2*dr*dr + 3*dg*dg + db*db;
+            if (error < best_error) { best_error = error; best = i; }
+        }
+        lookup[(r<<8)|(g<<4)|b] = best;
+    }
+    return lookup;
+}
+
+static void free_lookup(AmigaDisplay *d)
+{
+    if (!d->lookup) return;
+    if (!d->shared_lookup) free(d->lookup);
+    else if (!--lookup_cache->refs) { free(lookup_cache); lookup_cache = NULL; }
+    d->lookup = NULL;
+}
+
+/* ApolloOS reads full D0–D3 coordinates. The NDK inline loads only their low words. */
+static LONG read_indexed_pixels(AmigaDisplay *d, int x, int y)
+{
+    return LP7(0x30c, LONG, DockReadPixelArray8, struct RastPort *, &d->screen->RastPort, a0,
+        ULONG, (ULONG)x, d0, ULONG, (ULONG)y, d1, ULONG, (ULONG)(x + d->width - 1), d2,
+        ULONG, (ULONG)(y + d->height - 1), d3, UBYTE *, d->upload, a2,
+        struct RastPort *, &d->temp, a1, , GfxBase);
+}
 
 static LONG write_indexed_pixels(AmigaDisplay *d, struct RastPort *port)
 {
@@ -43,7 +104,7 @@ static LONG write_indexed_pixels(AmigaDisplay *d, struct RastPort *port)
 AmigaDisplay *amiga_display_open(struct Screen *screen, int width, int height)
 {
     AmigaDisplay *d;
-    int r, g, b, i, n;
+    int n;
     d = calloc(1, sizeof(*d));
     if (!d) return NULL;
     d->screen = screen; d->width = width; d->height = height;
@@ -63,24 +124,12 @@ AmigaDisplay *amiga_display_open(struct Screen *screen, int width, int height)
         /* WritePixelArray8 requires 16-pixel row alignment and a one-row temporary bitmap. */
         d->stride = (width + 15) & ~15;
         d->upload = calloc((size_t)d->stride, height);
-        d->lookup = malloc(4096);
         d->temp_bitmap = AllocBitMap(d->stride, 1, 8, BMF_CLEAR, NULL);
         if (d->temp_bitmap) { InitRastPort(&d->temp); d->temp.BitMap = d->temp_bitmap; }
         n = screen->ViewPort.ColorMap->Count;
         if (n > 256) n = 256;
         GetRGB32(screen->ViewPort.ColorMap, 0, n, d->palette);
-        if (d->lookup) for (r = 0; r < 16; ++r) for (g = 0; g < 16; ++g) for (b = 0; b < 16; ++b) {
-            long best_error = 0x7fffffffL;
-            int best = 0;
-            for (i = 0; i < n; ++i) {
-                long dr = r * 17 - (d->palette[i*3] >> 24);
-                long dg = g * 17 - (d->palette[i*3+1] >> 24);
-                long db = b * 17 - (d->palette[i*3+2] >> 24);
-                long error = 2*dr*dr + 3*dg*dg + db*db;
-                if (error < best_error) { best_error = error; best = i; }
-            }
-            d->lookup[(r<<8)|(g<<4)|b] = best;
-        }
+        d->lookup = build_lookup(d, n);
     }
     if (!d->upload || (d->depth == 8 && (!d->lookup || !d->temp_bitmap))) {
         amiga_display_close(d); return NULL;
@@ -93,7 +142,7 @@ void amiga_display_close(AmigaDisplay *d)
     if (!d) return;
     if (d->temp_bitmap) { WaitBlit(); FreeBitMap(d->temp_bitmap); }
     if (d->frame_bitmap) { WaitBlit(); FreeBitMap(d->frame_bitmap); }
-    free(d->lookup); free(d->upload);
+    free_lookup(d); free(d->upload);
     if (d->cyber) CloseLibrary(d->cyber);
     free(d);
 }
@@ -159,7 +208,8 @@ int amiga_display_drag_reference565(AmigaDisplay *d, struct BitMap *backing,
 {
     struct RastPort rp;
     int row;
-    if (!backing || visible_width < 1 || visible_width > d->width ||
+    if (!d || !d->cyber || d->depth != 16 ||
+        !backing || visible_width < 1 || visible_width > d->width ||
         GetCyberMapAttr(backing,CYBRMATTR_PIXFMT) != PIXFMT_RGB16) return 0;
     InitRastPort(&rp);
     rp.BitMap = backing;
@@ -175,8 +225,15 @@ int amiga_display_drag_mask565(AmigaDisplay *d, const unsigned char *reference,
     DockBytesEqual equal)
 {
     struct RastPort rp;
-    int row, col, changed = 0, width = d->width;
-    if (d->screen->RastPort.BitMap != d->source_bitmap) return -1;
+    int row, col, changed = 0, width;
+    if (!d) return -1;
+    width = d->width;
+    if (!d->cyber || d->depth != 16 || !reference || !mask ||
+        d->screen->RastPort.BitMap != d->source_bitmap ||
+        left < 0 || top < 0 || right > width || bottom > d->height ||
+        left >= right || top >= bottom || x < 0 || y < 0 ||
+        x+right > d->screen->Width || y+bottom > d->screen->Height) return -1;
+    if (!equal) equal = dock_bytes_equal_c;
     /* Workbench can keep Layers locked throughout a drag. This RastPort has
        no Layer and the SAGA native GetImage copies without taking its lock. */
     InitRastPort(&rp);
@@ -191,9 +248,12 @@ int amiga_display_drag_mask565(AmigaDisplay *d, const unsigned char *reference,
             if (memchr(line,1,width)) { memset(line,0,width); changed = 1; }
             continue;
         }
-        for (col = 0; col < width; ++col) {
-            int pixel = col >= left && col < right &&
-                (a[col*2] != b[col*2] || a[col*2+1] != b[col*2+1]);
+        if (left && memchr(line,1,left)) { memset(line,0,left); changed = 1; }
+        if (right < width && memchr(line+right,1,width-right)) {
+            memset(line+right,0,width-right); changed = 1;
+        }
+        for (col = left; col < right; ++col) {
+            int pixel = a[col*2] != b[col*2] || a[col*2+1] != b[col*2+1];
             if (line[col] != pixel) { line[col] = pixel; changed = 1; }
         }
     }
@@ -213,8 +273,7 @@ int amiga_display_capture(AmigaDisplay *d, DockImage *im, int x, int y)
                 x, y, d->width, d->height, RECTFMT_RGB) != (ULONG)d->width*d->height) return 0;
         dock_rgb24_to_rgba_c(im->pixels,d->upload,(unsigned long)d->width*d->height);
     } else {
-        if (ReadPixelArray8(&d->screen->RastPort, x, y, x+d->width-1, y+d->height-1,
-                           d->upload, &d->temp) != (LONG)d->width*d->height) return 0;
+        if (read_indexed_pixels(d, x, y) != (LONG)d->width*d->height) return 0;
         for (iy = 0; iy < d->height; ++iy) for (ix = 0; ix < d->width; ++ix) {
             unsigned int pen = d->upload[(size_t)iy*d->stride+ix];
             unsigned char *out = im->pixels + ((size_t)iy * d->width + ix) * 4;

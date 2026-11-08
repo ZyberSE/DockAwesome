@@ -7,15 +7,10 @@
 typedef struct { const char *name; DockMixHalf mix_half; DockConvertRGB24 rgba_to_rgb24;
     DockConvertRGB565 decode565, encode565; DockBytesEqual bytes_equal;
     DockKeyRGB565 key565; } DockPixelBackend;
-/* Presenter owns OS/driver upload and palette conversion. Buffer stays owned
-   by caller; callback must consume it before returning. */
-typedef struct {
-    void *context;
-    void (*present)(void *context, const DockImage *frame);
-} DockPresenter;
+/* Draws the frame only. The caller adds overlays (running dots, the dragged
+   icon) and presents it afterwards. */
 typedef struct {
     const DockPixelBackend *pixels;
-    DockPresenter output;
     DockPanelShape panel; /* Zero-initialize the renderer before first draw. */
     unsigned char *coverage; /* Optional caller-owned width*height transport mask. */
     int pressed_item; /* One-based pressed item; zero means none. */

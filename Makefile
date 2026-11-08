@@ -8,6 +8,7 @@ AMIGA_AS ?= $(TOOLCHAIN)/bin/vasmm68k_mot
 AMIGA_OBJDUMP ?= $(TOOLCHAIN)/bin/m68k-amigaos-objdump
 HOST_CC ?= cc
 PYTHON ?= python3
+ACP ?= acp
 AMMX ?= 0
 
 HOST_FLAGS := -std=c99 -O2 -Wall -Wextra -Werror -pedantic -Iinclude
@@ -30,9 +31,13 @@ AMIGA_C_OBJECTS := $(patsubst src/%.c,$(AMIGA_OBJDIR)/%.o,$(AMIGA_C_SOURCES))
 AMIGA_OBJECTS := $(AMIGA_C_OBJECTS) $(AMIGA_OBJDIR)/amiga_input.o $(AMIGA_ASM_OBJECTS)
 
 .DEFAULT_GOAL := all
-.PHONY: all amiga host-test host-bench host-sanitize check-toolchain verify package clean
+.PHONY: all amiga host-test host-bench host-sanitize check-toolchain verify package deploy clean
 all: amiga
-amiga: $(AMIGA_OUTPUT)
+amiga: $(AMIGA_OUTPUT) $(AMIGA_OUTPUT).info
+
+$(AMIGA_OUTPUT).info: assets/DockAwesome-48.info
+	@mkdir -p "$(@D)"
+	cp "$<" "$@"
 
 check-toolchain:
 	@test -x "$(AMIGA_CC)" || { echo "Missing Amiga GCC: $(AMIGA_CC)" >&2; exit 1; }
@@ -70,8 +75,12 @@ build/test_geometry: $(HOST_CORE) $(HOST_HEADERS) tests/test_geometry.c
 build/test_prefs: $(HOST_CORE) $(HOST_HEADERS) src/dock_prefs.c include/dock_prefs.h tests/test_prefs.c
 	@mkdir -p build
 	$(HOST_CC) $(HOST_FLAGS) $(HOST_CORE) src/dock_prefs.c tests/test_prefs.c -o "$@"
-host-test: build/test_core build/test_interaction build/test_geometry build/test_prefs
+build/test_core_be: $(HOST_CORE) $(HOST_HEADERS) tests/test_core.c
+	@mkdir -p build
+	$(HOST_CC) $(HOST_FLAGS) -DDOCK_EMULATE_BIG_ENDIAN $(HOST_CORE) tests/test_core.c -o "$@"
+host-test: build/test_core build/test_core_be build/test_interaction build/test_geometry build/test_prefs
 	./build/test_core
+	./build/test_core_be
 	./build/test_interaction
 	./build/test_geometry
 	./build/test_prefs
@@ -106,9 +115,13 @@ verify: amiga
 
 package: amiga
 	@mkdir -p build/dist/DockAwesome
-	cp "$(AMIGA_OUTPUT)" build/dist/DockAwesome/
+	cp "$(AMIGA_OUTPUT)" "$(AMIGA_OUTPUT).info" build/dist/DockAwesome/
 	cp README.md build/dist/DockAwesome/
 	cp -R docs build/dist/DockAwesome/
+
+deploy: amiga
+	@test -n "$(AMIGA_DEST)" || { echo "Set AMIGA_DEST to host:volume:." >&2; exit 1; }
+	"$(ACP)" "$(AMIGA_OUTPUT).info" "$(AMIGA_OUTPUT)" "$(AMIGA_DEST)"
 
 clean:
 	$(RM) -r build

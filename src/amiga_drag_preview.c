@@ -96,8 +96,7 @@ AmigaDragPreview *amiga_drag_preview_open(struct Screen *screen, const DockImage
     p->window = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)screen,
         WA_Left, p->left, WA_Top, p->top, WA_Width, p->width, WA_Height, p->height,
         WA_Borderless, TRUE, WA_Activate, FALSE, WA_SmartRefresh, TRUE, WA_NoCareRefresh, TRUE,
-        shaped ? WA_ShapeRegion : TAG_IGNORE, (ULONG)p->shape,
-        WA_Title, (ULONG)"DockAwesome Drag", TAG_DONE);
+        shaped ? WA_ShapeRegion : TAG_IGNORE, (ULONG)p->shape, TAG_DONE);
     if (!p->window || !amiga_display_present(display,p->window,&frame)) goto done;
     rp = p->window->RPort;
     SetFont(rp,screen->RastPort.Font);

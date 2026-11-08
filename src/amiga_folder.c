@@ -1,10 +1,27 @@
 #include "amiga_folder.h"
 #include <dos/dosextens.h>
 #include <proto/dos.h>
+#include <proto/exec.h>
 #include <proto/utility.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+void *amiga_requesters_off(void)
+{
+    struct Process *self = (struct Process *)FindTask(NULL);
+    void *previous;
+    if (self->pr_Task.tc_Node.ln_Type != NT_PROCESS) return NULL;
+    previous = self->pr_WindowPtr;
+    self->pr_WindowPtr = (APTR)-1;
+    return previous;
+}
+
+void amiga_requesters_restore(void *previous)
+{
+    struct Process *self = (struct Process *)FindTask(NULL);
+    if (self->pr_Task.tc_Node.ln_Type == NT_PROCESS) self->pr_WindowPtr = previous;
+}
 
 static int compare_names(const void *left, const void *right)
 {
@@ -63,7 +80,7 @@ static int link_is_drawer(BPTR directory, const char *name, struct FileInfoBlock
     return drawer;
 }
 
-int amiga_folder_read(const char *path, DockFolderEntry **entries, size_t *count)
+static int read_folder(const char *path, DockFolderEntry **entries, size_t *count)
 {
     DockFolderEntry *result = NULL;
     size_t used = 0, capacity = 0;
@@ -124,4 +141,12 @@ done:
     *entries = result;
     *count = mark_custom_icons(result,used);
     return 1;
+}
+
+int amiga_folder_read(const char *path, DockFolderEntry **entries, size_t *count)
+{
+    void *requesters = amiga_requesters_off();
+    int ok = read_folder(path, entries, count);
+    amiga_requesters_restore(requesters);
+    return ok;
 }

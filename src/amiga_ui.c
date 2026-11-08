@@ -5,6 +5,7 @@
 #include "amiga_text.h"
 #include "amiga_version.h"
 #include <exec/libraries.h>
+#include <exec/memory.h>
 #include <graphics/clip.h>
 #include <graphics/gfxbase.h>
 #include <graphics/regions.h>
@@ -149,6 +150,10 @@ struct DockUI {
     FolderView folder;
     FolderReveal *folder_reveal;
     char folder_open_path[DOCK_PREFS_PATH_CAP];
+    DockImage backdrop_carry;
+    int carry_left, carry_top;
+    DockUIBlocking blocking;
+    void *blocking_context;
     struct Gadget *gadgets;
     struct Library *asl;
     DockUIPrefs draft;
@@ -211,6 +216,7 @@ typedef struct {
     struct Rectangle bounds;
     FolderBackdropLayer target;
     FolderReveal *reveal;
+    int restored;
 } FolderBackfill;
 
 struct FolderReveal {
@@ -218,7 +224,7 @@ struct FolderReveal {
     AmigaDisplay *display;
     volatile ULONG deadline;
     volatile int closing, expired;
-    int count;
+    int count, kept;
 };
 
 extern ULONG dock_folder_backfill_entry(void);
@@ -268,6 +274,22 @@ static int folder_backdrop_layers(struct Layer *layer, const struct Rectangle *b
     return n;
 }
 
+/* Hook code that must outlive the dock: a foreign layer owner may call a hook
+   we could not remove after DockAwesome has quit. Allocated once, never freed.
+   [0] moveq #0,d0; rts           no-op for the default backfill choices
+   [2] movea.l h_Data(a0),a0; move.l h_Entry(a0),-(sp); rts
+                                   forward to the original hook in h_Data */
+static const UWORD *persistent_hook_code(void)
+{
+    static UWORD *code;
+    static const UWORD words[] = {0x7000,0x4e75,0x2068,0x0010,0x2f28,0x0008,0x4e75};
+    if (!code && (code = AllocVec(sizeof(words),MEMF_PUBLIC))) {
+        CopyMem((APTR)words,code,sizeof(words));
+        CacheClearU();
+    }
+    return code;
+}
+
 static void finish_folder_reveal(DockUI *ui, int wait)
 {
     FolderReveal *reveal = ui->folder_reveal;
@@ -278,21 +300,44 @@ static void finish_folder_reveal(DockUI *ui, int wait)
     reveal->expired = 1;
     if (wait) LockLayerInfo(info);
     else if (!AttemptSemaphore(&info->Lock)) return;
-    for (layer = info->top_layer; layer; layer = layer->back) {
-        for (i = 0; i < reveal->count; ++i) {
-            if (layer->BackFill != &reveal->fills[i].hook) continue;
-            if (wait || AttemptSemaphore(&layer->Lock)) {
-                InstallLayerHook(layer,reveal->fills[i].original);
-                if (!wait) ReleaseSemaphore(&layer->Lock);
-            } else busy = 1;
-            break;
+    for (i = 0; i < reveal->count; ++i) {
+        FolderBackfill *fill = &reveal->fills[i];
+        if (fill->restored) continue;
+        for (layer = info->top_layer; layer && layer != fill->target.layer; layer = layer->back) {}
+        if (!layer) { fill->restored = 1; continue; }
+        if (wait) LockLayer(0,layer);
+        else if (!AttemptSemaphore(&layer->Lock)) { busy = 1; continue; }
+        if (layer->BackFill == &fill->hook) InstallLayerHook(layer,fill->original);
+        else {
+            /* The owner installed its own hook and may restore or chain ours
+               later, even after we quit. Keep this hook allocated and point
+               it at persistent code: forward to the original, or do nothing
+               for the default backfill choices. */
+            const UWORD *code = persistent_hook_code();
+            int real = fill->original != LAYERS_BACKFILL && fill->original != LAYERS_NOBACKFILL;
+            Forbid();
+            if (code) {
+                fill->hook.h_SubEntry = NULL;
+                fill->hook.h_Data = real ? (APTR)fill->original : NULL;
+                fill->hook.h_Entry = (APTR)(real ? code+2 : code);
+            } else if (real) {
+                fill->hook.h_SubEntry = fill->original->h_SubEntry;
+                fill->hook.h_Data = fill->original->h_Data;
+                fill->hook.h_Entry = fill->original->h_Entry;
+            }
+            Permit();
+            reveal->kept = 1;
         }
+        fill->restored = 1;
+        if (wait) UnlockLayer(layer);
+        else ReleaseSemaphore(&layer->Lock);
     }
     if (wait) UnlockLayerInfo(info);
     else ReleaseSemaphore(&info->Lock);
     if (busy) return;
     amiga_display_close(reveal->display);
-    free(reveal);
+    reveal->display = NULL;
+    if (!reveal->kept) FreeVec(reveal);
     ui->folder_reveal = NULL;
 }
 
@@ -304,8 +349,9 @@ static void close_folder_window(DockUI *ui, int preserve)
     struct Rectangle bounds = {w->LeftEdge,w->TopEdge,
         w->LeftEdge+w->Width-1,w->TopEdge+w->Height-1};
     FolderBackdropLayer current[FOLDER_BACKDROP_LAYERS];
+    /* Public memory: a foreign layer owner may keep a pointer to a hook. */
     FolderReveal *reveal = preserve && f->handoff_bitmap && f->backdrop_layer_count > 0 ?
-        calloc(1,sizeof(*reveal)) : NULL;
+        AllocVec(sizeof(*reveal),MEMF_PUBLIC|MEMF_CLEAR) : NULL;
     int n, i;
     if (reveal) {
         reveal->closing = 1;
@@ -345,7 +391,7 @@ static void close_folder_window(DockUI *ui, int preserve)
         reveal->display = ui->popup_display;
         ui->popup_display = NULL;
         ui->folder_reveal = reveal;
-    } else free(reveal);
+    } else if (reveal) FreeVec(reveal);
 }
 
 static void close_popup(DockUI *ui, int preserve)
@@ -666,6 +712,24 @@ static uint32_t glass_tint(int shift)
     return tint;
 }
 
+/* Copy the previous view's clean backdrop where it overlaps the new view.
+   Simple Refresh windows behind the old view have not repainted yet. */
+static void apply_backdrop_carry(const DockUI *ui, DockImage *glass, int left, int top)
+{
+    const DockImage *carry = &ui->backdrop_carry;
+    int x0 = left > ui->carry_left ? left : ui->carry_left;
+    int y0 = top > ui->carry_top ? top : ui->carry_top;
+    int x1 = left+glass->width, y1 = top+glass->height, y;
+    if (!carry->pixels) return;
+    if (x1 > ui->carry_left+carry->width) x1 = ui->carry_left+carry->width;
+    if (y1 > ui->carry_top+carry->height) y1 = ui->carry_top+carry->height;
+    if (x1 <= x0 || y1 <= y0) return;
+    for (y = y0; y < y1; ++y)
+        memcpy(glass->pixels+((size_t)(y-top)*glass->width+(x0-left))*4,
+            carry->pixels+((size_t)(y-ui->carry_top)*carry->width+(x0-ui->carry_left))*4,
+            (size_t)(x1-x0)*4);
+}
+
 static void capture_popup_glass(DockUI *ui, int left, int top, int width, int height, int tint_shift)
 {
     DockImage *glass = &ui->popup_glass;
@@ -677,6 +741,7 @@ static void capture_popup_glass(DockUI *ui, int left, int top, int width, int he
     int y;
     ui->popup_display = capture_glass(ui,glass,left,top,width,height);
     if (!ui->popup_display) return;
+    apply_backdrop_carry(ui,glass,left,top);
     if (folder) {
         size_t bytes = (size_t)width*height*4;
         DockImage *under = &ui->folder.motion_backdrop;
@@ -1279,9 +1344,9 @@ int dock_ui_folder_step(DockUI *ui)
     FolderView *f = &ui->folder;
     char path[DOCK_PREFS_PATH_CAP];
     DockImage source = {0};
-    DockSettings settings;
-    DockCache icon;
-    int i, x, y;
+    DockImage icon;
+    void *requesters;
+    int i, x, y, loaded;
     size_t entry;
     if (ui->folder_reveal) {
         struct EClockVal now;
@@ -1295,19 +1360,17 @@ int dock_ui_folder_step(DockUI *ui)
     entry = f->page*folder_page_size(f)+i;
     skip_standard_icons(f);
     strcpy(path,f->path);
-    if (AddPart((STRPTR)path,(STRPTR)f->entries[entry].name,sizeof(path)) &&
-        f->anchor.read_icon(f->anchor.context,path,&source)) {
-        settings = dock_settings_default();
+    requesters = amiga_requesters_off();
+    loaded = AddPart((STRPTR)path,(STRPTR)f->entries[entry].name,sizeof(path)) &&
+        f->anchor.read_icon(f->anchor.context,path,&source);
+    amiga_requesters_restore(requesters);
+    if (loaded) {
         int size = f->anchor.icon_size;
-        settings.base_size = settings.max_size = size;
-        settings.levels = 2;
-        if ((f->artwork_ready || prepare_folder_artwork(ui)) && dock_cache_build(&icon,&source,&settings)) {
+        if ((f->artwork_ready || prepare_folder_artwork(ui)) && dock_icon_build(&icon,&source,size)) {
             x = folder_icon_left(f,i);
             y = folder_icon_top(f,i);
-            dock_blend(&f->artwork,&icon.image[0],x,y);
-            f->loaded[i] = icon.image[0];
-            icon.image[0].pixels = NULL;
-            dock_cache_free(&icon);
+            dock_blend(&f->artwork,&icon,x,y);
+            f->loaded[i] = icon;
             if (!ui->popup_glass.pixels ||
                 !amiga_display_present_tile(ui->popup_display,ui->popup,&f->artwork,x,y,size,size))
                 f->needs_repaint = 1;
@@ -1319,6 +1382,13 @@ int dock_ui_folder_step(DockUI *ui)
         paint_folder(ui);
     }
     return 0;
+}
+
+void dock_ui_set_blocking_hook(DockUI *ui, DockUIBlocking hook, void *context)
+{
+    if (!ui) return;
+    ui->blocking = hook;
+    ui->blocking_context = context;
 }
 
 void dock_ui_set_converters(DockUI *ui, DockConvertRGB24 encode, DockConvertRGB565 decode)
@@ -1661,9 +1731,21 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
         free(ui->folder.motion_frame.pixels);
         ui->folder = next;
     } else {
+        const DockImage *old = &ui->folder.motion_backdrop;
+        int opened;
+        if (ui->popup && ui->folder.path[0] && old->pixels &&
+            old->width == ui->popup->Width && old->height == ui->popup->Height) {
+            ui->backdrop_carry = *old;
+            ui->carry_left = ui->popup->LeftEdge;
+            ui->carry_top = ui->popup->TopEdge;
+            ui->folder.motion_backdrop = (DockImage){0};
+        }
         dock_ui_close_popup(ui);
         ui->folder = next;
-        if (!open_popup_window(ui,left,top,width,height,0,1)) return 0;
+        opened = open_popup_window(ui,left,top,width,height,0,1);
+        free(ui->backdrop_carry.pixels);
+        ui->backdrop_carry = (DockImage){0};
+        if (!opened) return 0;
     }
     ui->popup_pressed = FOLDER_OUTSIDE;
     reset_folder_page(ui);
@@ -1722,6 +1804,7 @@ static void browse_folder(DockUI *ui)
 {
     struct Library *AslBase = ui->asl;
     struct FileRequester *request;
+    BOOL chosen;
     const char *current = ui->draft.folder;
     const struct TagItem tags[] = {
         {ASLFR_Window,(ULONG)ui->dialog}, {ASLFR_TitleText,(ULONG)"Choose Folder Stack"},
@@ -1737,7 +1820,10 @@ static void browse_folder(DockUI *ui)
     read_folder_text(ui);
     request = AllocAslRequest(ASL_FileRequest,tags);
     if (!request) return;
-    if (AslRequest(request,NULL)) {
+    if (ui->blocking) ui->blocking(ui->blocking_context,1);
+    chosen = AslRequest(request,NULL);
+    if (ui->blocking) ui->blocking(ui->blocking_context,0);
+    if (chosen) {
         const char *drawer = (const char *)request->fr_Drawer;
         if (drawer && strlen(drawer) < sizeof(ui->draft.folder)) set_folder_text(ui,drawer);
     }

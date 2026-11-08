@@ -5,6 +5,7 @@
 #include "dock_prefs.h"
 #include "amiga_display.h"
 #include "amiga_platform.h"
+#include "amiga_abi.h"
 #include "amiga_pip.h"
 #include "amiga_drop_catcher.h"
 #include "amiga_drag_preview.h"
@@ -41,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <stddef.h>
 
 #ifndef ICONCTRLA_GetARGBImageData1
 /* AROS icon.library extension absent from the classic NDK. */
@@ -73,6 +75,7 @@ typedef struct {
     char path[PATH_CAP], title_path[PATH_CAP]; DockCache cache;
     uint32_t pin_id;
     int running, kind, temporary, stack;
+    const struct Task *owner; /* A task showing this item's window; compare only. */
 } Item;
 typedef struct {
     struct Screen *screen;
@@ -134,6 +137,20 @@ typedef struct {
 } InputContext;
 struct App;
 typedef struct {
+    struct MsgPort *handler;
+    BPTR volume;
+    LONG key;
+} DirectoryIdentity;
+enum { DOS_NAME_CAP = 256 };
+typedef struct {
+    char name[DOS_NAME_CAP], current_dir[DOS_NAME_CAP], task_name[DOS_NAME_CAP];
+    DirectoryIdentity directory;
+    const struct Process *process; /* Compare only: the owner may exit. */
+    int visible; /* Owns a window a user can see; background tasks never do. */
+} WindowProgram;
+enum { LAUNCH_SLOTS = 4, LAUNCH_SECONDS = 10 };
+typedef struct { uint32_t pin_id; uint64_t at; } DockLaunch;
+typedef struct {
     struct Message message;
     int stop, count, query, valid, unavailable;
     const struct App *app;
@@ -145,9 +162,50 @@ typedef struct {
     struct {
         char path[PATH_CAP], title_path[PATH_CAP];
         uint32_t pin_id;
-        int running, kind;
+        int running, kind, temporary;
+        int attributed;            /* Output: a launched task still shows a window. */
+        const struct Task *owner;  /* Output: a task showing this pin's window. */
     } pins[DOCK_MAX_ITEMS];
+    /* Dock launches: new apps appearing soon after belong to that pin. */
+    DockLaunch launches[LAUNCH_SLOTS];
+    int launch_count;
+    uint64_t now, launch_ticks;
+    /* Console windows resolved by the worker, so the main task never waits on a
+       console handler. Probed only on request (probe_consoles): asking a console
+       for its window can open an AUTO window or wait on a busy handler. */
+    ShellTarget shells[DOCK_MAX_ITEMS];
+    int shell_count, probe_consoles, probed;
+    /* Worker-only scratch. These tables stay off the worker's stack. */
+    WindowProgram owners[DOCK_MAX_ITEMS];
+    /* Worker-only state kept between polls: apps already seen, and apps
+       attributed to the pin whose launch started them. */
+    const struct Task *seen[DOCK_MAX_ITEMS];
+    int seen_count;
+    struct { const struct Task *task; uint32_t pin_id; } attributions[DOCK_MAX_ITEMS];
+    int attribution_count;
+    char aliases[DOCK_MAX_ITEMS][PATH_CAP];
+    size_t lengths[DOCK_MAX_ITEMS];
 } ProgramPoll;
+/* mn_Length is a UWORD. The worker scratch is not part of the message. */
+_Static_assert(offsetof(ProgramPoll,owners) <= 0xffff, "ProgramPoll message exceeds mn_Length");
+/* --profile counters. Only the profile report reads them. */
+typedef struct {
+    ULONG wakes;
+    uint64_t render_ticks, min_ticks, max_ticks;
+    uint64_t present_ticks, conversion_ticks, upload_ticks;
+    uint64_t program_poll_ticks, program_poll_peak;
+    ULONG program_polls, program_changes, menu_suspends;
+    ULONG program_checks, drawer_checks, document_checks, status_events;
+    ULONG source_polls, source_changes, front_requests, shape_updates, shape_skips, shape_rects, shape_rects_peak;
+    ULONG drop_messages, drop_arguments, drop_added, drop_reordered, drop_bad_paths;
+    ULONG desktop_scans;
+    ULONG drag_reveal_frames, drag_reveal_peak, popup_reveal_frames, dialog_reveal_frames;
+    uint64_t capture_ticks, decode_ticks, shape_ticks, shape_peak_ticks;
+    uint64_t shape_build_ticks, shape_build_peak, shape_change_ticks, shape_change_peak;
+    uint64_t settle_ticks, settle_peak;
+    ULONG settles, settle_ms[16];
+    int settle_samples;
+} ProfileStats;
 typedef struct App {
     DockSettings settings;
     int scale_percent;
@@ -160,9 +218,8 @@ typedef struct App {
     int timer_label_only;
     struct MsgPort *timer_port;
     struct timerequest *timer_io;
-    ULONG clock_hz, frames, wakes;
-    uint64_t render_ticks, min_ticks, max_ticks, started;
-    uint64_t present_ticks, conversion_ticks, upload_ticks;
+    ULONG clock_hz, frames;
+    uint64_t started;
     int pip_mode, live_open, live_pending, live_fast, live_failed, pip_visible, source_valid, failed;
     int screen_left, screen_top;
     DockRect dialog_clip;
@@ -179,26 +236,24 @@ typedef struct App {
     uint32_t status_window_stamp;
     int status_recheck;
     uint64_t status_event_at, status_watch_at, document_poll_at, discovery_at;
-    uint64_t program_poll_at, program_poll_started, program_poll_ticks, program_poll_peak;
-    ULONG program_polls, program_changes, menu_suspends;
-    ULONG program_checks, drawer_checks, document_checks, status_events;
+    uint64_t program_poll_at, program_poll_started;
     uint32_t menu_pin_id;
     ShellTarget menu_shell;
+    ShellTarget shells[DOCK_MAX_ITEMS]; /* Last worker probe; validate before use. */
+    int shell_count, shell_probe_wanted;
+    uint64_t shells_at, shell_probe_at; /* Probe time, and earliest next hover probe. */
+    char notice[PATH_CAP+100]; /* Shown after a Workbench message is replied. */
     AmigaPip *pip;
     AmigaDropCatcher *drop_catcher;
     struct Region *shape, *shape_pending;
     unsigned char *source565, *coverage, *drag_mask;
     int drag_reference, drag_mask_live;
-    ULONG source_polls, source_changes, front_requests, shape_updates, shape_skips, shape_rects, shape_rects_peak;
-    ULONG drop_messages, drop_arguments, drop_added, drop_reordered, drop_bad_paths;
-    ULONG desktop_scans;
-    ULONG drag_reveal_frames, drag_reveal_peak, popup_reveal_frames, dialog_reveal_frames;
-    uint64_t capture_ticks, decode_ticks, shape_ticks, shape_peak_ticks;
-    uint64_t shape_build_ticks, shape_build_peak, shape_change_ticks, shape_change_peak;
     uint64_t front_requested;
-    uint64_t settle_started, settle_ticks, settle_peak;
-    ULONG settles, settle_ms[16];
-    int settling, settle_samples;
+    uint64_t settle_started;
+    int settling;
+    ProfileStats stats; /* --profile counters, reported at exit. */
+    DockLaunch launches[LAUNCH_SLOTS]; /* Recent dock launches, newest last. */
+    int launch_count;
     char surface_error[256];
 
     char config[CONFIG_CAP], shell_launcher_path[PATH_CAP];
@@ -207,6 +262,7 @@ typedef struct App {
     struct Screen *screen;
     struct Window *window;
     struct MsgPort *drop_port, *input_port;
+    int held_drops; /* Leading queued drops already in screen coordinates. */
     struct AppWindow *appwindow;
     struct IOStdReq *input_io;
     struct Interrupt input_handler;
@@ -248,14 +304,6 @@ static void sync_input_ui(App *app);
 static int intuition_extension(ULONG offset)
 {
     return IntuitionBase->LibNode.lib_Version == 50 && IntuitionBase->LibNode.lib_NegSize >= offset;
-}
-
-/* ApolloOS/AROS v50 public ABI. Classic Intuition has no entry at this LVO. */
-static struct Region *change_shape(struct Window *window, struct Region *shape)
-{
-    return LP3(0x35a, struct Region *, ChangeWindowShape,
-        struct Window *, window, a0, struct Region *, shape, a1,
-        struct Hook *, NULL, a2, , IntuitionBase);
 }
 
 static void item_free(Item *item)
@@ -534,27 +582,18 @@ static void dispatch_shell_close(ShellClose *close, const struct InputEvent *mar
 {
     const struct Node *node;
     const struct Interrupt *handler = NULL;
-    struct Window *window;
+    struct Window *window = close->target.window;
     struct InputEvent event = *marker;
-    ULONG lock;
-    int live;
     for (node = close->observer->is_Node.ln_Succ; node && node->ln_Succ; node = node->ln_Succ) {
         const struct Interrupt *candidate = (const struct Interrupt *)node;
         if (candidate->is_Code == close->code &&
             candidate->is_Data) { handler = candidate; break; }
     }
     if (!handler) return;
-    lock = LockIBase(0);
-    Forbid();
-    live = shell_target_live(&close->target);
-    window = IntuitionBase->FirstScreen ? IntuitionBase->FirstScreen->FirstWindow : NULL;
-    for (; window; window = window->NextWindow)
-        if (window == close->target.window) break;
-    Permit();
-    UnlockIBase(lock);
-    if (!live || !window || window->FirstRequest || !(window->Flags & WFLG_CLOSEGADGET)) return;
-    if (IntuitionBase->ActiveWindow != window) ActivateWindow(window);
-    if (IntuitionBase->ActiveWindow != window) return;
+    /* prepare_shell_close validated and activated the window. Take no lock
+       here: only an active window is safe to read and close. */
+    if (IntuitionBase->ActiveWindow != window || window->FirstRequest ||
+        !(window->Flags & WFLG_CLOSEGADGET)) return;
     event.ie_NextEvent = NULL;
     event.ie_Class = IECLASS_CLOSEWINDOW;
     event.ie_EventAddress = window;
@@ -579,6 +618,8 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
     struct InputEvent *e;
     InputContext *c = context;
     int moved = 0, notify = 0;
+    /* A held, external or right-button state can end on another screen. */
+    int engaged = c->held || c->external_held || c->right_held;
     for (e = events; e; e = e->ie_NextEvent) {
         if (e->ie_Class == IECLASS_NULL && c->shell_close &&
             e->ie_EventAddress == c->shell_close) {
@@ -713,7 +754,10 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
             if (e->ie_Code == IECODE_NOBUTTON || (!relative_left && (e->ie_X || e->ie_Y))) moved = 1;
         } else if (e->ie_Class != IECLASS_NULL) moved = 1;
     }
-    if (notify) Signal(c->task, c->signal);
+    /* Pointer motion on another screen cannot change the dock. The live
+       timer still notices when the dock screen returns to the front. */
+    if (notify && (engaged || c->held || c->external_held || c->right_held ||
+        IntuitionBase->FirstScreen == c->dock_screen)) Signal(c->task, c->signal);
     return events;
 }
 
@@ -798,8 +842,17 @@ static __attribute__((noinline)) int load_icon_mode(const App *app, const char *
         { ICONCTRLA_GetPaletteSize1, (ULONG)&colors },
         { ICONCTRLA_GetTransparentColor1, (ULONG)&transparent }, { TAG_DONE, 0 }
     };
-    icon = GetIconTagList((STRPTR)path, get_tags);
-    if (!icon && !custom_only) icon = GetDiskObjectNew((STRPTR)path);
+    if (!strchr(path,':')) {
+        /* An app without a known program file: the default tool icon. */
+        struct TagItem default_tags[] = {
+            { ICONGETA_RemapIcon, FALSE }, { ICONGETA_GenerateImageMasks, TRUE },
+            { ICONGETA_GetDefaultType, WBTOOL }, { TAG_DONE, 0 }
+        };
+        icon = custom_only ? NULL : GetIconTagList(NULL, default_tags);
+    } else {
+        icon = GetIconTagList((STRPTR)path, get_tags);
+        if (!icon && !custom_only) icon = GetDiskObjectNew((STRPTR)path);
+    }
     if (!icon) return 0;
     if (kind && *kind == PIN_PROGRAM) {
         if (icon->do_Type == WBDRAWER || icon->do_Type == WBDISK || icon->do_Type == WBGARBAGE)
@@ -911,9 +964,17 @@ static int prepare_stack(App *app, const char *path, const DockSettings *setting
     return 1;
 }
 
+/* A deferred report waits until the caller has replied to its Workbench
+   message and released the drop receiver. The first report is kept. */
+static void pin_report(App *app, int defer, const char *text)
+{
+    if (!defer) message(text);
+    else if (!app->notice[0]) snprintf(app->notice,sizeof(app->notice),"%s",text);
+}
+
 /* Positive: pin index plus one (also for an existing pin). Zero: unavailable
    icon/path. Negative: capacity/cache failure; startup must not save a subset. */
-static int pin_path(App *app, const char *path)
+static int pin_path(App *app, const char *path, int defer)
 {
     char clean[PATH_CAP], absolute[PATH_CAP];
     size_t n;
@@ -927,18 +988,18 @@ static int pin_path(App *app, const char *path)
     i = item_path_index(app,clean);
     if (i >= 0) return i+1;
     if (!dock_items_fit(&app->settings,app->count+1,viewport_limit(app,app->edge))) {
-        message("No room for another pin. Remove a pin or lower Size or Scale.");
+        pin_report(app,defer,"No room for another pin. Remove a pin or lower Size or Scale.");
         return -1;
     }
     kind = is_shell_launcher(app,clean) ? PIN_SHELL : PIN_PROGRAM;
     if (!load_icon(app, clean, &source,&kind)) {
         char error[PATH_CAP+100];
         snprintf(error, sizeof(error), "Cannot read this icon:\n%s\nCheck its .info file and icon.library.", clean);
-        message(error); return 0;
+        pin_report(app,defer,error); return 0;
     }
     if (!dock_cache_build(&cache, &source, &app->settings)) {
         free(source.pixels);
-        message("Not enough memory for the icon cache. Preferences are unchanged.");
+        pin_report(app,defer,"Not enough memory for the icon cache. Preferences are unchanged.");
         return -1;
     }
     free(source.pixels);
@@ -1030,28 +1091,59 @@ static __attribute__((noinline)) int save_config(App *app)
         UnLock(existing);
         DeleteFile((STRPTR)backup);
         if (!Rename((STRPTR)app->config, (STRPTR)backup)) {
+            DeleteFile((STRPTR)temp);
             error = "Cannot back up preferences.";
             goto finish;
         }
     } else if (IoErr() != ERROR_OBJECT_NOT_FOUND) {
+        DeleteFile((STRPTR)temp);
         error = "Cannot access preferences.";
         goto finish;
     }
+    /* existing is used only as a flag after UnLock. */
     if (Rename((STRPTR)temp, (STRPTR)app->config)) {
         DeleteFile((STRPTR)backup);
-    } else {
-        if (existing) Rename((STRPTR)backup, (STRPTR)app->config);
-        error = "Cannot replace preferences. Recover them from the .new file.";
-    }
+    } else if (existing && !Rename((STRPTR)backup, (STRPTR)app->config)) {
+        error = "Cannot replace preferences. The old file is in .bak and the new one in .new.";
+    } else error = "Cannot replace preferences. Recover them from the .new file.";
 finish:
     RemSemaphore(&claim);
     if (error) message(error);
     return !error;
 }
 
+/* Keep a specific surface error. Report it only after cleanup, when PiP,
+   input, the drop receiver and the surface are released. */
+static void fail_after_cleanup(App *app, const char *fallback)
+{
+    if (!app->surface_error[0]) strcpy(app->surface_error,fallback);
+    app->failed = 1;
+}
+
+/* Pending AppMessages stay queued. accept_drops handles them on the next
+   surface, and main replies to any that remain at exit. */
+/* Queued drops are relative to the surface that received them. Make them
+   screen-relative while no surface is open, and relative to the new surface
+   once it opens, so a drop queued across Save or R lands where it was made. */
+static void shift_held_drops(App *app, int closing)
+{
+    struct Node *node;
+    int index = 0;
+    if (!app->drop_port) return;
+    Forbid();
+    for (node = app->drop_port->mp_MsgList.lh_Head; node->ln_Succ; node = node->ln_Succ, ++index) {
+        struct AppMessage *msg = (struct AppMessage *)node;
+        if (closing ? index < app->held_drops : index >= app->held_drops) continue;
+        msg->am_MouseX += closing ? app->left : -app->left;
+        msg->am_MouseY += closing ? app->top : -app->top;
+    }
+    app->held_drops = closing ? index : 0;
+    Permit();
+}
+
 static void close_surface(App *app)
 {
-    struct Message *msg;
+    if (app->window) shift_held_drops(app,1);
     dock_ui_hide_label(app->ui);
     app->label_pin_id = 0; app->label_at = 0; app->label_visible = 0;
     amiga_drag_preview_close(app->drag_preview); app->drag_preview = NULL;
@@ -1062,7 +1154,6 @@ static void close_surface(App *app)
     live_cancel(app);
     amiga_pip_close(app->pip); app->pip = NULL;
     if (app->appwindow) { RemoveAppWindow(app->appwindow); app->appwindow = NULL; }
-    if (app->drop_port) while ((msg = GetMsg(app->drop_port))) ReplyMsg(msg);
     if (app->window) { CloseWindow(app->window); app->window = NULL; }
     amiga_drop_catcher_destroy(app->drop_catcher); app->drop_catcher = NULL;
     if (app->shape) { DisposeRegion(app->shape); app->shape = NULL; }
@@ -1102,6 +1193,8 @@ static int open_surface(App *app)
     int right_padding = app->edge == DOCK_EDGE_RIGHT && app->pip_mode ?
         RIGHT_PIP_TAIL-DOCK_DESKTOP_GAP : 0;
     int panel_cross = dock_panel_thickness(&app->settings)+DOCK_DESKTOP_GAP+right_padding;
+    /* Each attempt reports its own error. Keep the text of an earlier failure. */
+    if (!app->failed) app->surface_error[0] = 0;
     app->settings.edge_padding = right_padding;
     if (cross < panel_cross) cross = panel_cross;
     /* Pinning can use this spare room without closing and opening the surface. */
@@ -1148,8 +1241,8 @@ static int open_surface(App *app)
         /* PiP owns all visible pixels. The native receiver only has a
            nonempty shape while accepting a Workbench drag. */
         app->shape = NewRegion();
-        app->shape_rects = region_rect_count(app->shape);
-        if (app->shape_rects > app->shape_rects_peak) app->shape_rects_peak = app->shape_rects;
+        app->stats.shape_rects = region_rect_count(app->shape);
+        if (app->stats.shape_rects > app->stats.shape_rects_peak) app->stats.shape_rects_peak = app->stats.shape_rects;
         if (!app->source565 || !app->coverage || !app->drag_mask || !app->shape) return 0;
         app->pip = amiga_pip_open(app->screen, app->left, app->top, app->width,
             app->height, right_padding, app->surface_error, sizeof(app->surface_error));
@@ -1172,7 +1265,7 @@ static int open_surface(App *app)
         app->pip_mode ? WA_ShapeRegion : TAG_IGNORE, (ULONG)app->shape,
         TAG_DONE);
     if (!app->window) return 0;
-    if (app->pip_mode && change_shape(app->window, app->shape) != app->shape) {
+    if (app->pip_mode && amiga_change_window_shape(app->window, app->shape) != app->shape) {
         strcpy(app->surface_error, "PiP needs Intuition window shapes."); return 0;
     }
     app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
@@ -1182,6 +1275,7 @@ static int open_surface(App *app)
             app->shape, app->window->Width, app->height);
         if (!app->drop_catcher) return 0;
     }
+    shift_held_drops(app,0);
     return 1;
 }
 
@@ -1196,11 +1290,13 @@ static int pointer_inside(App *app, int *x, int *y)
     if (!dock_edge_hover(&app->settings, app->edge, app->placement, app->count,
             app->width, app->height, *x, *y)) return 0;
     if (app->pip_mode) return !native_menu_held(app);
-    /* Respect windows above the dock. Never draw directly into their pixels. */
-    LockLayerInfo(&app->screen->LayerInfo);
+    /* Respect windows above the dock. Never draw directly into their pixels.
+       Workbench holds the layers through an icon drag. Never wait for them;
+       keep the previous hover state until the lock is free. */
+    if (!AttemptSemaphore(&app->screen->LayerInfo.Lock)) return app->active;
     layer = WhichLayer(&app->screen->LayerInfo, app->screen->MouseX, app->screen->MouseY);
     inside = layer == app->window->WLayer;
-    UnlockLayerInfo(&app->screen->LayerInfo);
+    ReleaseSemaphore(&app->screen->LayerInfo.Lock);
     return inside;
 }
 
@@ -1355,6 +1451,16 @@ static void update_target(App *app)
     /* Hit-tests always correspond to the currently displayed frame. */
     app->hovered = inside ? input_hit_test(app, x, y) : -1;
     app->active = inside;
+    /* Resolve Shell windows while the pointer rests on a running Shell pin,
+       so its menu has a fresh target without a packet on the main task. */
+    if (app->hovered >= 0 && app->hovered < app->count &&
+        app->items[app->hovered].kind == PIN_SHELL && app->items[app->hovered].running) {
+        uint64_t now = profile_clock();
+        if (now >= app->shell_probe_at) {
+            app->shell_probe_wanted = 1;
+            app->shell_probe_at = now+app->clock_hz;
+        }
+    }
 }
 
 static void animation_finish(App *app)
@@ -1375,10 +1481,10 @@ static void animation_profile_end(App *app)
 {
     if (app->profile && app->settling && !animation_needed(app)) {
         uint64_t ticks = profile_clock()-app->settle_started;
-        app->settling = 0; ++app->settles; app->settle_ticks += ticks;
-        if (ticks > app->settle_peak) app->settle_peak = ticks;
-        if (app->settle_samples < 16)
-            app->settle_ms[app->settle_samples++] = (ULONG)(ticks*1000/app->clock_hz);
+        app->settling = 0; ++app->stats.settles; app->stats.settle_ticks += ticks;
+        if (ticks > app->stats.settle_peak) app->stats.settle_peak = ticks;
+        if (app->stats.settle_samples < 16)
+            app->stats.settle_ms[app->stats.settle_samples++] = (ULONG)(ticks*1000/app->clock_hz);
     }
 }
 
@@ -1453,26 +1559,49 @@ static int is_interactive_shell(const struct Process *process)
         cli->cli_StandardInput && IsInteractive(cli->cli_StandardInput);
 }
 
-/* The caller holds Forbid until it has finished inspecting the result. */
-static struct Process *find_interactive_shell(void)
+/* Worker only: the console handler's reply can wait. Forbid keeps each
+   process valid until its packet is queued. The main task validates the
+   cached targets with shell_target_live before using them. */
+static void poll_shells(ProgramPoll *poll)
 {
-    ULONG i, last = MaxCli();
-    for (i = 1; ; ++i) {
-        struct Process *process = FindCliProc(i);
-        if (is_interactive_shell(process)) return process;
+    struct InfoData *info = poll->probe_consoles ?
+        AllocVec(sizeof(*info),MEMF_PUBLIC|MEMF_CLEAR) : NULL;
+    ULONG number, last = MaxCli();
+    int i, running = 0;
+    poll->shell_count = 0;
+    poll->probed = info != NULL;
+    for (number = 1; ; ++number) {
+        struct Process *process;
+        ShellTarget candidate = {0};
+        int found;
+        Forbid();
+        process = FindCliProc(number);
+        found = process != NULL;
+        if (is_interactive_shell(process)) {
+            running = 1;
+            if (info && process->pr_CIS ==
+                    ((struct CommandLineInterface *)BADDR(process->pr_CLI))->cli_StandardInput) {
+                candidate.number = number;
+                candidate.process = process;
+                candidate.port = process->pr_ConsoleTask;
+                memset(info,0,sizeof(*info));
+                if (DoPkt(candidate.port,ACTION_DISK_INFO,MKBADDR(info),0,0,0,0)) {
+                    candidate.window = (struct Window *)info->id_VolumeNode;
+                    candidate.cooked = info->id_DiskType == 0x434f4e00UL; /* CON */
+                }
+            }
+        }
+        Permit();
+        if (candidate.window && poll->shell_count < DOCK_MAX_ITEMS)
+            poll->shells[poll->shell_count++] = candidate;
         /* ApolloDOS can report the last empty slot when the high slots are
            full. Include the occupied run just beyond its reported bound. */
-        if (i > last && !process) return NULL;
+        if (number > last && !found) break;
     }
-}
-
-static int interactive_shell_running(void)
-{
-    int running;
-    Forbid();
-    running = find_interactive_shell() != NULL;
-    Permit();
-    return running;
+    FreeVec(info);
+    for (i = 0; i < poll->count; ++i)
+        if (poll->pins[i].kind == PIN_SHELL) poll->pins[i].running = running;
+    poll->valid |= PIN_SHELL;
 }
 
 static void poll_window_programs(ProgramPoll *poll, const struct List *programs);
@@ -1597,8 +1726,8 @@ static size_t title_document_alias(const char *title, const char *path, char *ca
 static void poll_document_windows(ProgramPoll *poll)
 {
     struct Screen *screen;
-    char aliases[DOCK_MAX_ITEMS][PATH_CAP];
-    size_t lengths[DOCK_MAX_ITEMS];
+    char (*aliases)[PATH_CAP] = poll->aliases;
+    size_t *lengths = poll->lengths;
     unsigned char alias_current[DOCK_MAX_ITEMS] = {0};
     ULONG lock;
     int i, alias_count = 0;
@@ -1677,12 +1806,6 @@ static void poll_document_windows(ProgramPoll *poll)
     poll->valid |= PIN_DOCUMENT;
 }
 
-typedef struct {
-    struct MsgPort *handler;
-    BPTR volume;
-    LONG key;
-} DirectoryIdentity;
-
 static DirectoryIdentity directory_identity(BPTR lock)
 {
     const struct FileLock *file = BADDR(lock);
@@ -1717,8 +1840,6 @@ static const struct Process *window_process(const struct Window *window)
     return task && task->tc_Node.ln_Type == NT_PROCESS ? (const struct Process *)task : NULL;
 }
 
-enum { DOS_NAME_CAP = 256 };
-
 static void copy_cli_name(char dest[DOS_NAME_CAP], BSTR value)
 {
     const unsigned char *name = BADDR(value);
@@ -1746,25 +1867,18 @@ static int process_program_name(const struct Process *owner, char name[DOS_NAME_
     return name[0] != 0;
 }
 
-typedef struct {
-    char name[DOS_NAME_CAP], current_dir[DOS_NAME_CAP];
-    DirectoryIdentity directory;
-    int discover;
-} WindowProgram;
-
 static int program_path_matches(const WindowProgram *owner, const char *path)
 {
     return !Stricmp(FilePart((STRPTR)owner->name),FilePart((STRPTR)path)) &&
         same_directory(owner->directory,executable_directory(path));
 }
 
-static void discover_program(ProgramPoll *poll, const WindowProgram *owner, const char *path)
+static void discover_path(ProgramPoll *poll, const char *path)
 {
     DockImage source = {0};
     char absolute[PATH_CAP];
     int i;
-    if (!strchr(path,':') || !program_path_matches(owner,path) ||
-        !canonical_path(path,absolute)) return;
+    if (!strchr(path,':') || !canonical_path(path,absolute)) return;
     for (i = 0; i < poll->count; ++i)
         if (!Stricmp((STRPTR)poll->pins[i].path,(STRPTR)absolute)) return;
     if (!load_icon(poll->app,absolute,&source,NULL)) return;
@@ -1773,15 +1887,59 @@ static void discover_program(ProgramPoll *poll, const WindowProgram *owner, cons
     free(source.pixels);
 }
 
-/* Workbench lists its own launches. Merge in executable identities from
-   visible Intuition windows to cover programs started by the Shell. */
+static void discover_program(ProgramPoll *poll, const WindowProgram *owner, const char *path)
+{
+    if (strchr(path,':') && program_path_matches(owner,path)) discover_path(poll,path);
+}
+
+/* A window a user can see as an application: it has a layer, is not a
+   backdrop, is at least 16x16 and has a title, close gadget or drag bar.
+   Call with IBase locked. */
+static int visible_app_window(const struct Window *window)
+{
+    return window->WLayer && !(window->Flags & WFLG_BACKDROP) &&
+        window->Width >= 16 && window->Height >= 16 &&
+        ((window->Title && window->Title[0]) ||
+         (window->Flags & (WFLG_CLOSEGADGET|WFLG_DRAGBAR)));
+}
+
+static int pin_by_id(const ProgramPoll *poll, uint32_t pin_id)
+{
+    int i;
+    for (i = 0; i < poll->count; ++i) if (poll->pins[i].pin_id == pin_id) return i;
+    return -1;
+}
+
+static void mark_owner(ProgramPoll *poll, int pin, const WindowProgram *owner)
+{
+    poll->pins[pin].running |= RUNNING_WINDOW;
+    if (!poll->pins[pin].owner) poll->pins[pin].owner = &owner->process->pr_Task;
+}
+
+/* An app no pin explains, shown with the default tool icon and its task
+   name. The name, without a volume, is the temporary item's path. */
+static void discover_unnamed(ProgramPoll *poll, const WindowProgram *owner)
+{
+    DockImage source = {0};
+    if (!owner->task_name[0] || strchr(owner->task_name,':') ||
+        !load_icon(poll->app,owner->task_name,&source,NULL)) return;
+    if (dock_cache_build(&poll->new_cache,&source,&poll->settings))
+        strcpy(poll->new_path,owner->task_name);
+    free(source.pixels);
+}
+
+/* Every process that shows a visible window is an app; background tasks
+   are not. In order, an app belongs to: the pin it was attributed to, a
+   pinned program with its path, the pin launched just before it appeared,
+   a temporary icon for its program file, or a temporary default icon. */
 static void poll_window_programs(ProgramPoll *poll, const struct List *programs)
 {
-    WindowProgram owners[DOCK_MAX_ITEMS];
+    WindowProgram *owners = poll->owners;
     struct Screen *screen;
     const struct MsgPort *desktop;
     const struct Task *desktop_task;
-    int count = 0, i;
+    const DockLaunch *launch = NULL;
+    int count = 0, i, k;
     ULONG lock = LockIBase(0);
     Forbid();
     desktop = FindPort((STRPTR)"WORKBENCH");
@@ -1791,96 +1949,180 @@ static void poll_window_programs(ProgramPoll *poll, const struct List *programs)
         for (window = screen->FirstWindow; window && count < DOCK_MAX_ITEMS; window = window->NextWindow) {
             const struct Process *owner = window_process(window);
             WindowProgram *entry = &owners[count];
+            const char *task_name;
             int existing;
             if (!owner || &owner->pr_Task == poll->dock_task ||
                 &owner->pr_Task == desktop_task || !window->WLayer) continue;
-            entry->directory = directory_identity(owner->pr_HomeDir);
-            if (!entry->directory.handler ||
-                !process_program_name(owner,entry->name,entry->current_dir)) continue;
-            entry->discover = (window->Title && window->Title[0]) ||
-                (window->Flags & WFLG_CLOSEGADGET);
             for (existing = 0; existing < count; ++existing)
-                if (same_directory(entry->directory,owners[existing].directory) &&
-                    !Stricmp((STRPTR)entry->name,(STRPTR)owners[existing].name)) break;
-            if (existing == count) ++count;
-            else owners[existing].discover |= entry->discover;
+                if (owners[existing].process == owner) break;
+            if (existing < count) {
+                owners[existing].visible |= visible_app_window(window);
+                continue;
+            }
+            task_name = owner->pr_Task.tc_Node.ln_Name;
+            entry->process = owner;
+            entry->visible = visible_app_window(window);
+            entry->directory = directory_identity(owner->pr_HomeDir);
+            entry->task_name[0] = 0;
+            if (task_name && strlen(task_name) < DOS_NAME_CAP) strcpy(entry->task_name,task_name);
+            if (!process_program_name(owner,entry->name,entry->current_dir)) entry->name[0] = 0;
+            ++count;
         }
     }
     Permit();
     UnlockIBase(lock);
+    /* Attributions end when the task no longer shows a visible window. */
+    for (k = 0; k < poll->attribution_count; ) {
+        for (i = 0; i < count; ++i)
+            if (&owners[i].process->pr_Task == poll->attributions[k].task && owners[i].visible) break;
+        if (i < count && pin_by_id(poll,poll->attributions[k].pin_id) >= 0) ++k;
+        else poll->attributions[k] = poll->attributions[--poll->attribution_count];
+    }
+    for (k = poll->launch_count-1; k >= 0 && !launch; --k)
+        if (poll->now-poll->launches[k].at <= poll->launch_ticks) launch = &poll->launches[k];
     for (i = 0; i < count; ++i) {
         const WindowProgram *owner = &owners[i];
+        const struct Task *task = &owner->process->pr_Task;
         const struct Node *node;
-        int pin, pinned = 0;
-        for (pin = 0; pin < poll->count; ++pin) {
-            if (poll->pins[pin].kind != PIN_PROGRAM ||
-                !program_path_matches(owner,poll->pins[pin].path)) continue;
-            poll->pins[pin].running |= RUNNING_WINDOW;
+        int pin, pinned = 0, seen = 0;
+        for (k = 0; k < poll->seen_count; ++k) if (poll->seen[k] == task) seen = 1;
+        for (k = 0; k < poll->attribution_count && !pinned; ++k)
+            if (poll->attributions[k].task == task &&
+                (pin = pin_by_id(poll,poll->attributions[k].pin_id)) >= 0) {
+                mark_owner(poll,pin,owner);
+                poll->pins[pin].attributed = 1;
+                pinned = 1;
+            }
+        for (pin = 0; pin < poll->count && !pinned; ++pin)
+            if (poll->pins[pin].kind == PIN_PROGRAM && owner->name[0] &&
+                strchr(poll->pins[pin].path,':') && owner->directory.handler &&
+                program_path_matches(owner,poll->pins[pin].path)) {
+                mark_owner(poll,pin,owner);
+                pinned = 1;
+            }
+        if (!pinned && launch && !seen && owner->visible &&
+            (pin = pin_by_id(poll,launch->pin_id)) >= 0 &&
+            poll->attribution_count < DOCK_MAX_ITEMS) {
+            poll->attributions[poll->attribution_count].task = task;
+            poll->attributions[poll->attribution_count++].pin_id = launch->pin_id;
+            mark_owner(poll,pin,owner);
+            poll->pins[pin].attributed = 1;
             pinned = 1;
         }
-        if (pinned || !poll->allow_new || poll->new_path[0]) continue;
-        /* Keep untitled Workbench applications with a matching task name.
-           Window-only discovery requires a title or close gadget. */
-        if (programs && (owner->discover || (const char *)FilePart((STRPTR)owner->name) == owner->name))
-            for (node = programs->lh_Head; node->ln_Succ && !poll->new_path[0]; node = node->ln_Succ)
-                if (node->ln_Name) discover_program(poll,owner,node->ln_Name);
-        if (!owner->discover || poll->new_path[0]) continue;
-        if (strchr(owner->name,':')) discover_program(poll,owner,owner->name);
-        else if (owner->current_dir[0]) {
-            char path[PATH_CAP];
-            strcpy(path,owner->current_dir);
-            if (AddPart((STRPTR)path,(STRPTR)owner->name,sizeof(path)))
-                discover_program(poll,owner,path);
-            if (!poll->new_path[0] && !strchr(owner->name,'/')) {
-                strcpy(path,"C:");
+        for (pin = 0; pin < poll->count && !pinned; ++pin)
+            if (poll->pins[pin].temporary && !strchr(poll->pins[pin].path,':') &&
+                !Stricmp((STRPTR)poll->pins[pin].path,(STRPTR)owner->task_name)) {
+                mark_owner(poll,pin,owner);
+                pinned = 1;
+            }
+        if (pinned || !owner->visible || !poll->allow_new || poll->new_path[0]) continue;
+        if (owner->name[0] && owner->directory.handler) {
+            if (programs)
+                for (node = programs->lh_Head; node->ln_Succ && !poll->new_path[0]; node = node->ln_Succ)
+                    if (node->ln_Name) discover_program(poll,owner,node->ln_Name);
+            if (!poll->new_path[0] && strchr(owner->name,':')) discover_program(poll,owner,owner->name);
+            else if (!poll->new_path[0] && owner->current_dir[0]) {
+                char path[PATH_CAP];
+                strcpy(path,owner->current_dir);
                 if (AddPart((STRPTR)path,(STRPTR)owner->name,sizeof(path)))
                     discover_program(poll,owner,path);
+                if (!poll->new_path[0] && !strchr(owner->name,'/')) {
+                    strcpy(path,"C:");
+                    if (AddPart((STRPTR)path,(STRPTR)owner->name,sizeof(path)))
+                        discover_program(poll,owner,path);
+                }
             }
         }
+        if (!poll->new_path[0]) discover_unnamed(poll,owner);
+    }
+    for (poll->seen_count = 0; poll->seen_count < count; ++poll->seen_count)
+        poll->seen[poll->seen_count] = &owners[poll->seen_count].process->pr_Task;
+}
+
+/* Document-only polls skip the window pass: keep attributed pins running
+   while their task still shows a visible window. */
+static void apply_attributions(ProgramPoll *poll)
+{
+    int k;
+    for (k = 0; k < poll->attribution_count; ++k) {
+        const struct Screen *screen;
+        int pin = pin_by_id(poll,poll->attributions[k].pin_id), shown = 0;
+        ULONG lock;
+        if (pin < 0 || poll->pins[pin].attributed) continue;
+        lock = LockIBase(0);
+        Forbid();
+        for (screen = IntuitionBase->FirstScreen; screen && !shown; screen = screen->NextScreen) {
+            const struct Window *window;
+            for (window = screen->FirstWindow; window && !shown; window = window->NextWindow)
+                shown = window_process(window) &&
+                    &window_process(window)->pr_Task == poll->attributions[k].task &&
+                    visible_app_window(window);
+        }
+        Permit();
+        UnlockIBase(lock);
+        if (!shown) continue;
+        poll->pins[pin].attributed = 1;
+        poll->pins[pin].owner = poll->attributions[k].task;
     }
 }
 
 enum { WINDOW_CHECK, WINDOW_CLOSE, WINDOW_FOCUS };
 
-static void focus_window(struct Window *window)
+/* Call with IBase locked. */
+static int window_listed(const struct Window *target)
 {
-    ScreenToFront(window->WScreen);
-    WindowToFront(window);
-    ActivateWindow(window);
+    const struct Screen *screen;
+    const struct Window *window;
+    for (screen = IntuitionBase->FirstScreen; screen; screen = screen->NextScreen)
+        for (window = screen->FirstWindow; window; window = window->NextWindow)
+            if (window == target) return 1;
+    return 0;
 }
 
-/* Resolve consoles before the popup takes focus. Prefer the active Shell,
-   then use layer order on the Dock's screen. DOS packets never hold IBase. */
-static ShellTarget shell_menu_target(struct Screen *screen)
+enum { WINDOW_CALL_SCREEN, WINDOW_CALL_FRONT, WINDOW_CALL_ACTIVATE, WINDOW_CALL_CLOSE };
+
+/* Revalidate under IBase immediately before each Intuition call, never while
+   holding it. Forbid keeps the owner from closing the window until Intuition
+   has the request. A call that waits cannot invalidate the next call's check. */
+static int window_call(struct Window *window, int call)
 {
+    enum { SEND_IDCMP_CLOSE = 3 };
+    ULONG lock = LockIBase(0);
+    int live;
+    Forbid();
+    live = window_listed(window);
+    UnlockIBase(lock);
+    if (live) {
+        if (call == WINDOW_CALL_SCREEN) ScreenToFront(window->WScreen);
+        else if (call == WINDOW_CALL_FRONT) WindowToFront(window);
+        else if (call == WINDOW_CALL_ACTIVATE) ActivateWindow(window);
+        else LP3NR(0x3ae, DockWindowAction, struct Window *, window, a0,
+            ULONG, SEND_IDCMP_CLOSE, d0, struct TagItem *, NULL, a1, , IntuitionBase);
+    }
+    Permit();
+    return live;
+}
+
+static void focus_window(struct Window *window)
+{
+    if (window_call(window,WINDOW_CALL_SCREEN) && window_call(window,WINDOW_CALL_FRONT))
+        window_call(window,WINDOW_CALL_ACTIVATE);
+}
+
+/* Use the worker's console probe. Prefer the active Shell, then layer order
+   on the Dock's screen. No DOS packet is sent from the main task. */
+static ShellTarget shell_menu_target(const App *app)
+{
+    struct Screen *screen = app->screen;
     ShellTarget targets[DOCK_MAX_ITEMS], chosen = {0};
     const struct Window *active = IntuitionBase->ActiveWindow;
     const struct Layer *layer;
-    ULONG number, last = MaxCli();
     int count = 0, i;
-    for (number = 1; ; ++number) {
-        struct InfoData info = {0};
-        struct Process *process;
-        ShellTarget candidate = {0};
-        int found;
-        Forbid();
-        process = FindCliProc(number);
-        found = process != NULL;
-        if (is_interactive_shell(process) &&
-            process->pr_CIS == ((struct CommandLineInterface *)BADDR(process->pr_CLI))->cli_StandardInput) {
-            candidate.number = number;
-            candidate.process = process;
-            candidate.port = process->pr_ConsoleTask;
-            if (DoPkt(candidate.port,ACTION_DISK_INFO,MKBADDR(&info),0,0,0,0)) {
-                candidate.window = (struct Window *)info.id_VolumeNode;
-                candidate.cooked = info.id_DiskType == 0x434f4e00UL; /* CON */
-            }
-        }
-        Permit();
-        if (candidate.window && candidate.window == active) return candidate;
-        if (candidate.window && count < DOCK_MAX_ITEMS) targets[count++] = candidate;
-        if (number > last && !found) break;
-    }
+    Forbid();
+    for (i = 0; i < app->shell_count; ++i)
+        if (shell_target_live(&app->shells[i])) targets[count++] = app->shells[i];
+    Permit();
+    for (i = 0; i < count; ++i) if (targets[i].window == active) return targets[i];
     if (!count || !AttemptSemaphore(&screen->LayerInfo.Lock)) return chosen;
     for (layer = screen->LayerInfo.top_layer; layer && !chosen.window; layer = layer->back)
         for (i = 0; i < count; ++i)
@@ -1889,34 +2131,25 @@ static ShellTarget shell_menu_target(struct Screen *screen)
     return chosen;
 }
 
-static int show_shell_window(const ShellTarget *selected)
+static int show_shell_window(const App *app, const ShellTarget *selected)
 {
-    struct InfoData info = {0};
-    struct Process *shell;
-    struct Screen *screen;
-    struct Window *window = NULL;
     struct Window *target = selected->window;
     ULONG lock;
-    /* Queue the DOS request before the owner can release its console port.
-       The reply can wait, so resolve it before locking the window list. */
+    int i, live;
     if (!target) {
         Forbid();
-        shell = find_interactive_shell();
-        if (shell && DoPkt(shell->pr_ConsoleTask,ACTION_DISK_INFO,MKBADDR(&info),0,0,0,0))
-            target = (struct Window *)info.id_VolumeNode;
+        for (i = 0; i < app->shell_count && !target; ++i)
+            if (shell_target_live(&app->shells[i])) target = app->shells[i].window;
         Permit();
         if (!target) return 0;
     }
     lock = LockIBase(0);
     Forbid();
-    if (!selected->window || shell_target_live(selected))
-        for (screen = IntuitionBase->FirstScreen; screen && !window; screen = screen->NextScreen)
-            for (window = screen->FirstWindow; window; window = window->NextWindow)
-                if (window == target) break;
+    live = (!selected->window || shell_target_live(selected)) && window_listed(target);
     UnlockIBase(lock);
-    if (window) focus_window(window);
     Permit();
-    return window != NULL;
+    if (live) focus_window(target);
+    return live;
 }
 
 static InputHandlerCode apollo_console_close_handler(const App *app)
@@ -1940,12 +2173,40 @@ static InputHandlerCode apollo_console_close_handler(const App *app)
     return code;
 }
 
+/* Validate and activate on the main task so input.device never blocks.
+   Activation is asynchronous; wait up to 200 ms for it. The handler then
+   delivers the close only if the window is still the active one. */
+static int prepare_shell_close(const ShellTarget *target)
+{
+    int attempt;
+    for (attempt = 0; attempt < 10; ++attempt) {
+        ULONG lock = LockIBase(0);
+        struct Window *window;
+        int live, active;
+        Forbid();
+        live = shell_target_live(target);
+        window = IntuitionBase->FirstScreen ? IntuitionBase->FirstScreen->FirstWindow : NULL;
+        for (; window; window = window->NextWindow)
+            if (window == target->window) break;
+        live = live && window && !window->FirstRequest && (window->Flags & WFLG_CLOSEGADGET);
+        active = live && IntuitionBase->ActiveWindow == window;
+        UnlockIBase(lock);
+        if (live && !active) ActivateWindow(window);
+        Permit();
+        if (!live) return 0;
+        if (active) return 1;
+        Delay(1);
+    }
+    return 0;
+}
+
 static int quit_shell_window(App *app)
 {
     ShellClose close = {app->menu_shell,&app->input_handler,apollo_console_close_handler(app),0};
     struct InputEvent event = {0};
     LONG error;
-    if (!close.target.window || !close.target.cooked || !close.code) return 0;
+    if (!close.target.window || !close.target.cooked || !close.code ||
+        !prepare_shell_close(&close.target)) return 0;
     event.ie_EventAddress = &close;
     app->input_context.shell_close = &close;
     app->input_io->io_Command = IND_WRITEEVENT;
@@ -1975,7 +2236,7 @@ static int document_window_matches(const App *app, const Item *item,
 
 static int item_window_action(const App *app, const Item *item, int action)
 {
-    enum { WINDOW_ACTION_LVO = 942, SEND_IDCMP_CLOSE = 3 };
+    enum { WINDOW_ACTION_LVO = 942 };
     DirectoryIdentity directory = {0};
     const char *name = NULL, *alias = NULL;
     char canonical[PATH_CAP];
@@ -1984,7 +2245,9 @@ static int item_window_action(const App *app, const Item *item, int action)
     ULONG lock;
     int matches = 0;
     if (action != WINDOW_FOCUS && !intuition_extension(WINDOW_ACTION_LVO)) return 0;
-    if (item->kind == PIN_PROGRAM) {
+    if (item->owner) {
+        /* The task known to show this item's window, whatever its name. */
+    } else if (item->kind == PIN_PROGRAM) {
         directory = executable_directory(item->path);
         if (!directory.handler) return 0;
         name = (const char *)FilePart((STRPTR)item->path);
@@ -1996,7 +2259,10 @@ static int item_window_action(const App *app, const Item *item, int action)
     for (screen = IntuitionBase->FirstScreen; screen; screen = screen->NextScreen) {
         struct Window *window;
         for (window = screen->FirstWindow; window; window = window->NextWindow) {
-            if (name) {
+            if (item->owner) {
+                const struct Process *owner = window_process(window);
+                if (!owner || &owner->pr_Task != item->owner || !visible_app_window(window)) continue;
+            } else if (name) {
                 const struct Process *owner = window_process(window);
                 char command[DOS_NAME_CAP];
                 if (!owner || !process_program_name(owner,command,NULL) ||
@@ -2010,12 +2276,10 @@ static int item_window_action(const App *app, const Item *item, int action)
         }
     }
     UnlockIBase(lock);
-    if (found && action == WINDOW_FOCUS) focus_window(found);
-    else if (found && matches == 1 && action == WINDOW_CLOSE) {
-        LP3NR(0x3ae, DockWindowAction, struct Window *, found, a0,
-            ULONG, SEND_IDCMP_CLOSE, d0, struct TagItem *, NULL, a1, , IntuitionBase);
-    }
     Permit();
+    /* Each call below revalidates the window before it runs. */
+    if (found && action == WINDOW_FOCUS) focus_window(found);
+    else if (found && matches == 1 && action == WINDOW_CLOSE) window_call(found,WINDOW_CALL_CLOSE);
     return found && (action == WINDOW_FOCUS || matches == 1);
 }
 
@@ -2039,12 +2303,8 @@ static LONG program_worker_entry(void)
         if (poll->query & PIN_DRAWER)
             poll_workbench_list(poll,PIN_DRAWER,WBCTRLA_GetOpenDrawerList,WBCTRLA_FreeOpenDrawerList);
         if (poll->query & PIN_DOCUMENT) poll_document_windows(poll);
-        if (poll->query & PIN_SHELL) {
-            int i, running = interactive_shell_running();
-            for (i = 0; i < poll->count; ++i)
-                if (poll->pins[i].kind == PIN_SHELL) poll->pins[i].running = running;
-            poll->valid |= PIN_SHELL;
-        }
+        if (poll->query & PIN_SHELL) poll_shells(poll);
+        apply_attributions(poll);
         ReplyMsg(&poll->message);
     }
 }
@@ -2076,11 +2336,11 @@ static void program_poll_open(App *app)
     if (!app->program_replies) return;
     app->program_worker = CreateNewProcTags(NP_Entry,(ULONG)program_worker_entry,
         NP_Name,(ULONG)"DockAwesome Workbench status",NP_Priority,0,
-        NP_StackSize,32768,NP_CopyVars,FALSE,NP_WindowPtr,(ULONG)-1,TAG_DONE);
+        NP_StackSize,49152,NP_CopyVars,FALSE,NP_WindowPtr,(ULONG)-1,TAG_DONE);
     app->program_poll.app = app;
     app->program_poll.dock_task = FindTask(NULL);
     app->program_poll.message.mn_ReplyPort = app->program_replies;
-    app->program_poll.message.mn_Length = sizeof(app->program_poll);
+    app->program_poll.message.mn_Length = offsetof(ProgramPoll,owners);
     if (app->program_worker) app->status_window_stamp = status_window_stamp(app);
     if (app->program_worker && intuition_extension(930)) {
         LONG bit = AllocSignal(-1);
@@ -2110,7 +2370,7 @@ static void status_observe_windows(App *app)
     uint32_t stamp = status_window_stamp(app);
     if (stamp == app->status_window_stamp) return;
     app->status_window_stamp = stamp;
-    if (app->profile) ++app->status_events;
+    if (app->profile) ++app->stats.status_events;
     status_changed(app);
 }
 
@@ -2139,8 +2399,9 @@ static void program_poll_schedule(App *app)
     }
     if (now < app->program_poll_at && now < app->document_poll_at &&
         (!app->status_recheck || now < app->status_event_at) &&
-        (!app->discovery_at || now < app->discovery_at)) return;
+        (!app->discovery_at || now < app->discovery_at) && !app->shell_probe_wanted) return;
     for (i = 0; i < app->count; ++i) kinds |= app->items[i].kind;
+    if (app->shell_probe_wanted) query |= kinds & PIN_SHELL;
     if (now >= app->program_poll_at || (app->status_recheck && now >= app->status_event_at)) {
         query |= kinds;
         app->program_poll_at = now+(uint64_t)app->clock_hz*8;
@@ -2170,7 +2431,16 @@ static void program_poll_schedule(App *app)
         poll->pins[i].running = app->items[i].kind == PIN_PROGRAM ?
             app->items[i].running & RUNNING_WORKBENCH : 0;
         poll->pins[i].kind = app->items[i].kind;
+        poll->pins[i].temporary = app->items[i].temporary;
+        poll->pins[i].attributed = 0;
+        poll->pins[i].owner = NULL;
     }
+    poll->now = now;
+    poll->launch_ticks = (uint64_t)app->clock_hz*LAUNCH_SECONDS;
+    poll->launch_count = app->launch_count;
+    memcpy(poll->launches,app->launches,sizeof(poll->launches));
+    poll->probe_consoles = app->shell_probe_wanted && (query & PIN_SHELL);
+    app->shell_probe_wanted = 0;
     app->program_poll_pending = 1;
     PutMsg(&app->program_worker->pr_MsgPort,&poll->message);
 }
@@ -2178,17 +2448,23 @@ static void program_poll_schedule(App *app)
 static int program_poll_result(App *app, int *recreate)
 {
     ProgramPoll *poll = &app->program_poll;
-    int i, before = app->count, changed = 0, layout_changed = 0;
+    int i, before = app->count, changed = 0, layout_changed = 0, added = -1;
     if (!app->program_replies || !GetMsg(app->program_replies)) return 0;
     app->program_poll_pending = 0;
     app->status_unavailable |= poll->unavailable;
+    if ((poll->valid & PIN_SHELL) && poll->probed) {
+        memcpy(app->shells,poll->shells,sizeof(app->shells));
+        app->shell_count = poll->shell_count;
+        app->shells_at = profile_clock();
+    }
     if (poll->new_path[0]) app->discovery_at = profile_clock()+app->clock_hz/5;
     for (i = 0; i < poll->count; ++i) {
         int pin, running;
-        if (!(poll->valid & poll->pins[i].kind)) continue;
+        if (!(poll->valid & poll->pins[i].kind) && !poll->pins[i].attributed) continue;
         pin = pin_index(app,poll->pins[i].pin_id);
         if (pin < 0) continue;
-        running = poll->pins[i].running;
+        running = poll->pins[i].running || poll->pins[i].attributed;
+        app->items[pin].owner = running ? poll->pins[i].owner : NULL;
         if (poll->pins[i].kind == PIN_DOCUMENT)
             strcpy(app->items[pin].title_path,poll->pins[i].title_path);
         if (!!app->items[pin].running != !!running) changed = 1;
@@ -2212,25 +2488,28 @@ static int program_poll_result(App *app, int *recreate)
             item = append_item(app,poll->new_path,PIN_PROGRAM,&poll->new_cache);
             item->running = RUNNING_WINDOW;
             item->temporary = 1;
+            added = app->count-1;
             layout_changed = 1;
         }
+        /* Like drops and unpins: a new icon appears in its slot and the rest
+           glide to the new row. Snapping the whole row made the dock jump
+           when a temporary icon's program quit. */
         if (layout_changed) {
             *recreate = !rest_after_pin_change(app,before);
-            if (!*recreate)
-                memcpy(app->placement,app->target,app->count*sizeof(*app->placement));
+            if (!*recreate && added >= 0) app->placement[added] = app->target[added];
         }
     }
     changed |= layout_changed;
     dock_cache_free(&poll->new_cache);
     if (app->profile) {
         uint64_t ticks = profile_clock()-app->program_poll_started;
-        ++app->program_polls;
-        if (poll->query & PIN_PROGRAM) ++app->program_checks;
-        if (poll->query & PIN_DRAWER) ++app->drawer_checks;
-        if (poll->query & PIN_DOCUMENT) ++app->document_checks;
-        app->program_changes += changed;
-        app->program_poll_ticks += ticks;
-        if (ticks > app->program_poll_peak) app->program_poll_peak = ticks;
+        ++app->stats.program_polls;
+        if (poll->query & PIN_PROGRAM) ++app->stats.program_checks;
+        if (poll->query & PIN_DRAWER) ++app->stats.drawer_checks;
+        if (poll->query & PIN_DOCUMENT) ++app->stats.document_checks;
+        app->stats.program_changes += changed;
+        app->stats.program_poll_ticks += ticks;
+        if (ticks > app->stats.program_poll_peak) app->stats.program_poll_peak = ticks;
     }
     return changed;
 }
@@ -2239,9 +2518,14 @@ static void program_poll_close(App *app)
 {
     ProgramPoll *poll = &app->program_poll;
     if (app->status_notify) {
-        while (!LP1(0x3a2, BOOL, EndDockStatusNotify, APTR, app->status_notify, a0, , IntuitionBase))
-            Delay(1);
+        /* Intuition signals this task until the notification ends, so the
+           process must not exit before then: waiting is safer than a crash.
+           Back off after 5 s instead of spinning. */
+        int attempt;
+        for (attempt = 0; !LP1(0x3a2, BOOL, EndDockStatusNotify, APTR, app->status_notify, a0, , IntuitionBase); ++attempt)
+            Delay(attempt < 250 ? 1 : 25);
         FreeSignal(app->status_notify_bit);
+        app->status_notify = NULL;
     }
     if (app->program_worker) {
         if (app->program_poll_pending) {
@@ -2299,8 +2583,8 @@ static int live_due(App *app)
 
 static void drop_catcher_flags(App *app, unsigned int flags)
 {
-    if (flags & AMIGA_DROP_SCANNED) ++app->desktop_scans;
-    if (flags & (AMIGA_DROP_STARTED|AMIGA_DROP_RESTORED)) ++app->shape_updates;
+    if (flags & AMIGA_DROP_SCANNED) ++app->stats.desktop_scans;
+    if (flags & (AMIGA_DROP_STARTED|AMIGA_DROP_RESTORED)) ++app->stats.shape_updates;
     if (flags & AMIGA_DROP_STARTED) {
         /* The receiver backfill restores the underlying pixels while
            Layers exposes the region. No app-side layer access is needed. */
@@ -2376,13 +2660,57 @@ static int update_drag_mask(App *app, int sample)
     return 1;
 }
 
+/* A UI requester (ASL) blocks the main loop: hide PiP and let input pass
+   through until it returns. The next loop pass presents PiP again. */
+static void ui_blocking(void *context, int blocking)
+{
+    App *app = (App *)context;
+    if (!blocking) return;
+    interaction_cancel(app);
+    amiga_pip_suspend(app->pip); app->pip_visible = 0; input_publish(app);
+}
+
 static int pip_blocked_by_screen_or_menu(App *app)
 {
     int menu = native_menu_held(app);
     if (IntuitionBase->FirstScreen == app->screen && !menu) return 0;
-    if (app->profile && app->pip_visible && menu) ++app->menu_suspends;
+    if (app->profile && app->pip_visible && menu) ++app->stats.menu_suspends;
     interaction_cancel(app);
     amiga_pip_suspend(app->pip); app->pip_visible = 0; input_publish(app);
+    return 1;
+}
+
+/* Bound every pixel the displayed or next frame can cover: the plate and
+   each icon image along the row, and the whole cross axis for the dots and
+   rim. Uncovered pixels show live scanout, so they need no fresh capture.
+   A change inside the bound still refreshes the whole cache. Fall back to a
+   full compare when artwork can leave the row. */
+static int frame_check(const App *app, DockRect *out)
+{
+    enum { MARGIN = 4 };
+    int i, low, high, limit, bottom = app->edge == DOCK_EDGE_BOTTOM;
+    int visible = app->window->Width;
+    DockRect plate;
+    if (app->moving_item || app->gesture.active || app->renderer.center_panel ||
+        !dock_edge_panel_rect(&app->settings,app->edge,app->placement,app->count,
+            app->width,app->height,&plate)) return 0;
+    low = bottom ? plate.left : plate.top;
+    high = bottom ? plate.right : plate.bottom;
+    for (i = 0; i < app->count; ++i) {
+        const DockPlacement *p = &app->placement[i];
+        const DockImage *im = &app->items[i].cache.image[p->level];
+        int start = bottom ? p->x : p->y;
+        int extent = bottom ? im->width : im->height;
+        if (extent < p->size) extent = p->size;
+        if (start < low) low = start;
+        if (start+extent > high) high = start+extent;
+    }
+    limit = bottom ? visible : app->height;
+    low -= MARGIN; high += MARGIN;
+    if (low < 0) low = 0;
+    if (high > limit) high = limit;
+    if (low >= high) return 0;
+    *out = bottom ? (DockRect){low,0,high,app->height} : (DockRect){0,low,visible,high};
     return 1;
 }
 
@@ -2416,7 +2744,7 @@ static int live_capture(App *app, int full_compare)
             if (!app->front_pending || now-app->front_requested >= app->clock_hz/4) {
                 app->front_pending = 1;
                 app->front_requested = now;
-                ++app->front_requests;
+                ++app->stats.front_requests;
                 WindowToFront(app->window);
             }
         }
@@ -2426,16 +2754,18 @@ static int live_capture(App *app, int full_compare)
     app->screen_left = screen_left; app->screen_top = screen_top;
     /* At rest all artwork and dots fit on the plate. A change in unused
        zoom headroom can wait until a redraw needs those pixels. */
-    if (!full_compare && !moved && !app->live_fast && !app->active &&
-        !app->drag_mask_live && !dock_ui_busy(app->ui) &&
-        dock_edge_panel_rect(&app->settings,app->edge,app->placement,app->count,
-            app->width,app->height,&plate)) check = &plate;
+    if (!moved && !app->drag_mask_live && !dock_ui_busy(app->ui)) {
+        if (!full_compare && !app->live_fast && !app->active &&
+            dock_edge_panel_rect(&app->settings,app->edge,app->placement,app->count,
+                app->width,app->height,&plate)) check = &plate;
+        else if (frame_check(app,&plate)) check = &plate;
+    }
     started = app->profile ? profile_clock() : 0;
     result = amiga_display_capture565(app->display, app->source565,
         app->left, app->top, !app->source_valid || !app->pip_visible,
         check, app->renderer.pixels->bytes_equal);
-    ++app->source_polls;
-    if (app->profile) app->capture_ticks += profile_clock()-started;
+    ++app->stats.source_polls;
+    if (app->profile) app->stats.capture_ticks += profile_clock()-started;
     if (result < 0) {
         amiga_pip_suspend(app->pip); app->pip_visible = 0; input_publish(app); app->failed = 1;
         strcpy(app->surface_error, "PiP lost the RGB565 screen. Restart the dock on a supported screen.");
@@ -2443,11 +2773,11 @@ static int live_capture(App *app, int full_compare)
     }
     if (result) {
         uint64_t decode_started = app->profile ? profile_clock() : 0;
-        ++app->source_changes;
+        ++app->stats.source_changes;
         app->renderer.pixels->decode565(app->backdrop.pixels, app->source565,
             (unsigned long)app->width*app->height);
         app->source_valid = 1;
-        if (app->profile) app->decode_ticks += profile_clock()-decode_started;
+        if (app->profile) app->stats.decode_ticks += profile_clock()-decode_started;
     }
     dialog_moved = memcmp(&app->dialog_clip,&clip,sizeof(clip)) != 0;
     app->dialog_clip = clip;
@@ -2465,7 +2795,7 @@ static int animation_open(App *app)
     TimerBase = app->timer_io->tr_node.io_Device;
     app->clock_hz = ReadEClock(&clock);
     app->started = ((uint64_t)clock.ev_hi<<32) | clock.ev_lo;
-    app->min_ticks = UINT64_MAX;
+    app->stats.min_ticks = UINT64_MAX;
     {
         app->live_port = CreateMsgPort();
         if (app->live_port)
@@ -2484,59 +2814,59 @@ static void profile_report(App *app)
     if (!app->profile || !app->timer_open || !app->clock_hz) return;
     elapsed = profile_clock()-app->started;
     elapsed_ms = (ULONG)(elapsed*1000/app->clock_hz);
-    average_us = app->frames ? (ULONG)(app->render_ticks*1000000/app->clock_hz/app->frames) : 0;
-    min_us = app->frames ? (ULONG)(app->min_ticks*1000000/app->clock_hz) : 0;
-    max_us = app->frames ? (ULONG)(app->max_ticks*1000000/app->clock_hz) : 0;
-    compose_us = app->frames ? (ULONG)((app->render_ticks-app->present_ticks)*1000000/app->clock_hz/app->frames) : 0;
-    present_us = app->frames ? (ULONG)(app->present_ticks*1000000/app->clock_hz/app->frames) : 0;
-    conversion_us = app->frames ? (ULONG)(app->conversion_ticks*1000000/app->clock_hz/app->frames) : 0;
-    upload_us = app->frames ? (ULONG)(app->upload_ticks*1000000/app->clock_hz/app->frames) : 0;
+    average_us = app->frames ? (ULONG)(app->stats.render_ticks*1000000/app->clock_hz/app->frames) : 0;
+    min_us = app->frames ? (ULONG)(app->stats.min_ticks*1000000/app->clock_hz) : 0;
+    max_us = app->frames ? (ULONG)(app->stats.max_ticks*1000000/app->clock_hz) : 0;
+    compose_us = app->frames ? (ULONG)((app->stats.render_ticks-app->stats.present_ticks)*1000000/app->clock_hz/app->frames) : 0;
+    present_us = app->frames ? (ULONG)(app->stats.present_ticks*1000000/app->clock_hz/app->frames) : 0;
+    conversion_us = app->frames ? (ULONG)(app->stats.conversion_ticks*1000000/app->clock_hz/app->frames) : 0;
+    upload_us = app->frames ? (ULONG)(app->stats.upload_ticks*1000000/app->clock_hz/app->frames) : 0;
     printf("DockAwesome profile: backend=%s depth=%d canvas=%dx%d icons=%d\n"
            "elapsed_ms=%lu wakeups=%lu redraws=%lu render_us_avg=%lu min=%lu max=%lu\n"
            "compose_us_avg=%lu present_us_avg=%lu conversion_us_avg=%lu upload_us_avg=%lu\n"
            "Timing includes composition, conversion and OS upload; not CPU utilization.\n",
            app->renderer.pixels ? app->renderer.pixels->name : "none",
            amiga_display_depth(app->display), app->width, app->height, app->count,
-           (unsigned long)elapsed_ms, (unsigned long)app->wakes, (unsigned long)app->frames,
+           (unsigned long)elapsed_ms, (unsigned long)app->stats.wakes, (unsigned long)app->frames,
            (unsigned long)average_us, (unsigned long)min_us, (unsigned long)max_us,
            (unsigned long)compose_us, (unsigned long)present_us,
            (unsigned long)conversion_us, (unsigned long)upload_us);
     fflush(stdout);
     printf("Workbench programs: polls=%lu changes=%lu roundtrip_us_avg=%lu max=%lu native_menu_suspends=%lu\n",
-        (unsigned long)app->program_polls, (unsigned long)app->program_changes,
-        (unsigned long)(app->program_polls ? app->program_poll_ticks*1000000/app->clock_hz/app->program_polls : 0),
-        (unsigned long)(app->program_poll_peak*1000000/app->clock_hz), (unsigned long)app->menu_suspends);
+        (unsigned long)app->stats.program_polls, (unsigned long)app->stats.program_changes,
+        (unsigned long)(app->stats.program_polls ? app->stats.program_poll_ticks*1000000/app->clock_hz/app->stats.program_polls : 0),
+        (unsigned long)(app->stats.program_poll_peak*1000000/app->clock_hz), (unsigned long)app->stats.menu_suspends);
     printf("Status queries: programs=%lu drawers=%lu documents=%lu window_events=%lu native_notify=%d\n",
-        (unsigned long)app->program_checks,(unsigned long)app->drawer_checks,
-        (unsigned long)app->document_checks,(unsigned long)app->status_events,!!app->status_notify);
+        (unsigned long)app->stats.program_checks,(unsigned long)app->stats.drawer_checks,
+        (unsigned long)app->stats.document_checks,(unsigned long)app->stats.status_events,!!app->status_notify);
     printf("Workbench drops: messages=%lu arguments=%lu added=%lu reordered=%lu bad_paths=%lu\n",
-        (unsigned long)app->drop_messages, (unsigned long)app->drop_arguments,
-        (unsigned long)app->drop_added, (unsigned long)app->drop_reordered,
-        (unsigned long)app->drop_bad_paths);
-    printf("Workbench desktop selection scans: %lu\n",(unsigned long)app->desktop_scans);
+        (unsigned long)app->stats.drop_messages, (unsigned long)app->stats.drop_arguments,
+        (unsigned long)app->stats.drop_added, (unsigned long)app->stats.drop_reordered,
+        (unsigned long)app->stats.drop_bad_paths);
+    printf("Workbench desktop selection scans: %lu\n",(unsigned long)app->stats.desktop_scans);
     fflush(stdout);
     {
         int sample;
         printf("Animation settle_ms: count=%lu avg=%lu max=%lu samples=",
-            (unsigned long)app->settles,
-            (unsigned long)(app->settles ? app->settle_ticks*1000/app->clock_hz/app->settles : 0),
-            (unsigned long)(app->settle_peak*1000/app->clock_hz));
-        for (sample = 0; sample < app->settle_samples; ++sample)
-            printf("%s%lu", sample ? "," : "", (unsigned long)app->settle_ms[sample]);
+            (unsigned long)app->stats.settles,
+            (unsigned long)(app->stats.settles ? app->stats.settle_ticks*1000/app->clock_hz/app->stats.settles : 0),
+            (unsigned long)(app->stats.settle_peak*1000/app->clock_hz));
+        for (sample = 0; sample < app->stats.settle_samples; ++sample)
+            printf("%s%lu", sample ? "," : "", (unsigned long)app->stats.settle_ms[sample]);
         puts(" (main-task target update through final present; includes retargeting)");
         fflush(stdout);
     }
     if (app->pip_mode) {
         printf("PiP drag reveal: frames=%lu peak_pixels=%lu\n",
-            (unsigned long)app->drag_reveal_frames,(unsigned long)app->drag_reveal_peak);
-        printf("PiP popup reveal: frames=%lu\n",(unsigned long)app->popup_reveal_frames);
-        printf("PiP dialog reveal: frames=%lu\n",(unsigned long)app->dialog_reveal_frames);
+            (unsigned long)app->stats.drag_reveal_frames,(unsigned long)app->stats.drag_reveal_peak);
+        printf("PiP popup reveal: frames=%lu\n",(unsigned long)app->stats.popup_reveal_frames);
+        printf("PiP dialog reveal: frames=%lu\n",(unsigned long)app->stats.dialog_reveal_frames);
         printf("PiP2: polls=%lu source_changes=%lu front_requests=%lu capture_compare_us_avg=%lu decode_us_avg=%lu shape_us_total=%lu (settled100ms, motion20ms)\n",
-            (unsigned long)app->source_polls, (unsigned long)app->source_changes,
-            (unsigned long)app->front_requests,
-            (unsigned long)(app->source_polls ? app->capture_ticks*1000000/app->clock_hz/app->source_polls : 0),
-            (unsigned long)(app->source_changes ? app->decode_ticks*1000000/app->clock_hz/app->source_changes : 0),
-            (unsigned long)(app->shape_ticks*1000000/app->clock_hz));
+            (unsigned long)app->stats.source_polls, (unsigned long)app->stats.source_changes,
+            (unsigned long)app->stats.front_requests,
+            (unsigned long)(app->stats.source_polls ? app->stats.capture_ticks*1000000/app->clock_hz/app->stats.source_polls : 0),
+            (unsigned long)(app->stats.source_changes ? app->stats.decode_ticks*1000000/app->clock_hz/app->stats.source_changes : 0),
+            (unsigned long)(app->stats.shape_ticks*1000000/app->clock_hz));
         fflush(stdout);
         printf("PiP input: downs=%lu ups=%lu right_icons=%lu ambiguous_pass=%lu overflow_pass=%lu\n",
             (unsigned long)app->input_context.downs, (unsigned long)app->input_context.ups,
@@ -2544,15 +2874,15 @@ static void profile_report(App *app)
             (unsigned long)app->input_context.ambiguous, (unsigned long)app->input_context.overflow);
         fflush(stdout);
         printf("PiP shape: updates=%lu skipped=%lu rects=%lu rects_peak=%lu update_us_peak=%lu\n",
-            (unsigned long)app->shape_updates, (unsigned long)app->shape_skips, (unsigned long)app->shape_rects,
-            (unsigned long)app->shape_rects_peak,
-            (unsigned long)(app->shape_peak_ticks*1000000/app->clock_hz));
+            (unsigned long)app->stats.shape_updates, (unsigned long)app->stats.shape_skips, (unsigned long)app->stats.shape_rects,
+            (unsigned long)app->stats.shape_rects_peak,
+            (unsigned long)(app->stats.shape_peak_ticks*1000000/app->clock_hz));
         fflush(stdout);
         printf("PiP shape stages: build_us_total=%lu build_us_peak=%lu change_us_total=%lu change_us_peak=%lu static_idle_shape=1 temporary_external_catcher=1\n",
-            (unsigned long)(app->shape_build_ticks*1000000/app->clock_hz),
-            (unsigned long)(app->shape_build_peak*1000000/app->clock_hz),
-            (unsigned long)(app->shape_change_ticks*1000000/app->clock_hz),
-            (unsigned long)(app->shape_change_peak*1000000/app->clock_hz));
+            (unsigned long)(app->stats.shape_build_ticks*1000000/app->clock_hz),
+            (unsigned long)(app->stats.shape_build_peak*1000000/app->clock_hz),
+            (unsigned long)(app->stats.shape_change_ticks*1000000/app->clock_hz),
+            (unsigned long)(app->stats.shape_change_peak*1000000/app->clock_hz));
         fflush(stdout);
     }
 }
@@ -2624,8 +2954,8 @@ static void present_frame(void *context, const DockImage *frame)
                 coverage, frame->width);
         }
         if (app->profile && revealed) {
-            ++app->drag_reveal_frames;
-            if (revealed > app->drag_reveal_peak) app->drag_reveal_peak = revealed;
+            ++app->stats.drag_reveal_frames;
+            if (revealed > app->stats.drag_reveal_peak) app->stats.drag_reveal_peak = revealed;
         }
         converted = app->profile ? profile_clock() : 0;
         app->pip_visible = amiga_pip_present(app->pip);
@@ -2633,12 +2963,12 @@ static void present_frame(void *context, const DockImage *frame)
         if (app->profile) {
             uint64_t finished = profile_clock();
             if (app->pip_visible && ui_revealed) {
-                if (popup) ++app->popup_reveal_frames;
-                else ++app->dialog_reveal_frames;
+                if (popup) ++app->stats.popup_reveal_frames;
+                else ++app->stats.dialog_reveal_frames;
             }
-            app->present_ticks += finished-started;
-            app->conversion_ticks += converted-encoded;
-            app->upload_ticks += finished-converted;
+            app->stats.present_ticks += finished-started;
+            app->stats.conversion_ticks += converted-encoded;
+            app->stats.upload_ticks += finished-converted;
         }
         return;
     }
@@ -2646,9 +2976,9 @@ static void present_frame(void *context, const DockImage *frame)
         AmigaDisplayTiming timing;
         uint64_t started = profile_clock();
         amiga_display_present_profiled(app->display, app->window, frame, profile_clock, &timing);
-        app->present_ticks += profile_clock()-started;
-        app->conversion_ticks += timing.conversion_ticks;
-        app->upload_ticks += timing.upload_ticks;
+        app->stats.present_ticks += profile_clock()-started;
+        app->stats.conversion_ticks += timing.conversion_ticks;
+        app->stats.upload_ticks += timing.upload_ticks;
     } else amiga_display_present(app->display, app->window, frame);
 }
 
@@ -2715,9 +3045,9 @@ static void draw(App *app)
     if (app->profile) {
         uint64_t ticks = profile_clock()-started;
         ++app->frames;
-        app->render_ticks += ticks;
-        if (ticks < app->min_ticks) app->min_ticks = ticks;
-        if (ticks > app->max_ticks) app->max_ticks = ticks;
+        app->stats.render_ticks += ticks;
+        if (ticks < app->stats.min_ticks) app->stats.min_ticks = ticks;
+        if (ticks > app->stats.max_ticks) app->stats.max_ticks = ticks;
     }
 }
 
@@ -2794,16 +3124,16 @@ static __attribute__((noinline)) int accept_drops(App *app, int *recreate)
         int snap = in_slot && amiga_drop_catcher_active(app->drop_catcher);
         if (app->gesture.active && !app->gesture.cancelled)
             interaction_cancel_for(app, app->gesture.token);
-        ++app->drop_messages;
+        ++app->stats.drop_messages;
         if (snap && app->displayed_drop_slot >= 0) slot = app->displayed_drop_slot;
         if (slot < 0 || slot > stack_index(app)) slot = stack_index(app);
         for (i = 0; i < msg->am_NumArgs; ++i) {
             const struct WBArg *arg = &msg->am_ArgList[i];
             char path[PATH_CAP];
-            ++app->drop_arguments;
+            ++app->stats.drop_arguments;
             if (NameFromLock(arg->wa_Lock, (STRPTR)path, sizeof(path)) &&
                 (!arg->wa_Name || !arg->wa_Name[0] || AddPart((STRPTR)path, arg->wa_Name, sizeof(path)))) {
-                int before = app->count, index = pin_path(app,path)-1;
+                int before = app->count, index = pin_path(app,path,1)-1;
                 int added = app->count != before;
                 int target = slot;
                 if (index < 0 || (!added && !in_slot)) continue;
@@ -2822,14 +3152,14 @@ static __attribute__((noinline)) int accept_drops(App *app, int *recreate)
                     dock_reorder(app->placement,sizeof(*app->placement),app->count,index,target);
                 } else *recreate = 1;
                 changed = 1;
-                if (added) ++app->drop_added;
-                else ++app->drop_reordered;
+                if (added) ++app->stats.drop_added;
+                else ++app->stats.drop_reordered;
                 if (snap) {
                     app->snap_wait_motion = 1;
                     app->snap_x = app->left+msg->am_MouseX;
                     app->snap_y = app->top+msg->am_MouseY;
                 }
-            } else ++app->drop_bad_paths;
+            } else ++app->stats.drop_bad_paths;
         }
         ReplyMsg((struct Message *)msg);
         drop_catcher_flags(app, amiga_drop_catcher_accepted(app->drop_catcher));
@@ -2875,6 +3205,17 @@ static unsigned int current_input_flags(App *app, UWORD qualifier)
     if (IntuitionBase->FirstScreen == app->screen) flags |= DOCK_INPUT_SAME_SCREEN;
     if (qualifier & IEQUALIFIER_RBUTTON) flags |= DOCK_INPUT_CANCELLED;
     return flags;
+}
+
+/* Apps that appear within LAUNCH_SECONDS belong to this pin. */
+static void record_launch(App *app, uint32_t pin_id)
+{
+    if (app->launch_count == LAUNCH_SLOTS) {
+        memmove(app->launches,app->launches+1,sizeof(app->launches[0])*(LAUNCH_SLOTS-1));
+        --app->launch_count;
+    }
+    app->launches[app->launch_count].pin_id = pin_id;
+    app->launches[app->launch_count++].at = profile_clock();
 }
 
 static int launch_pin(const char *path)
@@ -2972,11 +3313,14 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
     }
     if ((effect.flags & DOCK_EFFECT_LAUNCH) && index >= 0) {
         Item *item = &app->items[index];
-        int focused = item->running && item->kind == PIN_PROGRAM &&
+        int focused = item->running && (item->kind == PIN_PROGRAM || item->owner) &&
             item_window_action(app,item,WINDOW_FOCUS);
         if (item->stack) open_stack_view(app,index);
         else if (!focused && !item->temporary) {
-            if (launch_pin(item->path)) status_changed(app);
+            if (launch_pin(item->path)) {
+                record_launch(app,item->pin_id);
+                status_changed(app);
+            }
             else message("Workbench could not open this object.");
         }
         if (!app->timer_failed) {
@@ -3029,11 +3373,15 @@ static void open_menu(App *app, int x, int y, uint32_t pin_id)
         if (index < 0) return;
         item = &app->items[index];
         stack = item->stack;
-        can_keep = item->temporary;
+        /* Only an app with a program file can become a pin. */
+        can_keep = item->temporary && strchr(item->path,':') != NULL;
         if (item->kind == PIN_SHELL) {
-            app->menu_shell = item->running ? shell_menu_target(app->screen) : (ShellTarget){0};
+            app->menu_shell = item->running ? shell_menu_target(app) : (ShellTarget){0};
             action = item->running ? DOCK_UI_SHOW_SHELL : DOCK_UI_NEW_SHELL;
-            if (app->menu_shell.cooked && apollo_console_close_handler(app))
+            /* Quit closes a window: offer it only for a target probed in the
+               last 2 s, so a reused Window address cannot be closed. */
+            if (app->menu_shell.cooked && apollo_console_close_handler(app) &&
+                profile_clock()-app->shells_at <= 2*app->clock_hz)
                 action = DOCK_UI_QUIT_SHELL;
         } else if (item->running) {
             if (item->kind == PIN_DRAWER) action = DOCK_UI_CLOSE_ITEM;
@@ -3074,7 +3422,7 @@ static void close_menu_item(App *app)
 static void keep_menu_item(App *app)
 {
     int index = pin_index(app,app->menu_pin_id);
-    if (index < 0 || !app->items[index].temporary) return;
+    if (index < 0 || !app->items[index].temporary || !strchr(app->items[index].path,':')) return;
     app->items[index].temporary = 0;
     if (!save_config(app)) app->items[index].temporary = 1;
 }
@@ -3084,7 +3432,7 @@ static void shell_menu_action(App *app, int action)
     int index = pin_index(app,app->menu_pin_id);
     if (index < 0 || app->items[index].kind != PIN_SHELL) return;
     if (action == DOCK_UI_SHOW_SHELL) {
-        if (!show_shell_window(&app->menu_shell)) message("No Shell window to show.");
+        if (!show_shell_window(app,&app->menu_shell)) message("No Shell window to show.");
     } else if (action == DOCK_UI_QUIT_SHELL) {
         if (quit_shell_window(app)) status_changed(app);
         else message("Could not close the selected Shell.");
@@ -3191,8 +3539,9 @@ static int apply_preferences(App *app, const DockUIPrefs *prefs)
         }
         app->settings = previous; app->edge = previous_edge;
         app->scale_percent = previous_scale;
-        if (!open_surface(app)) app->failed = 1;
-        message("Cannot apply settings. Previous settings restored.");
+        if (!open_surface(app))
+            fail_after_cleanup(app,"Cannot restore the dock surface. Check graphics memory and screen size.");
+        else message("Cannot apply settings. Previous settings restored.");
     }
     if (swap) {
         for (i = 0; i < old_count; ++i) dock_cache_free(&swap[i]);
@@ -3208,7 +3557,7 @@ static __attribute__((noinline)) void event_loop(App *app)
     update_target(app);
     animation_profile_begin(app);
     if (app->pip_mode) live_capture(app,1);
-    if (app->failed) { message(app->surface_error); return; }
+    if (app->failed) return; /* main reports after cleanup. */
     draw(app);
     animation_profile_end(app);
     animation_schedule(app); live_schedule(app);
@@ -3223,7 +3572,7 @@ static __attribute__((noinline)) void event_loop(App *app)
         DockUIAction action;
         int redraw = app->gesture_redraw, recreate = 0, save = 0, due;
         int dismiss_popup;
-        ++app->wakes; app->gesture_redraw = 0;
+        ++app->stats.wakes; app->gesture_redraw = 0;
         if (signals & SIGBREAKF_CTRL_C) break;
         if (app->status_notify && (signals & (1UL<<app->status_notify_bit)))
             status_observe_windows(app);
@@ -3385,7 +3734,10 @@ static __attribute__((noinline)) void event_loop(App *app)
         if (program_poll_result(app,&recreate)) redraw = 1;
         if (recreate) {
             close_surface(app);
-            if (!open_surface(app)) { message(app->surface_error[0] ? app->surface_error : "Cannot reopen dock surface. Check graphics memory and screen size."); app->failed = 1; break; }
+            if (!open_surface(app)) {
+                fail_after_cleanup(app,"Cannot reopen dock surface. Check graphics memory and screen size.");
+                break;
+            }
             redraw = 1;
         }
         update_target(app); animation_profile_begin(app);
@@ -3402,13 +3754,19 @@ static __attribute__((noinline)) void event_loop(App *app)
                 live_cancel(app);
             }
             if (update_drag_mask(app,due || redraw)) redraw = 1;
-            if (app->failed) { interaction_cancel(app); input_invalidate(app); message(app->surface_error); break; }
+            if (app->failed) { interaction_cancel(app); input_invalidate(app); break; }
         }
         if (app->gesture_redraw) { redraw = 1; app->gesture_redraw = 0; }
         update_hover_label(app);
         animation_schedule(app); live_schedule(app);
         if (redraw) draw(app);
         animation_profile_end(app);
+        if (app->notice[0]) {
+            /* The drop was replied and its receiver released before this frame. */
+            char text[sizeof(app->notice)];
+            strcpy(text,app->notice); app->notice[0] = 0;
+            message(text);
+        }
     }
     animation_cancel(app); live_cancel(app);
 }
@@ -3454,7 +3812,15 @@ int main(int argc, char **argv)
     dock_prefs_defaults(&app->prefs);
     config_state = read_config(app);
     if (config_state < 0) {
-        printf("Cannot read JSON preferences from %s.\n", app->config);
+        char error[CONFIG_CAP+48];
+        snprintf(error, sizeof(error), "Cannot read JSON preferences from %s.", app->config);
+        /* A Workbench start has no console. Intuition is not open yet. */
+        if (argc) puts(error);
+        else if ((IntuitionBase = (struct IntuitionBase *)OpenLibrary((STRPTR)"intuition.library", 39))) {
+            message(error);
+            CloseLibrary((struct Library *)IntuitionBase);
+            IntuitionBase = NULL;
+        }
         free(app); return 20;
     }
     app->settings.base_size = app->prefs.size;
@@ -3538,6 +3904,7 @@ int main(int argc, char **argv)
     }
     app->ui = dock_ui_create(app->screen,window_shapes);
     if (!app->ui) { message("Cannot set up the dock controls."); goto done; }
+    dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
     {
         DockSettings configured = app->settings;
         int count = app->prefs.count+!!app->prefs.folder[0];
@@ -3552,7 +3919,7 @@ int main(int argc, char **argv)
     }
     if (!canonical_path("SYS:System/CLI",app->shell_launcher_path)) app->shell_launcher_path[0] = 0;
     for (i = 0; i < app->prefs.count; ++i) {
-        int loaded = pin_path(app,app->prefs.paths[i]);
+        int loaded = pin_path(app,app->prefs.paths[i],0);
         if (loaded < 0) goto done;
         if (!loaded) app->incomplete_pins = 1;
     }
@@ -3571,7 +3938,7 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--config") || !strcmp(argv[i], "--size") || !strcmp(argv[i], "--zoom") || !strcmp(argv[i], "--levels") || !strcmp(argv[i], "--pip-dump") || !strcmp(argv[i], "--pip-x-offset") || !strcmp(argv[i], "--pip-y-offset")) { ++i; continue; }
         if (!strncmp(argv[i], "--", 2)) continue;
-        pin_path(app, argv[i]);
+        pin_path(app, argv[i], 0);
     }
     app->renderer.pixels = dock_backend_portable();
 #ifdef DOCK_AMMX
@@ -3593,12 +3960,13 @@ int main(int argc, char **argv)
         app->surface_error[0] = 0;
         i = open_surface(app);
     }
+    /* A partly opened surface can hold the PiP lease: report after cleanup. */
     if (!i) {
-        message(app->surface_error[0] ? app->surface_error : "Cannot open the dock. Use an 8-bit or higher public screen.\n"
+        fail_after_cleanup(app,"Cannot open the dock. Use an 8-bit or higher public screen.\n"
             "True color needs cybergraphics.library V40 or newer."); goto done;
     }
-    if (!animation_open(app)) { message("Cannot open timer.device for dock animation."); goto done; }
-    if (!install_input(app)) { message("Cannot install pointer observer in input.device."); goto done; }
+    if (!animation_open(app)) { fail_after_cleanup(app,"Cannot open timer.device for dock animation."); goto done; }
+    if (!install_input(app)) { fail_after_cleanup(app,"Cannot install pointer observer in input.device."); goto done; }
     if (app->count != initial_count || config_state != 1) save_config(app);
     if (app->pip_mode) {
         struct Task *self = FindTask(NULL);
@@ -3635,8 +4003,15 @@ done:
     profile_report(app);
     profile_close(app);
     close_surface(app);
-    if (app->drop_port) DeleteMsgPort(app->drop_port);
+    if (app->drop_port) {
+        /* The AppWindow is gone. Reply to drops that were never handled. */
+        struct Message *msg;
+        while ((msg = GetMsg(app->drop_port))) ReplyMsg(msg);
+        DeleteMsgPort(app->drop_port);
+    }
     for (i = 0; i < app->count; ++i) item_free(&app->items[i]);
+    /* PiP, input, the drop receiver and the surface are released. */
+    if (app->failed && app->surface_error[0]) message(app->surface_error);
     if (app->screen) UnlockPubScreen(NULL, app->screen);
     if (UtilityBase) CloseLibrary(UtilityBase);
     if (LayersBase) CloseLibrary(LayersBase);

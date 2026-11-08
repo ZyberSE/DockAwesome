@@ -54,6 +54,8 @@ int dock_items_fit(const DockSettings *s, int count, int viewport_length);
 /* Normalizes visible alpha bounds to square boxes, retaining aspect ratio.
    Caller owns source. Failure leaves output empty. */
 int dock_cache_build(DockCache *out, const DockImage *source, const DockSettings *s);
+/* One normalized image of size x size, as level 0 of a cache would be. */
+int dock_icon_build(DockImage *out, const DockImage *source, int size);
 void dock_cache_free(DockCache *cache);
 /* Use window coordinates. An inactive dock returns resting sizes. */
 int dock_layout(const DockSettings *s, int count, int width, int height,
@@ -96,28 +98,12 @@ void dock_mix_half_c(unsigned char *dst, const unsigned char *src, unsigned long
 void dock_mix_half_ammx(unsigned char *dst, const unsigned char *src, unsigned long pixels);
 #endif
 /* Canvas and backdrop use matching dimensions and opaque RGBA. The backdrop,
-   mix_half, and shape cache are optional. */
-void dock_render_cached(DockImage *canvas, const DockImage *backdrop,
-                 const DockCache *const *icons, const DockPlacement *p, int count,
-                 const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape);
-/* Optional coverage holds one byte per canvas pixel. The plate and visible
-   artwork mark 255. All other pixels stay 0. */
-void dock_render_cached_mask(DockImage *canvas, const DockImage *backdrop,
-                 const DockCache *const *icons, const DockPlacement *p, int count,
-                 const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
-                 unsigned char *coverage);
-/* One-based pressed item darkens artwork only, retaining alpha/coverage and
-   cached images. Zero is the normal appearance. */
-void dock_render_interactive_mask(DockImage *canvas, const DockImage *backdrop,
-                 const DockCache *const *icons, const DockPlacement *p, int count,
-                 const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
-                 unsigned char *coverage, int pressed_item);
-/* edge is a DOCK_EDGE_* value; artwork remains upright. */
+   mix_half and shape cache are optional. Optional coverage holds one byte
+   per canvas pixel: the plate and visible artwork mark 255, all others 0.
+   A one-based pressed item darkens its artwork only; zero is normal.
+   edge is a DOCK_EDGE_* value; artwork remains upright. */
 void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
                  const DockCache *const *icons, const DockPlacement *p, int count,
                  const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
                  unsigned char *coverage, int pressed_item, int edge, int center_panel);
-void dock_render(DockImage *canvas, const DockImage *backdrop,
-                 const DockCache *const *icons, const DockPlacement *p, int count,
-                 const DockSettings *s, DockMixHalf mix_half);
 #endif

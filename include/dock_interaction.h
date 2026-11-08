@@ -39,10 +39,7 @@ void dock_gesture_reset(DockGesture *gesture);
    gestures remain inert until their matching UP. A stale UP cannot end another. */
 DockGestureEffects dock_gesture_update(DockGesture *gesture, const DockGestureInput *input);
 uint32_t dock_gesture_pressed(const DockGesture *gesture);
-/* Input-only geometry. Rendering/layout are untouched. The continuous hover
-   band supplies nearest-slot reorder targets, including gaps between icons. */
-int dock_interaction_slot(const DockSettings *settings, const DockPlacement *placement,
-    int count, int width, int height, int x, int y);
+/* Input-only geometry. Rendering/layout are untouched. */
 /* True only beyond the panel AND every rendered icon box, with margin pixels
    of tolerance around each. Coordinates may lie outside the native window. */
 int dock_interaction_outside(const DockSettings *settings, const DockPlacement *placement,

@@ -28,7 +28,8 @@ Source icons can be up to 1024 × 1024 px. Workbench can supply a default icon.
 
 ## Run
 
-Copy the binary to a drawer. Run it from Shell.
+Copy the binary and its matching `.info` file to the same drawer. Open it
+from Workbench or run it from Shell.
 
 ```text
 DockAwesome SYS:Prefs SYS:System
@@ -107,6 +108,8 @@ make AMMX=1 package
 ```
 
 Builds go in `build/`. Packages go in `build/dist/DockAwesome/`.
+With ApolloExplorer running on the Amiga, use
+`make AMMX=1 deploy AMIGA_DEST=amiga:RAM:` to copy both files with `acp`.
 Run the AMMX probe on Vampire. `--profile` reports frame and upload times.
 
 See [Architecture](docs/architecture.md), [Hardware](docs/hardware.md),

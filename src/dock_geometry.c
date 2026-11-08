@@ -137,19 +137,6 @@ int dock_edge_hover(const DockSettings *s, DockEdge edge, const DockPlacement *p
     return dock_hover_contains(s, virtual, count, height, width, vx, vy);
 }
 
-int dock_edge_slot(const DockSettings *s, DockEdge edge, const DockPlacement *p,
-    int count, int width, int height, int x, int y)
-{
-    DockPlacement virtual[DOCK_MAX_ITEMS];
-    int vx, vy;
-    if (edge == DOCK_EDGE_BOTTOM)
-        return dock_interaction_slot(s, p, count, width, height, x, y);
-    if (!side_edge(edge) || !valid(s, edge, p, count, width, height)) return -1;
-    to_virtual(edge, width, p, virtual, count);
-    pointer_virtual(edge, width, x, y, &vx, &vy);
-    return dock_interaction_slot(s, virtual, count, height, width, vx, vy);
-}
-
 int dock_edge_outside(const DockSettings *s, DockEdge edge, const DockPlacement *p,
     int count, int width, int height, int x, int y, int margin)
 {

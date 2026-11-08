@@ -70,3 +70,271 @@ files or commits.
 Both Amiga builds and the probes compiled. Host tests and packaged Markdown
 links passed. C code matched the baseline after excluding comments and
 string contents. Git has no staged files or commits.
+
+## Sharper icon scaling trial
+
+- [x] Build a sharper cache filter with the same icon sizes and alpha handling.
+- [x] Compare both filters on Vampire at rest and at full zoom.
+- [x] Check the original icon and saved preferences after the test.
+
+Both Amiga builds, host tests, and sanitizers passed. Both filters ran in
+PiP on Vampire with a separate config. Demos kept 32 x 28 px of artwork at
+rest and 62 x 54 px at full zoom. The original icon and live config match
+their pretest bytes.
+
+## WBDock icon copy
+
+- [x] Read the icon path from WBDock and copy that icon to RAM.
+- [x] Compare the copy with the existing pin on Vampire.
+- [x] Run the sharper build beside WBDock without changing live preferences.
+
+DH11 is the Archives volume. The two icon paths and the RAM copy had
+identical bytes. DockAwesome 0.119 produced identical full PiP frames
+from either icon at rest and full zoom. The copy runs in a test dock on
+the left. WBDock remains at the bottom.
+
+## Faint icon shadows
+
+- [x] Apply one rule to all icons with partial alpha.
+- [x] Compare Demos on Vampire at rest and full zoom.
+- [x] Verify that edge pixels, icon size, and the original file are preserved.
+
+The icon cache clears faint dark pixels away from denser pixels. The tests
+cover soft edges, colored pixels, and fully translucent icons. On Vampire,
+0.123 removed the shadow under e, m, and o in both frames and kept the line
+under D. The artwork bounds, original icon, and live preferences matched.
+
+## Review fixes for icon scaling and shadows
+
+- [x] Clear faint shadows once on a cropped source copy, before scaling.
+- [x] Sharpen only axes that scale up. Keep linear weights when scaling down.
+- [x] Keep `sharp_fraction` within 0..255.
+- [x] Test upscaled soft edges and shadow clearing at every level.
+- [x] Run host tests, sanitizers and both Amiga builds.
+- [x] Review the whole codebase as a senior engineer and record findings.
+
+## Bicubic icon scaling
+
+- [x] Replace the 2x2 bilinear cache filter with separable bicubic resampling.
+- [x] Compare kernels on the 11 decoded pins at rest (36) and full zoom (70).
+- [x] Measure cache builds on Vampire with the real pins and configuration.
+- [x] Run 0.126 on Vampire with a copy of the live configuration.
+- [x] Decide between bicubic quality and build time after viewing PiP output. (Keep bicubic.)
+
+Keys bicubic (a = -0.75) with half-ratio widening for reductions. It is exact
+at 1:1, keeps flat areas flat, and averages fine stripes. Against the 0.123
+smoothstep filter, mean edge contrast on the real pins rose 6% at rest and
+10% at full zoom. Catmull-Rom (a = -0.5) gave -4% and +6%. Vampire cache
+builds for the 11 pins (36 -> 70 px, 33 levels): 0.123 took 107 ms per icon,
+bicubic 239 ms (setup 26, vertical 83, horizontal 130). Moving tap tables to
+32-bit math saved 10%. Register accumulation, transparent-pixel skips and a
+reciprocal color divide did not change the time. Host tests, sanitizers and
+both Amiga builds passed. 0.126 runs from RAM: with RAM:DockAwesome-test.json;
+0.123 remains at RAM:DockAwesome080 for rollback.
+
+### Senior review findings (open)
+
+High
+- amiga_main.c:1600/1780: worker stack frames of ~17.5 KB each on a 32 KiB
+  stack; the icon-discovery chain reaches ~22 KB before icon.library runs.
+
+Medium
+- amiga_main.c:3405/3211: fatal-error requesters run while PiP, the input
+  handler and the drop receiver are still live.
+- amiga_main.c:1845-1918: Intuition calls and a blocking DoPkt inside Forbid.
+- amiga_display.c:216: ReadPixelArray8 uses the UWORD NDK inline.
+- amiga_ui.c:1738: ASL folder requester blocks main without suspending PiP.
+- amiga_display.c:69-83: 8-bit pen table (1M iterations) rebuilt per open.
+- dock_core.c: cleared shadows still count toward artwork bounds, shifting
+  icons up to 3 px (rest) and 7 px (zoom). Kept by design; needs a decision.
+- dock_core.c: the shadow rule erases dark translucent art enclosed by solid
+  pixels; a flood fill from the crop border would keep it.
+- dock_core.c: plate glass is recomputed every frame though it is constant.
+
+Low
+- Wake-ups on every mouse event while another screen is in front; full-surface
+  compare on every animated frame; blocking LockLayerInfo in snapshot hover;
+  drops lost during rebuild; save leftovers; unbounded exit loop; JSON errors
+  invisible from Workbench; folder scans without pr_WindowPtr; drag preview
+  has a window title; folder icons build a redundant second level; animation
+  push can leave the surface with levels=2.
+
+Resolved by the bicubic filter: large reductions lost fine detail, and
+resampled colors were rounded down.
+
+## Fix all review findings
+
+- [x] Core: visible-artwork bounds after shadow clearing; flood-fill shadow
+      rule; animated rows kept inside the surface; 32-bit mix_half; uint32
+      weight math; big-endian RGB24 test; presenter hook removed;
+      single-level dock_icon_build for folder icons.
+- [x] amiga_main.c: all 12 findings (worker stack, deferred fatal
+      requesters, IBase revalidation, DoPkt on the worker, handler wake
+      filter, partial compare, AttemptSemaphore hover, drops across rebuild,
+      save cleanup, bounded exit loop, Workbench JSON error).
+- [x] amiga_ui/display/folder/drag_preview: findings 1-8; ASL blocking hook
+      wired in main.
+- [x] Host tests, big-endian tests, sanitizers, fuzz harness, both Amiga
+      builds (0.135), AMMX probe on Vampire.
+- [x] Program icon: assets/DockAwesome.info (tools/make-icon.py), added to
+      `make package`; icon.library decodes it byte-exact on Vampire.
+- [x] Independent review of the native diff; its five findings fixed in 0.140:
+      exit waits for EndDockStatusNotify instead of exiting while Intuition
+      can still signal the task; kept backfill hooks point at persistent
+      code (no-op or forwarder) instead of DockAwesome's segment; console
+      windows are probed only while the pointer rests on a running Shell
+      pin, not on every status poll; Quit Shell is offered only for targets
+      probed in the last 2 s; drops queued across a surface rebuild are
+      translated to the new surface.
+- [ ] Visual and interactive check of 0.140 on the physical display.
+
+On Vampire, ApolloOS console windows have no UserPort and each console has
+its own handler task, so window ownership cannot be checked through the
+UserPort. 0.135 exited cleanly on Ctrl-C; 0.140 runs from RAM: with
+RAM:DockAwesome-test.json. 0.123 remains at RAM:DockAwesome080.
+
+Results: the shadow and glass repros now keep 400/400 glass pixels and
+equal margins; all 11 real pins render byte-identical to before. The
+levels=2 overflow repro fell from 65 px to 0; the fuzz harness reports 0
+target and 0 animated out-of-surface frames. The C half blend fell from
+4,686,175 to 2,150,417 EClock ticks per 16.4M pixels (AMMX unchanged, all
+probe checks pass). Worker stack frames fell from ~17.5 KB to 1.3 KB.
+
+Deferred, with reasons:
+- Tinted-plate cache and visible-span icon blending: no Vampire stage
+  measurement yet. With AMMX the plate blend is ~0.5 ms of a 6.4 ms frame;
+  measure compose_us with --profile before implementing.
+- Partial compare (main finding 6) is implemented but unmeasured; check
+  against the 801 us capture cost and on physical output.
+- Folder-reveal hook: if another program chains our backfill hook and the
+  original was the default, a pass-through stays installed while the dock
+  runs. Closing it needs a permanent code stub.
+- Refactors: split amiga_main.c, narrow App, one ApolloOS ABI header, merge
+  the two layout mappings, collapse the render wrapper stack, validate
+  settings once per swap.
+
+## Install in WBStartup
+
+- [x] Move WBDock and WBDock.info to ApolloOS:WBStartup/Disabled.
+- [x] Copy DockAwesome080 0.140 as ApolloOS:WBStartup/DockAwesome with the
+      build's .info (assets/DockAwesome-48.info: WBTOOL, 32 KB stack).
+- [x] Start it through Workbench (WBRun) with the live ENVARC configuration.
+- [x] Remove staging files from RAM:.
+
+WBRun started the installed copy; FindTask reports DockAwesome running and
+WBDock not running. Roll back by moving WBDock and WBDock.info back from
+Disabled and removing DockAwesome and DockAwesome.info from WBStartup.
+
+## Workbench-style program icon
+
+- [x] Measure the previous icon: 48x48 canvas but 40x22 px of artwork, while
+      the pinned icons fill about 44x44.
+- [x] Icon concept: a magnifying glass over the dock (user's choice of three
+      bold concepts after the scene-style drafts were rejected). The lens
+      shows the dock plate, two glossy icons and a Boing ball enlarged; the
+      metal rim and handle fill the 48x48 canvas.
+- [x] Add a selected image like ApolloOS icons: darker, with the ball turned
+      half a check.
+- [x] tools/make-icon.py writes assets/DockAwesome-48.info (WBTOOL, 32 KB
+      stack, frameless); installed as ApolloOS:WBStartup/DockAwesome.info.
+
+The previous icon is saved outside the checkout in the session scratchpad.
+
+Icon handed over to Codex (2026-11-08): it replaces assets/DockAwesome-48.info
+and the WBStartup icon. Do not change the icon files from this session.
+
+## Green CRT program icon
+
+- [x] Package the approved 48x48 artwork with a selected image.
+- [x] Verify both packages use the new icon.
+- [x] Replace the Workbench icon on Vampire and verify the installed file.
+
+Both builds package the same icon. The WBStartup file matches it byte for
+byte, and a Vampire screenshot shows the new icon.
+
+## Simplify without losing performance
+
+- [x] Resample: drop the register path, transparent skip and reciprocal
+      divide (measured no gain on Vampire); keep the 32-bit tap tables.
+- [x] Remove the four unused render wrappers and dock_edge_slot.
+- [x] Validate settings once per call chain instead of in every layer.
+- [x] One shared ChangeWindowShape wrapper.
+- [x] Group profiling counters in one struct.
+- [x] Verify: host tests, sanitizers, byte-identical render and cache output
+      on the real pins, both Amiga builds, Vampire cache benchmark.
+
+WBStartup fix: after a reboot Workbench waited on DockAwesome ("has not yet
+returned"), so AmiMCP never started. The icon lacked DONOTWAIT (WBDock has
+it). tools/make-icon.py now adds it; icon.library reads it from the
+installed ApolloOS:WBStartup/DockAwesome.info (type 3, stack 32768).
+
+## Sharper green CRT icon
+
+- [x] Sharpen the 48x48 source with its color tones and alpha intact.
+- [x] Verify the rebuilt Workbench icon and package output.
+- [x] Compare the original and sharpened icon in WBStartup on Vampire.
+
+Both packages and WBStartup use the sharpened icon. The before and after
+captures match their source images at 1:1. The DONOTWAIT tool type is intact.
+
+Simplification results: the resample keeps only the unrolled four-tap sum
+(a generic register loop was slower than streaming: 279 vs 245 ms) and drops
+the transparent skip and reciprocal. Vampire cache builds for the 11 pins:
+241 ms before, 217-220 ms after. Output: 3 of 68,156 cache pixels and 1 of
+72,000 rendered pixels differ by one level (exact division again). Removed
+four render wrappers, dock_edge_slot and dock_interaction_slot (tests only),
+and the duplicate validation in dock_renderer_draw; other validations guard
+array bounds at API boundaries and stay. ChangeWindowShape lives in
+include/amiga_abi.h (LVO calls unchanged). 47 profiling counters moved into
+ProfileStats. Host, big-endian and sanitizer tests and the fuzz harness pass.
+
+## Temporary icon jump
+
+- [x] Cause: a program that is not pinned (ApolloBoot's ReqList window) gets
+      a temporary icon; when it quits, program_poll_result snapped the whole
+      row to the new rest layout, so the centered dock jumped.
+- [x] Fix: like drops and unpins, the new icon appears in its slot and the
+      rest glide to the new row (0.148, installed in WBStartup).
+- [ ] User check: open and close ApolloBoot's window.
+
+The 0.140 binary was locked after the dock quit, so it was renamed to
+WBStartup/Disabled/DockAwesome-0140.old (since deleted).
+
+## Running indicators for scripts and detached programs
+
+Probed on Vampire with ApolloBoot's requester and HippoPlayer open:
+- ApolloBoot (project, default tool IconX): the window "  ApolloBoot  " is
+  owned by the CLI process BOOT:C/ReqList-Short; cli_CommandFile is empty and
+  Workbench lists only ApolloOS:C/IconX. It became a temporary ReqList icon.
+- HippoPlayer detaches: its window owner is task "HippoPlayer" without a CLI
+  and it is missing from Workbench's program list, so it was not discovered.
+
+- [x] A window titled exactly with a document pin's file name (blanks
+      trimmed) marks that pin running and adds no temporary icon.
+- [x] A window owner without a CLI is discovered as its task name in its
+      home directory (lock duplicated in Forbid after a liveness check).
+- [x] 0.150 installed in WBStartup and started through Workbench.
+- [ ] User check: dot under ApolloBoot with its window open and no extra
+      icon; HippoPlayer appears as a temporary icon with a dot.
+
+0148.old in WBStartup/Disabled was still locked by Workbench; delete it later.
+
+## General running-program detection (no per-program rules)
+
+Requirement: every program with a window on screen appears, background
+processes do not, and nothing is special-cased per program.
+- [x] An app is a process owning a visible window: a layer, not a backdrop,
+      at least 16x16, with a title, close gadget or drag bar.
+- [x] Attribution order: earlier attribution, pinned program by path, a new
+      app that appears within 10 s of a dock launch (that pin), a temporary
+      icon from its program file, else the default tool icon labeled with
+      the task name.
+- [x] Attributions persist while the task lives and still shows a window,
+      in every poll, so document pins keep their dot.
+- [x] Clicking a running icon focuses its attributed task's window.
+- [x] Remove the title-name and sole-tool heuristics.
+- [ ] Verify on Vampire: ApolloBoot from the dock (dot, no extra icon),
+      HippoPlayer from Workbench (temporary icon), background tasks absent.
+
+0.156 (installed in WBStartup) implements the above. Apps without a program
+file cannot be kept as pins. Disabled/ holds locked old binaries to delete.

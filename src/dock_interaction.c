@@ -69,20 +69,6 @@ DockGestureEffects dock_gesture_update(DockGesture *g, const DockGestureInput *i
     return effect;
 }
 
-int dock_interaction_slot(const DockSettings *s, const DockPlacement *p,
-    int count, int width, int height, int x, int y)
-{
-    int i, best = -1;
-    int64_t distance = INT64_MAX;
-    if (!count || !dock_hover_contains(s, p, count, width, height, x, y)) return -1;
-    for (i = 0; i < count; ++i) {
-        int64_t d = (int64_t)x*2-((int64_t)p[i].x*2+p[i].size);
-        if (d < 0) d = -d;
-        if (d < distance) { distance = d; best = i; }
-    }
-    return best;
-}
-
 static int inside_margin(int x, int y, int64_t left, int top,
     int64_t right, int64_t bottom, int margin)
 {

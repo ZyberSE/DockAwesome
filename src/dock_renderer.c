@@ -9,10 +9,8 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
     const DockImage *backdrop, const DockCache *const *icons,
     const DockPlacement *p, int count, const DockSettings *s)
 {
-    if (!r || !r->pixels || !canvas || !canvas->pixels ||
-        canvas->width < 1 || canvas->height < 1 || !dock_settings_valid(s) ||
-        count < 0 || count > DOCK_MAX_ITEMS || (count && (!icons || !p))) return;
+    /* dock_render_oriented_mask validates the canvas, settings and row. */
+    if (!r || !r->pixels) return;
     dock_render_oriented_mask(canvas, backdrop, icons, p, count, s, r->pixels->mix_half,
                            &r->panel, r->coverage, r->pressed_item, r->edge, r->center_panel);
-    if (r->output.present) r->output.present(r->output.context, canvas);
 }

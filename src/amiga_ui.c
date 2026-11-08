@@ -53,7 +53,11 @@ static const DockEdge settings_edges[] = {DOCK_EDGE_LEFT,DOCK_EDGE_BOTTOM,DOCK_E
    like the macOS Dock: larger zooms blur the 48 px icons and take more
    than a 20 ms frame. */
 enum { SIZE_SLIDER_MAX = 72, SCALE_SLIDER_MAX = 5*DOCK_SCALE_ONE/2, ZOOM_CEILING = 128 };
-enum { POPUP_RADIUS = 6, LABEL_GAP = 8, LABEL_MARGIN = 4, LABEL_TIP = 4, LABEL_PADDING = 10 };
+/* Hover labels: a pill with semicircular ends; the text's ink sits
+   LABEL_PADDING px from each end and its capitals LABEL_VPAD px from the
+   top and bottom. */
+enum { POPUP_RADIUS = 6, LABEL_GAP = 8, LABEL_MARGIN = 4, LABEL_TIP = 4, LABEL_PADDING = 10,
+    LABEL_VPAD = 5 };
 enum {
     MENU_SURFACE, MENU_RIM, MENU_HOVER, MENU_TEXT, MENU_HOVER_TEXT,
     FOLDER_MUTED, MENU_COLORS
@@ -1466,54 +1470,93 @@ static int label_position(const DockUI *ui, DockEdge edge, const DockRect *ancho
         *top >= bar && *top+height <= ui->screen->Height-LABEL_MARGIN;
 }
 
-static void label_span(int row, int width, int body, int radius, int tip_x, int *left, int *right)
+/* Inside the label outline moved inward by inset px: a pill of height body
+   with semicircular ends, plus a tip of tip rows under tip_x. In 1/16 px. */
+static int label_inside(int x, int y, int width, int body, int tip, int tip_x, int inset)
 {
-    if (row < body) {
-        int opposite = body-1-row;
-        *left = radius ? rounded_inset(radius,row < opposite ? row : opposite) : 0;
-        *right = width-1-*left;
-    } else {
-        int half = body+LABEL_TIP-1-row;
-        *left = tip_x-half; *right = tip_x+half;
+    int r = body*8-inset*16, left = body*8, right = width*16-body*8;
+    int dx = x < left ? left-x : x > right ? x-right : 0, dy = y-body*8;
+    if (r > 0 && dx*dx+dy*dy <= r*r) return 1;
+    if (tip && y >= body*16-24) {
+        /* 45-degree sides; moving them inward 1 px lowers the apex by sqrt 2. */
+        int half = (body+tip)*16-inset*23-y;
+        if (half > 0 && abs(x-(tip_x*16+8)) <= half) return 1;
     }
+    return 0;
 }
 
-static int label_shape(DockUI *ui, int width, int height, int body, int radius, int tip_x)
+/* Area coverage (0-255) of pixel (px,py), from 8x8 samples where the
+   outline crosses it. */
+static int label_coverage(int px, int py, int width, int body, int tip, int tip_x, int inset)
+{
+    int sx, sy, inside = 0, x = px*16, y = py*16;
+    if (py >= body && abs(px-tip_x) > tip+2) return 0;
+    if (label_inside(x,y,width,body,0,0,inset) && label_inside(x+16,y,width,body,0,0,inset) &&
+        label_inside(x,y+16,width,body,0,0,inset) && label_inside(x+16,y+16,width,body,0,0,inset))
+        return 255; /* The pill is convex: all four corners inside means all of it. */
+    for (sy = 0; sy < 8; ++sy) for (sx = 0; sx < 8; ++sx)
+        inside += label_inside(x+1+2*sx,y+1+2*sy,width,body,tip,tip_x,inset);
+    return (inside*255+32)/64;
+}
+
+/* The window shape: on each row, every pixel the outline touches. Without
+   a captured backdrop to blend with, only pixels at least half covered. */
+static int label_shape(DockUI *ui, int width, int height, const unsigned char *outer, int threshold)
 {
     int y;
     ui->label_shape = NewRegion();
     if (!ui->label_shape) return 0;
     for (y = 0; y < height; ++y) {
-        int left, right;
+        const unsigned char *row = outer+(size_t)y*width;
+        int left = 0, right = width-1;
         struct Rectangle rect;
-        label_span(y,width,body,radius,tip_x,&left,&right);
+        while (left < width && row[left] <= threshold) ++left;
+        while (right > left && row[right] <= threshold) --right;
+        if (left > right) continue;
         rect = (struct Rectangle){left,y,right,y};
         if (!OrRectRegion(ui->label_shape,&rect)) return 0;
     }
     return 1;
 }
 
+/* Ink box of text that paint_ui_text draws with its top-left at (0,0). */
+static int label_ink(DockUI *ui, struct RastPort *rp, const char *text, DockRect *ink)
+{
+    struct TextExtent extent;
+    if (ui->chrome_aa && ui->text_alpha)
+        return amiga_font_aa_ink(ui->chrome_aa,text,&ink->left,&ink->top,&ink->right,&ink->bottom);
+    amiga_text_extent(rp,text,strlen(text),&extent);
+    if (extent.te_Extent.MaxX < extent.te_Extent.MinX) return 0;
+    ink->left = extent.te_Extent.MinX; ink->right = extent.te_Extent.MaxX+1;
+    ink->top = rp->TxBaseline+extent.te_Extent.MinY;
+    ink->bottom = rp->TxBaseline+extent.te_Extent.MaxY+1;
+    return 1;
+}
+
+/* With a captured backdrop, each pixel mixes backdrop, rim and the
+   translucent surface by its outer and inner (1 px inset) coverage, so the
+   ends and the tip are antialiased. Otherwise the rim and the surface are
+   filled where they cover at least half of a pixel. */
 static void paint_label(DockUI *ui, DockImage *glass, AmigaDisplay *display,
-    int body, int radius, int tip_x, const char *label, int text_width)
+    const unsigned char *outer, const unsigned char *inner, int text_x, int text_top, const char *label)
 {
     struct RastPort *rp = ui->label->RPort;
     int width = ui->label->Width, height = ui->label->Height, y;
     int capture = glass->pixels && glass->width == width && glass->height == height &&
         ui->label->LeftEdge == ui->label_left && ui->label->TopEdge == ui->label_top;
     if (capture) {
+        ULONG rim = menu_colors[MENU_RIM], surface = menu_colors[MENU_SURFACE];
         for (y = 0; y < height; ++y) {
-            int left, right, above_left, above_right, below_left, below_right, x;
-            label_span(y,width,body,radius,tip_x,&left,&right);
-            label_span(y ? y-1 : y,width,body,radius,tip_x,&above_left,&above_right);
-            label_span(y+1 < height ? y+1 : y,width,body,radius,tip_x,&below_left,&below_right);
-            for (x = left; x <= right; ++x) {
-                unsigned char *pixel = glass->pixels+((size_t)y*width+x)*4;
-                int c, surface = y && y+1 < height && x > left && x < right &&
-                    x >= above_left && x <= above_right && x >= below_left && x <= below_right;
-                ULONG tint = menu_colors[surface ? MENU_SURFACE : MENU_RIM];
+            int x;
+            for (x = 0; x < width; ++x) {
+                size_t i = (size_t)y*width+x;
+                unsigned int o = outer[i], n = inner[i], c;
+                unsigned char *pixel = glass->pixels+i*4;
+                if (!o) continue;
                 for (c = 0; c < 3; ++c) {
-                    unsigned int channel = (tint>>(16-8*c))&255;
-                    pixel[c] = surface ? (4*channel+pixel[c]+2)/5 : channel;
+                    unsigned int back = pixel[c], shift = 16-8*c;
+                    unsigned int glass_tint = (4*((surface>>shift)&255)+back+2)/5;
+                    pixel[c] = (unsigned char)((back*(255-o)+((rim>>shift)&255)*(o-n)+glass_tint*n+127)/255);
                 }
             }
         }
@@ -1523,16 +1566,17 @@ static void paint_label(DockUI *ui, DockImage *glass, AmigaDisplay *display,
         popup_color(ui,rp,MENU_RIM);
         RectFill(rp,0,0,width-1,height-1);
         popup_color(ui,rp,MENU_SURFACE);
-        fill_rounded(rp,1,1,width-2,body-2,radius ? radius-1 : 0);
-        if (height > body) for (y = body-1; y < height-1; ++y) {
-            int half = height-2-y;
-            RectFill(rp,tip_x-half,y,tip_x+half,y);
+        for (y = 0; y < height; ++y) {
+            const unsigned char *row = inner+(size_t)y*width;
+            int left = 0, right = width-1;
+            while (left < width && row[left] < 128) ++left;
+            while (right > left && row[right] < 128) --right;
+            if (left <= right) RectFill(rp,left,y,right,y);
         }
     }
     SetFont(rp,ui->draw->dri_Font);
     SetDrMd(rp,JAM1);
-    paint_ui_text(ui,rp,ui->chrome_aa,label,(width-text_width)/2,
-        (body-ui->font_height)/2,MENU_TEXT);
+    paint_ui_text(ui,rp,ui->chrome_aa,label,text_x,text_top,MENU_TEXT);
 }
 
 int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const char *text)
@@ -1542,7 +1586,9 @@ int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const 
     AmigaDisplay *display = NULL;
     char label[128];
     size_t length = strlen(text);
-    int text_width, width, height, body, radius, max_width, tip_x;
+    int text_width, width, height, body, max_width, tip_x, tip, x, y, text_x, text_top;
+    DockRect ink, caps;
+    unsigned char *outer, *inner;
     dock_ui_hide_label(ui);
     max_width = ui->screen->Width-2*LABEL_MARGIN;
     if (edge == DOCK_EDGE_LEFT) max_width = ui->screen->Width-LABEL_MARGIN-anchor->right-LABEL_GAP;
@@ -1564,17 +1610,45 @@ int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const 
         } while (length && text_width+2*LABEL_PADDING > max_width);
     }
     if (text_width <= 0 || text_width+2*LABEL_PADDING > max_width) return 0;
-    width = text_width+2*LABEL_PADDING;
-    body = ui->font_height+8;
-    radius = ui->window_shapes ? body/2-1 : 0;
-    if (radius > width/2-1) radius = width/2-1;
-    height = body+(ui->window_shapes && edge == DOCK_EDGE_BOTTOM ? LABEL_TIP : 0);
+    /* Centre the ink, not the advance box: equal ink margins at both ends,
+       and the capitals of the font (measured on "H") centred vertically. */
+    if (!label_ink(ui,&measure,label,&ink)) ink = (DockRect){0,0,text_width,ui->font_height};
+    if (!label_ink(ui,&measure,"H",&caps)) caps = (DockRect){0,0,1,ui->font_height};
+    {
+        /* Accents, descenders and the label's own ink must stay inside the
+           rim: grow the padding on both sides alike, so the capitals stay
+           centred and every label of one font has the same height. */
+        static const char reference[] = "\xc5\xc4\xd6gjpqy_|";
+        DockRect tall;
+        int pad = LABEL_VPAD;
+        if (label_ink(ui,&measure,reference,&tall)) {
+            if (caps.top-tall.top+2 > pad) pad = caps.top-tall.top+2;
+            if (tall.bottom-caps.bottom+2 > pad) pad = tall.bottom-caps.bottom+2;
+        }
+        if (caps.top-ink.top+2 > pad) pad = caps.top-ink.top+2;
+        if (ink.bottom-caps.bottom+2 > pad) pad = ink.bottom-caps.bottom+2;
+        body = caps.bottom-caps.top+2*pad;
+        text_top = pad-caps.top;
+    }
+    width = ink.right-ink.left+2*LABEL_PADDING;
+    if (width < body) width = body;
+    text_x = (width-(ink.right-ink.left))/2-ink.left;
+    tip = ui->window_shapes && edge == DOCK_EDGE_BOTTOM ? LABEL_TIP : 0;
+    height = body+tip;
     if (!label_position(ui,edge,anchor,width,height,&ui->label_left,&ui->label_top)) return 0;
-    tip_x = clamp((anchor->left+anchor->right)/2-ui->label_left,LABEL_TIP,width-LABEL_TIP-1);
-    if (ui->window_shapes && !label_shape(ui,width,height,body,radius,tip_x)) {
-        dock_ui_hide_label(ui); return 0;
+    tip_x = clamp((anchor->left+anchor->right)/2-ui->label_left,body/2,width-body/2-1);
+    outer = malloc((size_t)width*height*2);
+    if (!outer) return 0;
+    inner = outer+(size_t)width*height;
+    for (y = 0; y < height; ++y) for (x = 0; x < width; ++x) {
+        outer[y*width+x] = (unsigned char)label_coverage(x,y,width,body,tip,tip_x,0);
+        inner[y*width+x] = (unsigned char)label_coverage(x,y,width,body,tip,tip_x,1);
     }
     display = capture_glass(ui,&glass,ui->label_left,ui->label_top,width,height);
+    if (ui->window_shapes && !label_shape(ui,width,height,outer,glass.pixels ? 0 : 127)) {
+        free(outer); free(glass.pixels); amiga_display_close(display);
+        dock_ui_hide_label(ui); return 0;
+    }
     prepare_popup_colors(ui);
     ui->label = OpenWindowTags(NULL,WA_CustomScreen,(ULONG)ui->screen,
         WA_Left,ui->label_left,WA_Top,ui->label_top,WA_Width,width,WA_Height,height,
@@ -1582,9 +1656,10 @@ int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const 
         ui->label_shape ? WA_ShapeRegion : TAG_IGNORE,(ULONG)ui->label_shape,
         WA_IDCMP,0,TAG_DONE);
     if (ui->label) {
-        paint_label(ui,&glass,display,body,radius,tip_x,label,text_width);
+        paint_label(ui,&glass,display,outer,inner,text_x,text_top,label);
         ui->label_left = ui->label->LeftEdge; ui->label_top = ui->label->TopEdge;
     } else dock_ui_hide_label(ui);
+    free(outer);
     free(glass.pixels);
     amiga_display_close(display);
     return ui->label != NULL;

@@ -123,6 +123,31 @@ void amiga_alpha_template_blit(struct Library *cyber, struct RastPort *target,
         LONG, left, d2, LONG, top, d3, LONG, width, d4, LONG, height, d5, , cyber);
 }
 
+int amiga_font_aa_ink(const AmigaFontAA *font, const char *text,
+    int *left, int *top, int *right, int *bottom)
+{
+    const unsigned char *c;
+    int pen = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0, found = 0;
+    if (!font || !text) return 0;
+    for (c = (const unsigned char *)text; *c; ++c) {
+        const Glyph *glyph = glyph_for(font,*c);
+        const unsigned char *mask = font->coverage+glyph->offset;
+        int x, y;
+        for (y = 0; y < font->height; ++y) for (x = 0; x < glyph->width; ++x, ++mask) {
+            int gx = pen+glyph->bearing+x;
+            if (!*mask) continue;
+            if (!found || gx < x0) x0 = gx;
+            if (!found || gx+1 > x1) x1 = gx+1;
+            if (!found || y < y0) y0 = y;
+            if (!found || y+1 > y1) y1 = y+1;
+            found = 1;
+        }
+        pen += glyph->advance;
+    }
+    if (found) { *left = x0; *top = y0; *right = x1; *bottom = y1; }
+    return found;
+}
+
 int amiga_font_aa_blit(AmigaFontAA *font, struct Library *cyber,
     struct RastPort *target, const char *text, int left, int top)
 {

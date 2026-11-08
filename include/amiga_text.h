@@ -18,4 +18,13 @@ static inline void amiga_text_draw(struct RastPort *port, const char *text, ULON
         CONST_STRPTR, (CONST_STRPTR)text, a0, ULONG, length, d0, , GfxBase);
 }
 
+/* TextExtent with the same full ULONG count. */
+static inline WORD amiga_text_extent(struct RastPort *port, const char *text, ULONG length,
+    struct TextExtent *extent)
+{
+    return LP4(0x2b2, WORD, DockTextExtent32, struct RastPort *, port, a1,
+        CONST_STRPTR, (CONST_STRPTR)text, a0, ULONG, length, d0,
+        struct TextExtent *, extent, a2, , GfxBase);
+}
+
 #endif

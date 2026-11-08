@@ -502,3 +502,17 @@ icon centre). Share of the full zoom per icon from the pointer:
 - [x] Build 184 installed in WBStartup (build 180 in
       WBStartup/Disabled/DockAwesome-build180.old). The live config keeps
       Scale 1.95x; raise it in Settings to try 2.50x.
+
+## Round hover labels (2026-11-08)
+
+- [x] Labels are pills (semicircular ends) with antialiased rim and tip,
+      instead of a radius-7 circle on a 17 px body that showed as an
+      octagon with stepped edges.
+- [x] Text centred on its ink: on the Vampire (build 186, "Files") the rim
+      runs x 12-60 and rows 8-24, the ink x 22-50 and capitals rows 13-19:
+      the same centre column and row, 9 px of surface each side (was 1.5 px
+      left and 1 px high).
+- [x] Codex: tall fonts (ttCourier 25) clipped an underscore; the padding
+      now grows equally above and below for accents, descenders and the
+      label's own ink. Build 186 installed (build 184 in
+      WBStartup/Disabled/DockAwesome-build184.old).

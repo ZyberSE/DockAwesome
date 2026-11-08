@@ -523,15 +523,15 @@ static void logical_positions(const DockSettings *s, int count, int width, int m
    pitches away by 0.86, 0.48 and 0.04 of the zoom and the fourth not at all.
    A Catmull-Rom curve through those samples is smooth, and its weights sum
    to one at every phase, so the row's total growth never changes while the
-   pointer moves and icons outside the wave stay still. It dips below zero by
-   at most 0.008 between 3 and 4 pitches. offset is the pointer's distance
-   in pitches, Q16. */
+   pointer moves and icons outside the wave stay still. It reaches 5 pitches
+   and dips below zero there by at most 0.008 of the zoom. offset is the
+   pointer's distance in pitches, Q16. */
 static int32_t wave_weight(int32_t offset)
 {
-    static const int32_t sample[6] = {256, 220, 123, 10, 0, 0}; /* Q8, by pitch */
+    static const int32_t sample[7] = {256, 220, 123, 10, 0, 0, 0}; /* Q8, by pitch */
     int32_t q = offset < 0 ? -offset : offset, f = (q & 65535) >> 4, f2, f3;
     int j = q >> 16;
-    if (j > 3) return 0;
+    if (j > 4) return 0;
     /* Catmull-Rom basis for samples j-1 .. j+2, Q12 phase, Q24 weights. */
     f2 = f*f; f3 = (f2 >> 12)*f;
     return sample[j ? j-1 : 1]*((-f3+2*f2-(f<<12))/2/256)+
@@ -544,6 +544,7 @@ int dock_layout(const DockSettings *s, int count, int width, int height,
 {
     int i, total, rest, start, pitch, x, panel_top, panel_bottom, baseline, constrained = 0;
     int logical_size[DOCK_MAX_ITEMS];
+    int32_t slot;
     if (!dock_settings_valid(s) || !out || count < 0 || count > DOCK_MAX_ITEMS ||
         width < 1 || height < s->max_size + s->padding * 2) return 0;
     if (!count) return 1;
@@ -562,16 +563,26 @@ int dock_layout(const DockSettings *s, int count, int width, int height,
         return 1;
     }
     total = count > 1 ? s->end_gap : 0;
+    {
+        /* The pointer in resting slots (Q16), with the wider end-gap pitch
+           counting as one slot, floored once: every icon sees the same phase,
+           as logical_positions maps the pointer between the same centers. */
+        int focus = mx-(start+s->base_size/2), reach = 6*pitch;
+        if (focus < -reach) focus = -reach;
+        slot = 0;
+        for (i = 0; focus >= 0 && i+1 < count; ++i) {
+            int span = pitch+extra_gap(s,count,i);
+            if (focus < span) break;
+            focus -= span; slot += 65536;
+        }
+        if (focus > reach) focus = reach;
+        slot += focus >= 0 ? focus*65536/(pitch+(i+1 < count ? extra_gap(s,count,i) : 0)) :
+            -((-focus*65536+pitch-1)/pitch);
+    }
     for (i = 0; i < count; ++i) {
-        /* Pointer offset in pitches (Q16), floored the same way for every
-           icon, so all icons see the same phase. */
-        int distance = mx-(start+i*pitch+s->base_size/2+extra_gap(s,count,i-1));
         int level = 0;
         int32_t weight = 0;
-        if (s->max_size > s->base_size && distance > -4*pitch && distance < 4*pitch) {
-            int32_t offset = (int32_t)distance*65536;
-            weight = wave_weight(offset >= 0 ? offset/pitch : -((-offset+pitch-1)/pitch));
-        }
+        if (s->max_size > s->base_size) weight = wave_weight(slot-i*65536);
         if (weight > 0)
             level = (int)(((uint32_t)(s->levels-1)*(uint32_t)weight + (UINT32_C(1)<<23)) >> 24);
         out[i].level = level;

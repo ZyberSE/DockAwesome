@@ -532,3 +532,21 @@ icon centre). Share of the full zoom per icon from the pointer:
       WBStartup/Disabled/DockAwesome-build186.old); click on the pin opens,
       click on the close button closes and stays closed. Old rollbacks
       0.178, build180 and build184 are locked by Workbench until a reboot.
+
+## Glass close button and faster Folder Stack start (2026-11-09)
+
+- [x] Close button: smoked glass (surface alpha 176, rim alpha 220) at 90%
+      of an icon's extent via dock_cache_build_scaled (the cache fits any
+      artwork to the box, so an inset in the source was undone), thin
+      chevron (2.6% stroke) in soft white (212).
+- [x] The pin morphs as far as the box is out (dock_ui_folder_progress),
+      opening and closing; opening uses the closing motion reversed, 130 ms.
+- [x] First frame after the click on the Vampire (299x315 box): 89-95 ms
+      before, 60 ms now. Glass over the backdrop is finished per revealed
+      strip (15-20 ms moved into the frames, about 2.7 ms each), the glass
+      tint writes whole words (16-24 ms with a memcpy per pixel, 8 ms now)
+      and runs after the motion. Remaining stages (ms): read 12.5, layer 9,
+      labels 8.6, buffers 6, capture 4.6, first present 4.8, window 3.8.
+- [x] Build 215 installed in WBStartup (build 207 in
+      WBStartup/Disabled/DockAwesome-build207.old). The 90% button and the
+      tint guard came after it, from the Codex review.

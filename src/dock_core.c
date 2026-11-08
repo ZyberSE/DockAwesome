@@ -354,14 +354,20 @@ static void alpha_bounds(const DockImage *image, int *left, int *top, int *right
     }
 }
 
-static int cache_build(DockCache *out, const DockImage *source, const DockSettings *s);
+static int cache_build(DockCache *out, const DockImage *source, const DockSettings *s, int fill);
 
-int dock_cache_build(DockCache *out, const DockImage *source, const DockSettings *s)
+int dock_cache_build_scaled(DockCache *out, const DockImage *source, const DockSettings *s, int fill)
 {
     if (!out) return 0;
     memset(out, 0, sizeof(*out));
-    if (!dock_settings_valid(s) || dock_cache_bytes(s) > s->cache_limit) return 0;
-    return cache_build(out, source, s);
+    if (fill < 1 || fill > 256 || !dock_settings_valid(s) || dock_cache_bytes(s) > s->cache_limit)
+        return 0;
+    return cache_build(out, source, s, fill);
+}
+
+int dock_cache_build(DockCache *out, const DockImage *source, const DockSettings *s)
+{
+    return dock_cache_build_scaled(out, source, s, 256);
 }
 
 int dock_icon_build(DockImage *out, const DockImage *source, int size)
@@ -374,14 +380,14 @@ int dock_icon_build(DockImage *out, const DockImage *source, int size)
     s.base_size = s.max_size = size;
     s.levels = 1;
     memset(&cache, 0, sizeof(cache));
-    if (!cache_build(&cache, source, &s)) return 0;
+    if (!cache_build(&cache, source, &s, 256)) return 0;
     *out = cache.image[0];
     free(cache.runs[0]);
     return 1;
 }
 
 /* Settings are validated by the callers; one level is allowed here. */
-static int cache_build(DockCache *out, const DockImage *source, const DockSettings *s)
+static int cache_build(DockCache *out, const DockImage *source, const DockSettings *s, int fill)
 {
     DockImage art = {0, 0, NULL};
     uint16_t *premultiplied = NULL;
@@ -430,7 +436,7 @@ static int cache_build(DockCache *out, const DockImage *source, const DockSettin
         if (!premultiplied) continue;
         /* Scale the normalized artwork and its padding together. A fixed
           2px inset at every level would turn28px into60px for32->64 boxes. */
-        w = h = (n*(s->base_size-2*DOCK_ICON_INSET)+s->base_size/2)/s->base_size;
+        w = h = (((n*(s->base_size-2*DOCK_ICON_INSET))*fill>>8)+s->base_size/2)/s->base_size;
         if (cw > ch) h = (ch * w + cw / 2) / cw;
         else w = (cw * h + ch / 2) / ch;
         if (w < 1) w = 1;

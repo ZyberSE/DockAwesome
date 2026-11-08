@@ -369,6 +369,7 @@ static Item *append_item(App *app, const char *path, int kind, DockCache *cache)
     item->cache = *cache;
     memset(cache,0,sizeof(*cache));
     ++app->count;
+    dock_renderer_invalidate(&app->renderer);
     return item;
 }
 
@@ -387,6 +388,7 @@ static void exchange_stack(App *app, int index, Item *replacement)
         ++app->count;
     }
     *replacement = previous;
+    dock_renderer_invalidate(&app->renderer);
 }
 
 static ULONG region_rect_count(const struct Region *region)
@@ -508,6 +510,7 @@ static void erase_item(App *app, int index)
     int tail = app->count-index-1;
     input_invalidate(app);
     item_free(item);
+    dock_renderer_invalidate(&app->renderer);
     memmove(item,item+1,(size_t)tail*sizeof(*item));
     memmove(placement,placement+1,(size_t)tail*sizeof(*placement));
     memset(&app->items[--app->count],0,sizeof(*item));
@@ -970,6 +973,7 @@ static int prepare_stack(App *app, const char *path, const DockSettings *setting
     if (!ok || !load_stack_icon(app,item->path,&icon)) return 0;
     ok = dock_cache_build(&item->cache,&icon,settings);
     free(icon.pixels);
+    dock_renderer_invalidate(&app->renderer);
     if (!ok) return 0;
     item->pin_id = new_pin_id(app);
     item->kind = PIN_DRAWER;
@@ -3051,7 +3055,7 @@ static void present_frame(void *context, const DockImage *frame)
     } else amiga_display_present(app->display, app->window, frame);
 }
 
-static void draw_running_dot(App *app, const DockPlacement *icon)
+static DockOverlay running_dot(const App *app, const DockPlacement *icon)
 {
     #define DOT(a) 175,179,188,a
     static unsigned char pixels[] = {
@@ -3069,15 +3073,16 @@ static void draw_running_dot(App *app, const DockPlacement *icon)
     if (app->edge == DOCK_EDGE_BOTTOM) y = app->height-1-inset-dot.height/2;
     else if (app->edge == DOCK_EDGE_RIGHT) x = app->width-1-inset-dot.width/2;
     else x = inset-dot.width/2;
-    dock_blend_masked(&app->canvas,&dot,x,y,app->coverage);
+    return (DockOverlay){&dot,x,y};
 }
 
 static void draw(App *app)
 {
     uint64_t started = app->profile ? profile_clock() : 0;
     const DockCache *icons[DOCK_MAX_ITEMS];
+    DockOverlay overlays[DOCK_MAX_OVERLAYS];
     const DockPlacement *placement = row_placement(app);
-    int i, count = row_count(app);
+    int i, count = row_count(app), overlay_count = 0;
     int dragged = app->gesture.active && app->gesture.dragged && !app->gesture.cancelled ?
         pin_index(app, app->gesture.pin_id) : -1;
     uint32_t selected = dock_gesture_pressed(&app->gesture);
@@ -3088,19 +3093,29 @@ static void draw(App *app)
         icons[i] = item == dragged ? NULL : &app->items[item].cache;
         if (selected && selected == app->items[item].pin_id) app->renderer.pressed_item = i+1;
     }
-    dock_renderer_draw(&app->renderer, &app->canvas, (app->snapshot || app->pip_mode) ? &app->backdrop : NULL,
-        icons, placement, count, &app->settings);
-    if (app->profile) {
-        ++app->stats.damage_frames; ++app->stats.damage_full;
-        app->stats.compose_pixels += (uint64_t)app->width*app->height;
-    }
+    /* Running dots in slot order, then the dragged icon. */
     for (i = 0; i < count; ++i)
-        if (icons[i] && app->items[row_item(app,i)].running) draw_running_dot(app,&placement[i]);
+        if (icons[i] && app->items[row_item(app,i)].running)
+            overlays[overlay_count++] = running_dot(app,&placement[i]);
     if (dragged >= 0 && !app->gesture.remove_armed) {
         int level = app->moving_item ? app->held_icon.level : app->placement[dragged].level;
         const DockImage *icon = &app->items[dragged].cache.image[level];
-        dock_blend_masked(&app->canvas, icon, app->gesture.x-icon->width/2,
-            app->gesture.y-icon->height/2, app->coverage);
+        overlays[overlay_count++] = (DockOverlay){icon, app->gesture.x-icon->width/2,
+            app->gesture.y-icon->height/2};
+    }
+    app->renderer.overlays = overlays; app->renderer.overlay_count = overlay_count;
+    dock_renderer_draw(&app->renderer, &app->canvas, (app->snapshot || app->pip_mode) ? &app->backdrop : NULL,
+        icons, placement, count, &app->settings);
+    app->renderer.overlays = NULL; app->renderer.overlay_count = 0;
+    if (app->profile) {
+        const DockDamage *damage = &app->renderer.damage;
+        ++app->stats.damage_frames;
+        if (damage->full) {
+            ++app->stats.damage_full;
+            app->stats.compose_pixels += (uint64_t)app->width*app->height;
+        } else for (i = 0; i < damage->count; ++i)
+            app->stats.compose_pixels += (uint64_t)(damage->rect[i].right-damage->rect[i].left)*
+                (uint64_t)(damage->rect[i].bottom-damage->rect[i].top);
     }
     present_frame(app, &app->canvas);
     if (app->pip_mode) {
@@ -3220,6 +3235,7 @@ static __attribute__((noinline)) int accept_drops(App *app, int *recreate)
                 if (!added && index == target) continue;
                 input_invalidate(app);
                 dock_reorder(app->items,sizeof(Item),app->count,index,target);
+                dock_renderer_invalidate(&app->renderer);
                 if (!*recreate && rest_after_pin_change(app,before)) {
                     app->placement[index] = app->target[target];
                     dock_reorder(app->placement,sizeof(*app->placement),app->count,index,target);
@@ -3377,6 +3393,7 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
         if (effect.target_slot != index) {
             input_invalidate(app);
             dock_reorder(app->items, sizeof(Item), app->count, index, effect.target_slot);
+            dock_renderer_invalidate(&app->renderer);
             *save = 1;
         }
     }
@@ -3599,6 +3616,7 @@ static int apply_preferences(App *app, const DockUIPrefs *prefs)
         if (change_stack && i == slot) continue;
         DockCache old = app->items[i].cache; app->items[i].cache = swap[i]; swap[i] = old;
     }
+    dock_renderer_invalidate(&app->renderer);
     if (change_stack) {
         strcpy(previous_folder,app->prefs.folder);
         strcpy(app->prefs.folder,stack.path);
@@ -3618,6 +3636,7 @@ static int apply_preferences(App *app, const DockUIPrefs *prefs)
             if (change_stack && i == slot) continue;
             DockCache failed = app->items[i].cache; app->items[i].cache = swap[i]; swap[i] = failed;
         }
+        dock_renderer_invalidate(&app->renderer);
         app->settings = previous; app->edge = previous_edge;
         app->scale_percent = previous_scale;
         if (!open_surface(app))

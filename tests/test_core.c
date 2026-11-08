@@ -1288,7 +1288,9 @@ static int fixture_scenario(int edge, int captured, int glass, int pressed, int 
     return ((((((edge*2+captured)*2+glass)*2+pressed)*2+center)*2+end_gap)*4)+pointer;
 }
 
-static void test_render_goldens(void)
+/* as_overlays 0: dots blended after the frame (the generated table);
+   1: the same dots passed to the renderer as overlays. */
+static void test_render_goldens(int as_overlays)
 {
     RenderFixture f;
     uint32_t sums[FIX_SCENARIOS];
@@ -1310,7 +1312,14 @@ static void test_render_goldens(void)
             for (pointer = 0; pointer < 4; ++pointer) {
                 DockPlacement p[FIX_COUNT];
                 const DockCache *icons[FIX_COUNT];
+                DockOverlay dots[FIX_COUNT];
+                int dot_count = 0;
                 fixture_layout(&f,pointer,p);
+                for (i = 0; i < FIX_COUNT; ++i) if (fixture_running[i]) {
+                    dots[dot_count].image = &fixture_dot;
+                    fixture_dot_position(&f,&p[i],&dots[dot_count].x,&dots[dot_count].y);
+                    ++dot_count;
+                }
                 fixture_icons(&f,icons);
                 memset(f.canvas.pixels,0xa5,(size_t)f.width*f.height*4);
                 memset(f.coverage,0x5a,(size_t)f.width*f.height);
@@ -1319,15 +1328,17 @@ static void test_render_goldens(void)
                     memset(&r,0,sizeof(r));
                     r.pixels = dock_backend_portable(); r.coverage = f.coverage;
                     r.pressed_item = pressed ? 2 : 0; r.center_panel = center; r.edge = (DockEdge)edge;
+                    if (as_overlays) { r.overlays = dots; r.overlay_count = dot_count; }
                     dock_renderer_draw(&r,&f.canvas,captured ? &f.backdrop : NULL,icons,p,FIX_COUNT,&f.s);
                     dock_renderer_release(&r);
+                } else if (as_overlays) {
+                    DockRect full = {0,0,f.width,f.height};
+                    dock_render_oriented_clip(&f.canvas,captured ? &f.backdrop : NULL,icons,p,FIX_COUNT,
+                        &f.s,NULL,shape,f.coverage,pressed ? 2 : 0,edge,center,NULL,dots,dot_count,&full);
                 } else dock_render_oriented_mask(&f.canvas,captured ? &f.backdrop : NULL,icons,p,FIX_COUNT,
                     &f.s,NULL,shape,f.coverage,pressed ? 2 : 0,edge,center,NULL);
-                for (i = 0; i < FIX_COUNT; ++i) if (fixture_running[i]) {
-                    int x, y;
-                    fixture_dot_position(&f,&p[i],&x,&y);
-                    dock_blend_masked(&f.canvas,&fixture_dot,x,y,f.coverage);
-                }
+                if (!as_overlays) for (i = 0; i < dot_count; ++i)
+                    dock_blend_masked(&f.canvas,dots[i].image,dots[i].x,dots[i].y,f.coverage);
                 sums[fixture_scenario(edge,captured,glass,pressed,center,end_gap,pointer)] = fixture_checksum(&f);
             }
             fixture_close(&f);
@@ -1335,7 +1346,7 @@ static void test_render_goldens(void)
         for (i = 0; i < 3; ++i) dock_cache_free(&f.cache[i]);
     }
     free(shape);
-    if (print) {
+    if (print && !as_overlays) {
         for (i = 0; i < FIX_SCENARIOS; ++i) printf("0x%08lx,%s", (unsigned long)sums[i], i%6 == 5 ? "\n" : " ");
         return;
     }
@@ -1344,6 +1355,275 @@ static void test_render_goldens(void)
             i,(unsigned long)sums[i],(unsigned long)render_goldens[i]);
         assert(sums[i] == render_goldens[i]);
     }
+}
+
+static int damage_disjoint(const DockDamage *d)
+{
+    int i, j;
+    for (i = 0; i < d->count; ++i) for (j = i+1; j < d->count; ++j) {
+        const DockRect *a = &d->rect[i], *b = &d->rect[j];
+        if (a->left < b->right && b->left < a->right && a->top < b->bottom && b->top < a->bottom) return 0;
+    }
+    return 1;
+}
+
+static int damage_covers(const DockDamage *d, int x, int y)
+{
+    int i;
+    if (d->full) return 1;
+    for (i = 0; i < d->count; ++i)
+        if (x >= d->rect[i].left && x < d->rect[i].right && y >= d->rect[i].top && y < d->rect[i].bottom) return 1;
+    return 0;
+}
+
+static void test_damage_add(void)
+{
+    enum { W = 64, H = 48 };
+    DockDamage d, e;
+    static unsigned char added[W*H];
+    unsigned seed = 5;
+    int i, x, y, round;
+    dock_damage_clear(&d);
+    dock_damage_add(&d,(DockRect){-5,-5,10,10},8,8);
+    assert(d.count == 1 && !d.full && d.rect[0].left == 0 && d.rect[0].top == 0 &&
+        d.rect[0].right == 8 && d.rect[0].bottom == 8);
+    dock_damage_clear(&d);
+    dock_damage_add(&d,(DockRect){3,3,3,9},W,H);
+    dock_damage_add(&d,(DockRect){5,9,9,9},W,H);
+    dock_damage_add(&d,(DockRect){W,0,W+5,4},W,H);
+    dock_damage_add(&d,(DockRect){0,-9,4,0},W,H);
+    dock_damage_add(&d,(DockRect){9,9,2,2},W,H);
+    assert(!d.count && !d.full);
+    /* Edge-adjacent rects stay separate; overlap merges. */
+    dock_damage_add(&d,(DockRect){0,0,2,2},W,H);
+    dock_damage_add(&d,(DockRect){2,0,4,2},W,H);
+    assert(d.count == 2);
+    dock_damage_add(&d,(DockRect){1,1,3,3},W,H);
+    assert(d.count == 1 && d.rect[0].left == 0 && d.rect[0].right == 4 && d.rect[0].bottom == 3);
+    /* Transitive: C meets A only, but their box meets B. */
+    dock_damage_clear(&d);
+    dock_damage_add(&d,(DockRect){0,0,6,2},W,H);
+    dock_damage_add(&d,(DockRect){5,4,7,6},W,H);
+    dock_damage_add(&d,(DockRect){0,1,2,5},W,H);
+    assert(d.count == 1 && d.rect[0].left == 0 && d.rect[0].top == 0 &&
+        d.rect[0].right == 7 && d.rect[0].bottom == 6);
+    /* Overflow sets full; full absorbs everything. */
+    dock_damage_clear(&d);
+    for (i = 0; i < DOCK_DAMAGE_MAX; ++i) dock_damage_add(&d,(DockRect){(i%20)*3,(i/20)*3,(i%20)*3+1,(i/20)*3+1},W,H);
+    assert(d.count == DOCK_DAMAGE_MAX && !d.full && damage_disjoint(&d));
+    dock_damage_add(&d,(DockRect){62,46,63,47},W,H);
+    assert(d.full && !d.count);
+    dock_damage_add(&d,(DockRect){0,0,1,1},W,H);
+    assert(d.full && !d.count);
+    dock_damage_clear(&e);
+    dock_damage_add(&e,(DockRect){0,0,1,1},W,H);
+    dock_damage_merge(&e,&d,W,H);
+    assert(e.full);
+    /* Random adds: never intersecting, covering every added pixel, merge
+       equals adding each rect. */
+    for (round = 0; round < 300; ++round) {
+        int adds = 1+round%40;
+        DockDamage m;
+        dock_damage_clear(&d); dock_damage_clear(&m); dock_damage_clear(&e);
+        memset(added,0,sizeof(added));
+        for (i = 0; i < adds; ++i) {
+            DockRect r;
+            seed = seed*1103515245u+12345u; r.left = (int)(seed>>8)%(W+8)-4;
+            seed = seed*1103515245u+12345u; r.top = (int)(seed>>8)%(H+8)-4;
+            seed = seed*1103515245u+12345u; r.right = r.left+(int)(seed>>8)%9;
+            seed = seed*1103515245u+12345u; r.bottom = r.top+(int)(seed>>8)%9;
+            dock_damage_add(&d,r,W,H);
+            dock_damage_add(i&1 ? &m : &e,r,W,H);
+            for (y = r.top < 0 ? 0 : r.top; y < r.bottom && y < H; ++y)
+                for (x = r.left < 0 ? 0 : r.left; x < r.right && x < W; ++x) added[y*W+x] = 1;
+            assert(damage_disjoint(&d));
+        }
+        dock_damage_merge(&e,&m,W,H);
+        assert(damage_disjoint(&e));
+        for (y = 0; y < H; ++y) for (x = 0; x < W; ++x)
+            if (added[y*W+x]) assert(damage_covers(&d,x,y) && damage_covers(&e,x,y));
+        for (i = 0; i < d.count; ++i) {
+            assert(d.rect[i].left >= 0 && d.rect[i].top >= 0 && d.rect[i].right <= W && d.rect[i].bottom <= H);
+            assert(d.rect[i].left < d.rect[i].right && d.rect[i].top < d.rect[i].bottom);
+        }
+    }
+}
+
+/* The divider moves with the last two slots. With no artwork there and the
+   plate ends far away, only the divider rule repaints its old position. */
+static void test_damage_divider(void)
+{
+    enum { LONG = 600, CROSS = 92 };
+    static const int frames[][3] = {{20,100,143},{20,300,343},{20,300,343},{20,120,170},{20,121,171}};
+    DockSettings s = dock_settings_default();
+    DockRenderer r;
+    DockPanelShape *shape = calloc(1,sizeof(*shape));
+    const DockCache *icons[3] = {NULL,NULL,NULL};
+    unsigned char *pixels = malloc(LONG*CROSS*4), *ref = malloc(LONG*CROSS*4);
+    unsigned char *cov = malloc(LONG*CROSS), *ref_cov = malloc(LONG*CROSS);
+    int edge, k;
+    assert(shape && pixels && ref && cov && ref_cov);
+    s.end_gap = 6;
+    for (edge = DOCK_EDGE_BOTTOM; edge <= DOCK_EDGE_RIGHT; ++edge) {
+        int bottom = edge == DOCK_EDGE_BOTTOM;
+        DockImage canvas = {bottom ? LONG : CROSS, bottom ? CROSS : LONG, pixels};
+        DockImage reference = {canvas.width, canvas.height, ref};
+        memset(&r,0,sizeof(r));
+        r.pixels = dock_backend_portable(); r.coverage = cov; r.edge = (DockEdge)edge;
+        for (k = 0; k < (int)(sizeof(frames)/sizeof(frames[0])); ++k) {
+            DockPlacement p[3];
+            int i;
+            for (i = 0; i < 3; ++i) {
+                int cross = bottom ? CROSS-3-40 : edge == DOCK_EDGE_LEFT ? 3+4 : CROSS-3-40;
+                p[i] = bottom ? (DockPlacement){frames[k][i],cross,32,0} : (DockPlacement){cross,frames[k][i],32,0};
+            }
+            dock_renderer_draw(&r,&canvas,NULL,icons,p,3,&s);
+            if (k) assert(!r.damage.full);
+            dock_render_oriented_mask(&reference,NULL,icons,p,3,&s,NULL,shape,ref_cov,0,edge,0,NULL);
+            assert(!memcmp(pixels,ref,LONG*CROSS*4) && !memcmp(cov,ref_cov,LONG*CROSS));
+        }
+        dock_renderer_release(&r);
+    }
+    free(shape); free(pixels); free(ref); free(cov); free(ref_cov);
+}
+
+static unsigned fuzz_next(unsigned *seed, unsigned range)
+{
+    *seed = *seed*1103515245u+12345u;
+    return (*seed>>8)%range;
+}
+
+/* Damage fuzz: an incremental renderer (glass) and a damage-only redraw
+   without glass both equal a fresh full render plus overlays, byte for byte,
+   on every frame. */
+static void test_damage_fuzz(void)
+{
+    enum { FRAMES_PER_CONFIG = 3400, MAX_COUNT = 6 };
+    RenderFixture f;
+    DockPanelShape *shape_ref = calloc(1,sizeof(*shape_ref)), *shape_b = calloc(1,sizeof(*shape_b));
+    unsigned seed = 2024;
+    int edge, captured, total = 0, full_frames = 0;
+    uint64_t damaged = 0, pixels_total = 0;
+    assert(shape_ref && shape_b);
+    memset(&f,0,sizeof(f));
+    f.s = dock_settings_default();
+    f.s.levels = 9; f.s.max_size = 64;
+    fixture_sources(&f);
+    for (edge = DOCK_EDGE_BOTTOM; edge <= DOCK_EDGE_RIGHT; ++edge)
+    for (captured = 0; captured < 2; ++captured) {
+        DockRenderer r;
+        DockAnimation animation;
+        DockPlacement current[MAX_COUNT], target[MAX_COUNT];
+        const DockCache *icons[MAX_COUNT];
+        DockOverlay overlays[MAX_COUNT+1];
+        DockImage ref, b;
+        unsigned char *ref_cov, *b_cov;
+        int running[MAX_COUNT] = {1,0,1,0,0,1}, hidden = -1, pressed = 0, center = 0, active = 0;
+        int count = FIX_COUNT, along, cross, drag = 0, drag_x = 0, drag_y = 0, drag_level = 0, frame, i;
+        int bottom = edge == DOCK_EDGE_BOTTOM, size;
+        f.s.end_gap = 0;
+        fixture_open(&f,edge);
+        size = f.width*f.height;
+        ref = (DockImage){f.width,f.height,malloc((size_t)size*4)};
+        b = (DockImage){f.width,f.height,malloc((size_t)size*4)};
+        ref_cov = malloc((size_t)size); b_cov = malloc((size_t)size);
+        assert(ref.pixels && b.pixels && ref_cov && b_cov);
+        memset(&r,0,sizeof(r));
+        r.pixels = dock_backend_portable(); r.coverage = f.coverage; r.edge = (DockEdge)edge;
+        for (i = 0; i < MAX_COUNT; ++i) icons[i] = &f.cache[i%3];
+        assert(dock_edge_layout(&f.s,(DockEdge)edge,count,f.width,f.height,0,0,0,current));
+        dock_animation_reset(&animation);
+        cross = bottom ? current[0].y+current[0].size/2 : current[0].x+current[0].size/2;
+        along = (bottom ? f.width : f.height)/2;
+        for (frame = 0; frame < FRAMES_PER_CONFIG; ++frame) {
+            unsigned event = fuzz_next(&seed,100);
+            int overlay_count = 0, long_extent = bottom ? f.width : f.height;
+            if (event < 55) along += (int)fuzz_next(&seed,41)*(fuzz_next(&seed,2) ? 1 : -1);
+            else if (event < 60) along = (int)fuzz_next(&seed,(unsigned)long_extent);
+            else if (event < 66) active = !active;
+            else if (event < 70) pressed = (int)fuzz_next(&seed,(unsigned)count+1);
+            else if (event < 73) center = !center;
+            else if (event < 76) {
+                count = 1+(int)fuzz_next(&seed,MAX_COUNT);
+                if (pressed > count) pressed = 0;
+                assert(dock_edge_layout(&f.s,(DockEdge)edge,count,f.width,f.height,0,0,0,current));
+                dock_animation_reset(&animation);
+            } else if (event < 81) running[fuzz_next(&seed,MAX_COUNT)] ^= 1;
+            else if (event < 88) {
+                unsigned what = fuzz_next(&seed,4);
+                if (!what) drag = !drag;
+                drag_x = (int)fuzz_next(&seed,(unsigned)f.width+40)-20;
+                drag_y = (int)fuzz_next(&seed,(unsigned)f.height+40)-20;
+                if (what == 1) drag_level = (int)fuzz_next(&seed,(unsigned)f.cache[0].levels);
+            } else if (event < 90) {
+                /* A backdrop change: new pixels in a band, then the call. */
+                int y0 = (int)fuzz_next(&seed,(unsigned)f.height), n = 1+(int)fuzz_next(&seed,8);
+                for (i = y0*f.width*4; i < (y0+n)*f.width*4 && i < size*4; ++i)
+                    if ((i&3) != 3) f.backdrop.pixels[i] = (unsigned char)(f.backdrop.pixels[i]*7+frame);
+                dock_renderer_backdrop_changed(&r);
+            } else if (event < 94) {
+                int a = (int)fuzz_next(&seed,MAX_COUNT), c = (int)fuzz_next(&seed,MAX_COUNT);
+                const DockCache *t = icons[a]; icons[a] = icons[c]; icons[c] = t;
+                if (fuzz_next(&seed,2)) dock_renderer_invalidate(&r);
+            } else if (event < 96) hidden = hidden >= 0 ? -1 : (int)fuzz_next(&seed,MAX_COUNT);
+            else if (event < 97) f.s.end_gap = f.s.end_gap ? 0 : 6;
+            /* else: an unchanged frame */
+            {
+                int mx = bottom ? along : cross, my = bottom ? cross : along;
+                const DockCache *row[MAX_COUNT];
+                assert(dock_edge_layout(&f.s,(DockEdge)edge,count,f.width,f.height,mx,my,active,target));
+                /* Snap the row at once, as animation_finish and a drop do. */
+                if (event >= 97 && event < 99) memcpy(current,target,sizeof(*current)*(size_t)count);
+                else dock_edge_animate(&f.s,(DockEdge)edge,&animation,current,target,count);
+                for (i = 0; i < count; ++i) row[i] = i == hidden ? NULL : icons[i];
+                for (i = 0; i < count; ++i) if (row[i] && running[i]) {
+                    overlays[overlay_count].image = &fixture_dot;
+                    fixture_dot_position(&f,&current[i],&overlays[overlay_count].x,&overlays[overlay_count].y);
+                    ++overlay_count;
+                }
+                if (drag) overlays[overlay_count++] = (DockOverlay){&f.cache[1].image[drag_level],drag_x,drag_y};
+                r.pressed_item = pressed; r.center_panel = center;
+                r.overlays = overlays; r.overlay_count = overlay_count;
+                dock_renderer_draw(&r,&f.canvas,captured ? &f.backdrop : NULL,row,current,count,&f.s);
+                if (r.damage.full) { ++full_frames; damaged += (uint64_t)size; }
+                else for (i = 0; i < r.damage.count; ++i) {
+                    const DockRect *d = &r.damage.rect[i];
+                    damaged += (uint64_t)(d->right-d->left)*(uint64_t)(d->bottom-d->top);
+                }
+                assert(r.damage.full || damage_disjoint(&r.damage));
+                pixels_total += (uint64_t)size;
+                {
+                    DockRect whole = {0,0,f.width,f.height};
+                    int n = r.damage.full ? 1 : r.damage.count;
+                    for (i = 0; i < n; ++i)
+                        dock_render_oriented_clip(&b,captured ? &f.backdrop : NULL,row,current,count,&f.s,NULL,
+                            shape_b,b_cov,pressed,edge,center,NULL,overlays,overlay_count,
+                            r.damage.full ? &whole : &r.damage.rect[i]);
+                }
+                memset(ref.pixels,0xa5,(size_t)size*4); memset(ref_cov,0x5a,(size_t)size);
+                dock_render_oriented_mask(&ref,captured ? &f.backdrop : NULL,row,current,count,&f.s,NULL,
+                    shape_ref,ref_cov,pressed,edge,center,NULL);
+                for (i = 0; i < overlay_count; ++i)
+                    dock_blend_masked(&ref,overlays[i].image,overlays[i].x,overlays[i].y,ref_cov);
+                if (memcmp(ref.pixels,f.canvas.pixels,(size_t)size*4) || memcmp(ref_cov,f.coverage,(size_t)size))
+                    printf("Damage fuzz mismatch: edge %d captured %d frame %d event %u\n",edge,captured,frame,event);
+                assert(!memcmp(ref.pixels,f.canvas.pixels,(size_t)size*4));
+                assert(!memcmp(ref_cov,f.coverage,(size_t)size));
+                assert(!memcmp(ref.pixels,b.pixels,(size_t)size*4));
+                assert(!memcmp(ref_cov,b_cov,(size_t)size));
+            }
+            ++total;
+        }
+        dock_renderer_release(&r);
+        free(ref.pixels); free(b.pixels); free(ref_cov); free(b_cov);
+        fixture_close(&f);
+    }
+    for (edge = 0; edge < 3; ++edge) dock_cache_free(&f.cache[edge]);
+    free(shape_ref); free(shape_b);
+    /* The fuzz must exercise partial damage, not only full frames. */
+    assert(total >= 20000 && full_frames < total/4 && damaged*2 < pixels_total);
+    printf("Damage fuzz: %d frames, %d full, %lu%% of pixels redrawn.\n",
+        total,full_frames,(unsigned long)(damaged*100/pixels_total));
 }
 
 int main(void)
@@ -1355,7 +1635,7 @@ int main(void)
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();
     test_animation_and_pointer_anchor(); test_reference_timing_and_panel(); test_rounded_panel();
     test_convert(); test_native565(); test_key565(); test_overlay_coverage();
-    test_render_goldens();
+    test_render_goldens(0); test_render_goldens(1); test_damage_add(); test_damage_divider(); test_damage_fuzz();
     printf("All core tests passed: normalization, alpha, layout bounds, clipping, 65536 blends, reorder, renderer.\n");
     printf("Default cache: %lu bytes/icon; 20 icons: %lu bytes.\n",
         (unsigned long)dock_cache_bytes(&defaults),

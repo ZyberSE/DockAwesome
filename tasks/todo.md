@@ -469,7 +469,14 @@ icon centre). Share of the full zoom per icon from the pointer:
 - [x] Make the third icon from the pointer grow ~0.04 of the zoom instead
       of 0.15, keeping steps 0-2; add a geometry test for the profile.
       Catmull-Rom wave; at Size 42, 195%: 1.00/0.88/0.45/0.03/0.
-- [ ] Check on the Vampire against the macOS screenshot.
+- [x] Vampire, 0.178 against 0.180 (alternated, `--bench-sweep`, 12 icons):
+      render Size 72 speed 3 33.1 -> 22.9 ms, speed 12 27.6 -> 23.9, speed 25
+      31.2 -> 25.8; Size 42 speed 12 12.2 -> 10.3. Damage share at Size 72
+      speed 3 52% -> 38% (distant icons no longer move). Entry settle at Size
+      42 171 -> 136 ms, Size 72 329 -> 274 ms. `--damage-check` sweep: 166
+      frames, 0 mismatches. 0.180 installed for the user to try (0.178 in
+      WBStartup/Disabled). The profile itself is verified on the host; PiP
+      does not show in screenshots, so the visual match is the user's check.
 - [x] Entry: cubic ease-out over the same 8 ticks (user: macOS feels
       snappier). Note: the macOS video in docs/macos-reference.md shows an
       S-curve of about 150 ms, which the old smoothstep matched at Size 42

@@ -94,7 +94,7 @@ enum { ABOUT_LINES = sizeof(about_lines)/sizeof(about_lines[0]), ABOUT_MARGIN = 
 enum {
     FOLDER_COLS = 12, FOLDER_ROWS = 10, FOLDER_SCALE_ONE = 256,
 
-    FOLDER_OPEN_MS = 160, FOLDER_CLOSE_MS = 130,
+    FOLDER_OPEN_MS = 130, FOLDER_CLOSE_MS = 130,
     FOLDER_TIP = 7, FOLDER_TIP_HALF = 9, FOLDER_BACKDROP_LAYERS = 16,
     FOLDER_OUTSIDE = -1, FOLDER_BACK = -2, FOLDER_PREV = -3, FOLDER_NEXT = -4
 };
@@ -125,7 +125,6 @@ typedef struct {
        away from the dock, those already on screen, and the extent at the
        start of this motion. */
     int reveal_shown, reveal_presented, reveal_from;
-    int scene_final; /* motion_scene holds the open box's final pixels */
     ULONG motion_start, motion_ticks, motion_paint_ticks;
     ULONG motion_prepare_sum, motion_present_sum; /* --profile: EClock ticks per stage */
     DockImage motion_backdrop;
@@ -170,6 +169,7 @@ struct DockUI {
     DockConvertRGB565 encode565;
     DockConvertRGB565 decode;
     DockImage popup_glass;
+    int glass_tint_shift; /* nonzero: popup_glass still holds the bare backdrop */
     FolderView folder;
     FolderReveal *folder_reveal;
     char folder_open_path[DOCK_PREFS_PATH_CAP];
@@ -218,6 +218,7 @@ static void free_popup_glass(DockUI *ui)
     ui->popup_display = NULL;
     free(ui->popup_glass.pixels);
     ui->popup_glass = (DockImage){0};
+    ui->glass_tint_shift = 0;
 }
 
 static void free_folder_icons(FolderView *folder)
@@ -314,6 +315,20 @@ static const UWORD *persistent_hook_code(void)
         CacheClearU();
     }
     return code;
+}
+
+/* --profile: EClock at each stage of an opening, printed with its motion. */
+enum { FOLDER_STAGES = 13 };
+static ULONG folder_stage[FOLDER_STAGES];
+static int folder_stages;
+static void folder_stamp(int profile, int first)
+{
+    struct EClockVal now;
+    if (!profile) return;
+    if (first) folder_stages = 0;
+    if (folder_stages >= FOLDER_STAGES) return;
+    ReadEClock(&now);
+    folder_stage[folder_stages++] = now.ev_lo;
 }
 
 static void finish_folder_reveal(DockUI *ui, int wait)
@@ -756,17 +771,40 @@ static void apply_backdrop_carry(const DockUI *ui, DockImage *glass, int left, i
             (size_t)(x1-x0)*4);
 }
 
+/* Tint the captured backdrop into the popup's glass, with its rim. */
+static void tint_popup_glass(DockUI *ui)
+{
+    DockImage *glass = &ui->popup_glass;
+    const FolderView *folder = ui->popup_shape && ui->folder.path[0] ? &ui->folder : NULL;
+    int radius = ui->popup_shape ? POPUP_RADIUS : 0, tint_shift = ui->glass_tint_shift;
+    int width = glass->width, height = glass->height, y;
+    const uint32_t mask = (255U>>tint_shift)*UINT32_C(0x01010100);
+    const uint32_t rim = (menu_colors[MENU_RIM]<<8)|255;
+    const uint32_t tint = glass_tint(tint_shift);
+    if (!tint_shift || !glass->pixels) return;
+    ui->glass_tint_shift = 0;
+    for (y = 0; y < height; ++y) {
+        int lo, hi, inner_lo, inner_hi, x;
+        uint32_t *row = (uint32_t *)glass->pixels+(size_t)y*width;
+        popup_span(folder,width,height,radius,y,&lo,&hi);
+        popup_inner_span(folder,width,height,radius,y,lo,hi,&inner_lo,&inner_hi);
+        /* Native RGBA bytes are a big-endian word. Independent lanes keep
+           the background contribution and tint from spilling across channels.
+           Whole words: a memcpy per pixel took 16-24 ms on the 68080. */
+        for (x = lo; x < inner_lo; ++x) row[x] = rim;
+        for (; x < inner_hi; ++x) row[x] = ((row[x]>>tint_shift)&mask)+tint;
+        for (; x < hi; ++x) row[x] = rim;
+    }
+}
+
 static void capture_popup_glass(DockUI *ui, int left, int top, int width, int height, int tint_shift)
 {
     DockImage *glass = &ui->popup_glass;
     const FolderView *folder = ui->popup_shape && ui->folder.path[0] ? &ui->folder : NULL;
-    int radius = ui->popup_shape ? POPUP_RADIUS : 0;
-    const uint32_t mask = (255U>>tint_shift)*UINT32_C(0x01010100);
-    const uint32_t rim = (menu_colors[MENU_RIM]<<8)|255;
-    const uint32_t tint = glass_tint(tint_shift);
-    int y;
+    int profile = folder && ui->folder.anchor.profile;
     ui->popup_display = capture_glass(ui,glass,left,top,width,height);
     if (!ui->popup_display) return;
+    folder_stamp(profile,0);
     apply_backdrop_carry(ui,glass,left,top);
     if (folder) {
         size_t bytes = (size_t)width*height*4;
@@ -782,22 +820,11 @@ static void capture_popup_glass(DockUI *ui, int left, int top, int width, int he
             UnlockLayers(info);
         }
     }
-    for (y = 0; y < height; ++y) {
-        int lo, hi, inner_lo, inner_hi, x;
-        unsigned char *row = glass->pixels+(size_t)y*width*4;
-        popup_span(folder,width,height,radius,y,&lo,&hi);
-        popup_inner_span(folder,width,height,radius,y,lo,hi,&inner_lo,&inner_hi);
-        /* Native RGBA bytes are a big-endian word. Independent lanes keep
-           the background contribution and tint from spilling across channels. */
-        for (x = lo; x < inner_lo; ++x) memcpy(row+x*4,&rim,4);
-        for (; x < inner_hi; ++x) {
-            uint32_t pixel;
-            memcpy(&pixel,row+x*4,4);
-            pixel = ((pixel>>tint_shift)&mask)+tint;
-            memcpy(row+x*4,&pixel,4);
-        }
-        for (; x < hi; ++x) memcpy(row+x*4,&rim,4);
-    }
+    folder_stamp(profile,0);
+    /* An opening Folder Stack shows its own frames until the motion ends:
+       tint then (8 ms on the 68080), not before the first frame. */
+    ui->glass_tint_shift = tint_shift;
+    if (!folder || ui->folder.motion != FOLDER_OPENING) tint_popup_glass(ui);
 }
 
 static void paint_popup_surface(DockUI *ui, const DockImage *surface)
@@ -1128,8 +1155,9 @@ static void paint_folder_labels(DockUI *ui, DockImage *target)
 
 static int prepare_folder_artwork(DockUI *ui);
 
-static const DockImage *folder_background(const DockUI *ui)
+static const DockImage *folder_background(DockUI *ui)
 {
+    tint_popup_glass(ui);
     return ui->folder.artwork_ready ? &ui->folder.artwork : &ui->popup_glass;
 }
 
@@ -1166,20 +1194,24 @@ static void folder_reveal_rect(const FolderView *f, int width, int height, int f
     else { *y = 0; *h = height; *x = width-to; *w = to-from; }
 }
 
-/* The open box's final pixels, in place of the scene: glass over the
-   backdrop, artwork as drawn, the backdrop outside the outline. */
-static void finish_folder_scene(FolderView *f)
+/* Put the open box's final pixels for a window rectangle into the motion
+   frame: glass over the backdrop, artwork as drawn. The frame starts as
+   the backdrop, which already holds the pixels outside the outline. Done
+   strip by strip as the box is revealed, so the motion starts without
+   finishing the whole box first (15-20 ms on the 68080). */
+static void finish_folder_strip(FolderView *f, int x, int y, int w, int h)
 {
-    DockImage *scene = &f->motion_scene;
-    int width = scene->width, height = scene->height, y;
-    for (y = 0; y < height; ++y) {
-        size_t offset = (size_t)y*width;
-        uint32_t *row = (uint32_t *)scene->pixels+offset;
+    int width = f->motion_scene.width, height = f->motion_scene.height, row;
+    for (row = y; row < y+h; ++row) {
+        size_t offset = (size_t)row*width;
+        const uint32_t *scene = (const uint32_t *)f->motion_scene.pixels+offset;
         const uint32_t *under = (const uint32_t *)f->motion_backdrop.pixels+offset;
-        int lo, hi, x;
-        popup_span(f,width,height,POPUP_RADIUS,y,&lo,&hi);
-        for (x = 0; x < width; ++x)
-            row[x] = x < lo || x >= hi ? under[x] : folder_glass(row[x],under[x]);
+        uint32_t *out = (uint32_t *)f->motion_frame.pixels+offset;
+        int lo, hi, i;
+        popup_span(f,width,height,POPUP_RADIUS,row,&lo,&hi);
+        if (lo < x) lo = x;
+        if (hi > x+w) hi = x+w;
+        for (i = lo; i < hi; ++i) out[i] = folder_glass(scene[i],under[i]);
     }
 }
 
@@ -1247,7 +1279,6 @@ static void clear_folder_motion(FolderView *f)
     free(f->motion_frame.pixels);
     f->motion_scene = f->motion_frame = (DockImage){0};
     f->motion = FOLDER_STILL;
-    f->scene_final = 0;
     f->handoff = 0;
     f->handoff_bitmap = NULL;
     f->scale = FOLDER_SCALE_ONE;
@@ -1333,13 +1364,17 @@ static int prepare_folder_scene(DockUI *ui)
     }
     /* Native text and glyphs are opaque. A reserved color marks untouched
        pixels, even when the actual backdrop matches a glyph's color. */
+    folder_stamp(f->anchor.profile,0);
     SetDrMd(buffer,JAM1);
     SetRPAttrsA(buffer,key_color);
     RectFill(buffer,0,0,background->width-1,background->height-1);
     paint_folder_content(ui,buffer,FOLDER_PAINT_GLYPHS|
         (ui->folder_aa ? 0 : FOLDER_PAINT_LABELS),NULL);
+    folder_stamp(f->anchor.profile,0);
     if (amiga_display_capture_frame(ui->popup_display,&f->motion_scene)) {
+        folder_stamp(f->anchor.profile,0);
         finish_folder_layer(f);
+        folder_stamp(f->anchor.profile,0);
         if (ui->folder_aa) paint_folder_labels(ui,&f->motion_scene);
         return 1;
     }
@@ -1366,14 +1401,17 @@ static void reset_folder_page(DockUI *ui)
     if (f->motion == FOLDER_OPENING) {
         /* Start from the bare backdrop; the box grows out of the tip. */
         if (prepare_folder_scene(ui)) {
-            if (!f->scene_final) { finish_folder_scene(f); f->scene_final = 1; }
+            folder_stamp(f->anchor.profile,0);
             memcpy(f->motion_frame.pixels,f->motion_backdrop.pixels,
                 (size_t)f->motion_frame.width*f->motion_frame.height*4);
             f->reveal_shown = f->reveal_presented = f->reveal_from = 0;
         } else clear_folder_motion(f);
     }
     paint_folder(ui);
-    if (f->motion == FOLDER_OPENING) start_folder_clock(f,FOLDER_OPEN_MS);
+    if (f->motion == FOLDER_OPENING) {
+        folder_stamp(f->anchor.profile,0);
+        start_folder_clock(f,FOLDER_OPEN_MS);
+    }
 }
 
 void dock_ui_dismiss_popup(DockUI *ui)
@@ -1415,12 +1453,9 @@ static int advance_folder_motion(DockUI *ui)
             f->reveal_from+(extent-f->reveal_from)*weight/256;
         ULONG composed;
         if (!closing && target > f->reveal_shown && f->motion_frame.pixels) {
-            /* The scene already holds the final box: copy the new strip. */
-            int x, y, w, h, row;
+            int x, y, w, h;
             folder_reveal_rect(f,ui->popup->Width,ui->popup->Height,f->reveal_shown,target,&x,&y,&w,&h);
-            for (row = y; row < y+h; ++row)
-                memcpy(f->motion_frame.pixels+((size_t)row*f->motion_frame.width+x)*4,
-                    f->motion_scene.pixels+((size_t)row*f->motion_frame.width+x)*4,(size_t)w*4);
+            finish_folder_strip(f,x,y,w,h);
             f->reveal_shown = target;
         } else if (closing && target < f->reveal_shown) f->reveal_shown = target;
         ReadEClock(&now); composed = now.ev_lo;
@@ -1442,6 +1477,15 @@ static int advance_folder_motion(DockUI *ui)
             (unsigned long)((uint64_t)f->motion_prepare_sum*1000000/hz/frames),
             (unsigned long)((uint64_t)f->motion_present_sum*1000000/hz/frames),
             ui->popup->Width,ui->popup->Height);
+        if (!closing && folder_stages == FOLDER_STAGES) {
+            /* read, shape, capture, backdrop copy, tint, window, buffers,
+               text, read back, layer, labels, first present */
+            int i;
+            printf("Folder Stack prepare_us:");
+            for (i = 1; i < FOLDER_STAGES; ++i)
+                printf(" %lu",(unsigned long)((uint64_t)(folder_stage[i]-folder_stage[i-1])*1000000/hz));
+            printf("\n");
+        }
         fflush(stdout);
     }
     if (closing) {
@@ -1459,6 +1503,7 @@ static int prepare_folder_artwork(DockUI *ui)
     DockImage *art = &f->artwork;
     int width = ui->popup->Width, height = ui->popup->Height;
     size_t pixels = (size_t)width*height;
+    tint_popup_glass(ui);
     if (!ui->popup_display) ui->popup_display = amiga_display_open(ui->screen,width,height);
     if (!ui->popup_display) return 0;
     amiga_display_set_converters(ui->popup_display,ui->encode,ui->decode,ui->encode565);
@@ -1487,6 +1532,18 @@ static int prepare_folder_artwork(DockUI *ui)
 int dock_ui_folder_open(const DockUI *ui)
 {
     return ui && ui->popup && ui->folder.path[0] && ui->folder.motion != FOLDER_CLOSING;
+}
+
+int dock_ui_folder_progress(const DockUI *ui)
+{
+    const FolderView *f;
+    int extent;
+    if (!ui || !ui->popup || !ui->folder.path[0]) return 0;
+    f = &ui->folder;
+    if (f->motion == FOLDER_STILL) return 256;
+    if (f->handoff) return 0;
+    extent = folder_reveal_extent(f,ui->popup->Width,ui->popup->Height);
+    return extent > 0 ? f->reveal_presented*256/extent : 256;
 }
 
 int dock_ui_folder_moving(const DockUI *ui)
@@ -1849,11 +1906,14 @@ int dock_ui_dialog_bounds(const DockUI *ui, DockRect *bounds)
 static int open_popup_window(DockUI *ui, int left, int top, int width, int height,
     int report_mouse, int capture_backdrop)
 {
+    int profile = ui->folder.path[0] && ui->folder.anchor.profile;
     if (ui->window_shapes)
         ui->popup_shape = ui->folder.path[0] ? make_folder_shape(&ui->folder,width,height) :
             make_rounded_shape(width,height,POPUP_RADIUS);
     prepare_popup_colors(ui);
+    folder_stamp(profile,0);
     if (capture_backdrop) capture_popup_glass(ui,left,top,width,height,report_mouse ? 2 : 3);
+    folder_stamp(profile,0);
     ui->popup = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)ui->screen,
         WA_Left, left, WA_Top, top, WA_Width, width, WA_Height, height,
         WA_Borderless, TRUE, WA_Activate, TRUE, WA_RMBTrap, TRUE,
@@ -1953,7 +2013,9 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
     next.cols = clamp((max_width-2*next.pad)/next.cell_width,0,FOLDER_COLS);
     rows = clamp((max_height-next.header-next.footer-extra_bottom)/next.cell_height,0,FOLDER_ROWS);
     if (!next.cols || !rows) return 0;
+    folder_stamp(anchor.profile && entrance,1);
     next.read_ok = amiga_folder_read(path,&next.entries,&next.count);
+    folder_stamp(anchor.profile && entrance,0);
     while (next.cols > 3 && (size_t)(next.cols-1)*(next.cols-1) > next.count &&
         (size_t)(next.cols-1)*rows > next.count) --next.cols;
     next.rows = next.count/(size_t)next.cols >= (size_t)rows ? rows : (int)(next.count/next.cols)+1;
@@ -2017,6 +2079,7 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
         ui->backdrop_carry = (DockImage){0};
         if (!opened) return 0;
     }
+    folder_stamp(anchor.profile && entrance,0);
     ui->popup_pressed = FOLDER_OUTSIDE;
     reset_folder_page(ui);
     return 1;

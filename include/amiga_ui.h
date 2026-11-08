@@ -58,6 +58,8 @@ int dock_ui_folder_pending(const DockUI *ui);
 int dock_ui_folder_open(const DockUI *ui);
 /* The Folder Stack view is opening or closing. */
 int dock_ui_folder_moving(const DockUI *ui);
+/* How far the Folder Stack box is out on screen: 0 (hidden) to 256 (open). */
+int dock_ui_folder_progress(const DockUI *ui);
 ULONG dock_ui_folder_frame_delay(const DockUI *ui);
 int dock_ui_folder_step(DockUI *ui);
 void dock_ui_finish_folder_motion(DockUI *ui);

@@ -1406,7 +1406,7 @@ static int pointer_inside(App *app, int *x, int *y)
 
 static int animation_needed(const App *app)
 {
-    if (app->morph != (dock_ui_folder_open(app->ui) ? 256 : 0)) return 1;
+    if (app->morph != dock_ui_folder_progress(app->ui)) return 1;
     return (app->moving_item && app->held_icon.level != app->held_target.level) ||
         memcmp(row_placement(app), app->target, sizeof(*app->placement)*row_count(app)) != 0;
 }
@@ -1479,13 +1479,13 @@ static void update_hover_label(App *app)
 static int animate_row(App *app)
 {
     DockPlacement *row = app->moving_item ? app->moving_placement : app->placement;
-    int morph_target = dock_ui_folder_open(app->ui) ? 256 : 0;
+    /* The pin turns into the close button as far as the box is out, so
+       both move together, opening and closing. */
+    int morph = dock_ui_folder_progress(app->ui);
     int changed = dock_edge_animate(&app->settings, app->edge, &app->animation,
         row, app->target, row_count(app));
-    if (app->morph != morph_target) {
-        /* Six ticks, about as long as the Folder Stack motion. */
-        app->morph = app->morph < morph_target ? (app->morph+43 < 256 ? app->morph+43 : 256) :
-            (app->morph > 43 ? app->morph-43 : 0);
+    if (app->morph != morph) {
+        app->morph = morph;
         changed = 1;
     }
     if (app->moving_item && app->held_icon.level != app->held_target.level)
@@ -3286,17 +3286,20 @@ static int in_capsule(int x, int y, int ax, int ay, int bx, int by, int r)
 }
 
 /* While the Folder Stack is open its pin becomes a close button, as in the
-   macOS Dock: a dark rounded square with a light rim and a white chevron
-   toward the screen edge. It is drawn at the zoom size with 4x4 samples
-   per pixel and built into a cache like any icon, so it zooms and filters
-   like the others. Built with the surface: a 256 px source took 2.3 s on
-   the 68080 and stalled the first Folder Stack opening. */
+   macOS Dock: smoked glass a little smaller than the icon, with a light rim
+   and a white chevron toward the screen edge. It is drawn at the zoom size
+   with 4x4 samples per pixel and built into a cache like any icon, so it
+   zooms and filters like the others. Built with the surface: a 256 px
+   source took 2.3 s on the 68080 and stalled the first Folder Stack
+   opening. */
 static void stack_button_build(App *app)
 {
+    enum { SURFACE = 44, SURFACE_ALPHA = 176, RIM = 132, RIM_ALPHA = 220, MARK = 212 };
     int n = app->settings.max_size, s16 = n*8; /* positions in 1/8 px */
-    int radius = s16*22/100, rim = s16/40 > 8 ? s16/40 : 8, stroke = s16*9/200;
+    int lo = s16/20, hi = s16-lo, side = hi-lo; /* the square, inset on all sides */
+    int radius = side*22/100, rim = side/40 > 8 ? side/40 : 8, stroke = side*26/1000;
     /* The chevron for a bottom dock ("v"), as percentages of the size. */
-    int ax = 32, ay = 42, bx = 50, by = 60, cx = 68, cy = 42, x, y, ok;
+    int ax = 36, ay = 44, bx = 50, by = 58, cx = 64, cy = 44, x, y, ok;
     DockImage source = {n,n,NULL};
     dock_cache_free(&app->stack_button);
     dock_renderer_invalidate(&app->renderer);
@@ -3311,28 +3314,29 @@ static void stack_button_build(App *app)
     if (!(source.pixels = malloc((size_t)n*n*4))) return;
     for (y = 0; y < n; ++y) for (x = 0; x < n; ++x) {
         unsigned char *p = source.pixels+((size_t)y*n+x)*4;
-        /* An even surface: a gradient this faint bands in RGB565. */
-        int square = 0, inner = 0, mark = 0, sx, sy, shade = 46, c;
+        int square = 0, inner = 0, mark = 0, sx, sy, c;
+        unsigned int alpha;
         for (sy = 0; sy < 4; ++sy) for (sx = 0; sx < 4; ++sx) {
             int px = x*8+1+2*sx, py = y*8+1+2*sy, k;
             for (k = 0; k < 2; ++k) {
                 /* The rounded square, then the same inset by the rim. */
-                int edge = k ? rim : 0, r = radius-edge;
-                int dx = px < edge+r ? edge+r-px : px >= s16-edge-r ? px-(s16-edge-r) : 0;
-                int dy = py < edge+r ? edge+r-py : py >= s16-edge-r ? py-(s16-edge-r) : 0;
-                if (px >= edge && py >= edge && px < s16-edge && py < s16-edge &&
+                int edge = lo+(k ? rim : 0), far = hi-(k ? rim : 0), r = radius-(k ? rim : 0);
+                int dx = px < edge+r ? edge+r-px : px >= far-r ? px-(far-r) : 0;
+                int dy = py < edge+r ? edge+r-py : py >= far-r ? py-(far-r) : 0;
+                if (px >= edge && py >= edge && px < far && py < far &&
                     dx*dx+dy*dy <= r*r) { if (k) ++inner; else ++square; }
             }
             mark += in_capsule(px,py,ax,ay,bx,by,stroke) || in_capsule(px,py,bx,by,cx,cy,stroke);
         }
-        /* Surface, a lighter rim between the outline and its inset, the mark. */
+        /* Premultiplied: glass, its rim, then the opaque mark over both. */
+        alpha = (SURFACE_ALPHA*inner+RIM_ALPHA*(square-inner))*(16-mark)/16+255*mark;
         for (c = 0; c < 3; ++c) {
-            int base = shade+(c == 2 ? 4 : 0), light = base+46;
-            int value = square ? (base*inner+light*(square-inner))/square : 0;
-            value = (value*(16-mark)+(c == 2 ? 246 : 242)*mark)/16;
-            p[c] = (unsigned char)value;
+            unsigned int base = SURFACE+(c == 2 ? 4 : 0), value;
+            value = (base*SURFACE_ALPHA*inner+RIM*RIM_ALPHA*(square-inner))*(16-mark)/16+
+                MARK*255*mark;
+            p[c] = (unsigned char)(alpha ? (value+alpha/2)/alpha : 0);
         }
-        p[3] = (unsigned char)((square*255+8)/16);
+        p[3] = (unsigned char)((alpha+8)/16);
     }
     ok = dock_cache_build(&app->stack_button,&source,&app->settings);
     free(source.pixels);

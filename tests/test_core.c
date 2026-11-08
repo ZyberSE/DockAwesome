@@ -522,6 +522,38 @@ static void test_distant_icon_motion(void)
     assert(!memcmp(current,target,sizeof(*current)));
 }
 
+/* Coarse zoom levels and quick in-out moves: rounded intermediate sizes
+   must never make neighboring icons overlap (a fast ease-out once
+   overlapped the first two icons by 5 px). */
+static void test_animation_no_overlap(void)
+{
+    static const int config[][4] = {{64,164,5,12},{64,164,5,0},{32,64,2,12},{48,96,3,0},{40,78,33,12}};
+    static const int codex[4] = {137,230,650,659}, codex_active[4] = {1,1,0,1};
+    size_t c;
+    unsigned seed = 31;
+    for (c = 0; c < sizeof(config)/sizeof(config[0]); ++c) {
+        DockSettings s = dock_settings_default();
+        DockPlacement current[8], target[8];
+        DockAnimation animation;
+        int step, i;
+        s.base_size = config[c][0]; s.max_size = config[c][1]; s.levels = config[c][2]; s.end_gap = config[c][3];
+        assert(dock_layout(&s,8,704,200,0,0,0,current));
+        dock_animation_reset(&animation);
+        for (step = 0; step < 4000; ++step) {
+            int x, active;
+            if (!c && step < 4) { x = codex[step]; active = codex_active[step]; }
+            else {
+                seed = seed*1103515245u+12345u; x = (int)((seed>>8)%704);
+                seed = seed*1103515245u+12345u; active = (seed>>8)%4 != 0;
+            }
+            assert(dock_layout(&s,8,704,200,x,150,active,target));
+            dock_animate_step(&s,&animation,current,target,8);
+            for (i = 1; i < 8; ++i) assert(current[i].x >= current[i-1].x+current[i-1].size);
+            assert(current[0].x >= 0 && current[7].x+current[7].size <= 704);
+        }
+    }
+}
+
 static void test_layout(void)
 {
     DockSettings s = dock_settings_default();
@@ -1749,7 +1781,7 @@ static void test_damage_fuzz(void)
 int main(void)
 {
     DockSettings defaults = dock_settings_default();
-    test_normalize(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_layout(); test_blend();
+    test_normalize(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_animation_no_overlap(); test_layout(); test_blend();
     test_mix(); test_pressed_artwork(); test_side_panel_coverage(); test_reorder(); test_renderer();
     test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build(); test_icon_runs();
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();

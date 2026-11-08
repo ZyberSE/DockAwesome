@@ -765,6 +765,26 @@ int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlace
         for (i = 0; i < count; ++i) levels[i] = ease(current[i].level, target[i].level);
     }
     memcpy(before, current, (size_t)count*sizeof(*current));
+    {
+        /* Rounded intermediate levels can make the row wider than the span
+           of the previous and target rows, which keep_row_inside cannot pack
+           without overlap. Shrink the icons furthest above their target
+           first; the target row fits, so this ends at or above it. */
+        int start = before[0].x < target[0].x ? before[0].x : target[0].x;
+        int end = before[count-1].x+before[count-1].size, target_end = target[count-1].x+target[count-1].size;
+        int64_t width = 0;
+        if (target_end > end) end = target_end;
+        for (i = 0; i < count; ++i) width += level_size(s, levels[i]);
+        while (width > end-start) {
+            int over = -1;
+            for (i = 0; i < count; ++i)
+                if (levels[i] > target[i].level &&
+                    (over < 0 || levels[i]-target[i].level > levels[over]-target[over].level)) over = i;
+            if (over < 0) break;
+            width -= level_size(s, levels[over]) - level_size(s, levels[over]-1);
+            --levels[over];
+        }
+    }
     for (i = 0; i < count; ++i) {
         DockPlacement next;
         int64_t target_center = (int64_t)target[i].x*256+target[i].size*128;

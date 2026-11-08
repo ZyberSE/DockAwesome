@@ -82,9 +82,10 @@ the frontmost Shell on the dock's screen.
 ## Settings
 
 - **Size** sets the resting icon size from 16 px up to the largest size that
-  fits the chosen edge, scale, and Folder Stack (at most 96 px).
-- **Scale** sets magnification from 1.00× to 2.00×, up to a 192 px zoom. Use
-  1.00× to turn zoom off.
+  fits the chosen edge, scale, and Folder Stack (at most 72 px).
+- **Scale** sets magnification from 1.00× to 2.50×, up to a 128 px zoom, the
+  macOS limit (2.50× up to Size 51, 1.78× at 72 px). Use 1.00× to
+  turn zoom off. A larger saved size or zoom stays selectable.
 - **Left**, **Bottom**, and **Right** set the screen edge.
 - **Folder Stack** holds one drawer. Use **Browse** to pick it or **Clear** to remove it.
 

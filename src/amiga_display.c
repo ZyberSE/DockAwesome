@@ -20,7 +20,7 @@ struct AmigaDisplay {
     struct Screen *screen;
     struct Library *cyber;
     DockConvertRGB24 rgba_to_rgb24;
-    DockConvertRGB565 rgb565_to_rgba;
+    DockConvertRGB565 rgb565_to_rgba, rgba_to_rgb565;
     int width, height, depth, stride;
     unsigned char *upload, *lookup;
     int shared_lookup;
@@ -147,11 +147,13 @@ void amiga_display_close(AmigaDisplay *d)
     free(d);
 }
 
-void amiga_display_set_converters(AmigaDisplay *d, DockConvertRGB24 encode, DockConvertRGB565 decode)
+void amiga_display_set_converters(AmigaDisplay *d, DockConvertRGB24 encode, DockConvertRGB565 decode,
+    DockConvertRGB565 encode565)
 {
     if (!d) return;
     d->rgba_to_rgb24 = encode ? encode : dock_rgba_to_rgb24_c;
     d->rgb565_to_rgba = decode ? decode : dock_rgb565_to_rgba_c;
+    d->rgba_to_rgb565 = encode565;
 }
 
 int amiga_display_depth(const AmigaDisplay *d) { return d ? d->depth : 0; }
@@ -293,6 +295,19 @@ static int present_port(AmigaDisplay *d, struct RastPort *port, const DockImage 
     uint64_t started = clock ? clock() : 0, converted;
     if (timing) memset(timing, 0, sizeof(*timing));
     if (!d || !port || !im || !im->pixels || im->width != d->width || im->height != d->height) return 0;
+    if (d->depth == 16 && d->rgba_to_rgb565 && port->BitMap &&
+        GetCyberMapAttr(port->BitMap,CYBRMATTR_PIXFMT) == PIXFMT_RGB16) {
+        /* Native big-endian RGB565: one encode and a raw copy, instead of
+           RGB24 that the OS converts again (the RAW format capture uses). */
+        d->rgba_to_rgb565(d->upload, im->pixels, (unsigned long)d->width*d->height);
+        converted = clock ? clock() : 0;
+        WritePixelArray(d->upload, 0, 0, d->width*2, port, 0, 0, d->width, d->height, RECTFMT_RAW);
+        if (clock && timing) {
+            timing->conversion_ticks = converted-started;
+            timing->upload_ticks = clock()-converted;
+        }
+        return 1;
+    }
     if (d->depth > 8) {
         /* RGB24 is supported by SAGA/P96, including drivers whose RGBA path is incomplete. */
         d->rgba_to_rgb24(d->upload, im->pixels, (unsigned long)d->width*d->height);

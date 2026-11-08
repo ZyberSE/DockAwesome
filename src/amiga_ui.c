@@ -122,6 +122,7 @@ typedef struct {
     int next_icon, artwork_ready, needs_repaint;
     int motion, scale, from_scale, pivot_x, pivot_y, motion_frames, handoff;
     ULONG motion_start, motion_ticks, motion_paint_ticks;
+    ULONG motion_prepare_sum, motion_present_sum; /* --profile: EClock ticks per stage */
     DockImage motion_backdrop;
     FolderBackdropLayer backdrop_layers[FOLDER_BACKDROP_LAYERS];
     int backdrop_layer_count;
@@ -161,6 +162,7 @@ struct DockUI {
     int popup_rows;
     AmigaDisplay *popup_display;
     DockConvertRGB24 encode;
+    DockConvertRGB565 encode565;
     DockConvertRGB565 decode;
     DockImage popup_glass;
     FolderView folder;
@@ -710,7 +712,7 @@ static AmigaDisplay *capture_glass(const DockUI *ui, DockImage *glass,
     if (!ui->popup_rgb) return NULL;
     display = amiga_display_open(ui->screen,width,height);
     if (!display) return NULL;
-    amiga_display_set_converters(display,ui->encode,ui->decode);
+    amiga_display_set_converters(display,ui->encode,ui->decode,ui->encode565);
     *glass = (DockImage){width,height,malloc((size_t)width*height*4)};
     if (glass->pixels && amiga_display_capture(display,glass,left,top)) return display;
     free(glass->pixels);
@@ -939,6 +941,90 @@ static void folder_open_glyph(DockUI *ui, struct RastPort *rp, int x, int y, int
     fill_arrow_part(rp,x,y,radius,head,sizeof(head)/sizeof(head[0]));
 }
 
+/* The span [*left,*right] where a sample row y crosses an outline given in
+   1/64 of the radius, as fill_arrow_part fills it; positions in 1/16 px. */
+static int outline_span(const BYTE (*outline)[2], int count, int radius, int y, int *left, int *right)
+{
+    int i, previous, found = 0;
+    for (i = 0, previous = count-1; i < count; previous = i++) {
+        int y1 = outline[previous][1]*radius/4, y2 = outline[i][1]*radius/4;
+        if ((y1 > y) != (y2 > y)) {
+            int x1 = outline[previous][0]*radius/4, x2 = outline[i][0]*radius/4;
+            int hit = x1+(x2-x1)*(y-y1)/(y2-y1);
+            if (!found || hit < *left) *left = hit;
+            if (!found || hit > *right) *right = hit;
+            found = 1;
+        }
+    }
+    return found;
+}
+
+static int isqrt(int value)
+{
+    int root = 0, bit = 1<<28;
+    if (value <= 0) return 0;
+    while (bit > value) bit >>= 2;
+    while (bit) {
+        if (value >= root+bit) { value -= root+bit; root = (root>>1)+bit; }
+        else root >>= 1;
+        bit >>= 2;
+    }
+    return root;
+}
+
+/* folder_open_glyph antialiased into an RGBA target: 4x4 samples per pixel.
+   Each sample row is resolved to spans once (the ring, the arrow's tail and
+   head), then the samples only compare positions. */
+static void folder_open_glyph_aa(DockImage *target, int cx, int cy, int radius, uint32_t color)
+{
+    static const BYTE tail[][2] = {
+        {4,-15}, {-8,-14}, {-17,-11}, {-24,-6}, {-29,2}, {-32,12},
+        {-33,22}, {-31,25}, {-28,24}, {-24,18}, {-19,13}, {-12,10}, {4,8}
+    };
+    static const BYTE head[][2] = {
+        {1,-28}, {4,-31}, {7,-30}, {33,-6}, {35,-3}, {33,1},
+        {7,24}, {4,25}, {1,23}
+    };
+    unsigned int red = (color>>16)&255, green = (color>>8)&255, blue = color&255;
+    /* The ring: one native pixel plus half a pixel wide, so it keeps its
+       weight once antialiased. Radii and positions in 1/16 px. */
+    int thickness = clamp((radius+6)/13,1,radius);
+    int outer = radius*16+8, inner = outer-thickness*16-8;
+    unsigned char covered[2*DOCK_MAX_ICON_SIZE+4];
+    int x, y, size = 2*radius+3;
+    if (radius < 4 || size > (int)sizeof(covered) || !target || !target->pixels) return;
+    for (y = 0; y < size; ++y) {
+        int py = cy-radius-1+y, sy;
+        if (py < 0 || py >= target->height) continue;
+        memset(covered,0,(size_t)size);
+        for (sy = 0; sy < 4; ++sy) {
+            int dy = (py-cy)*16+2+4*sy-8, ring_out = -1, ring_in = -1, sx;
+            int tail_l = 0, tail_r = -1, head_l = 0, head_r = -1;
+            if (dy*dy <= outer*outer) ring_out = isqrt(outer*outer-dy*dy);
+            if (dy*dy < inner*inner) ring_in = isqrt(inner*inner-dy*dy);
+            if (!outline_span(tail,sizeof(tail)/sizeof(tail[0]),radius,dy,&tail_l,&tail_r)) tail_r = tail_l-1;
+            if (!outline_span(head,sizeof(head)/sizeof(head[0]),radius,dy,&head_l,&head_r)) head_r = head_l-1;
+            for (x = 0; x < size; ++x) for (sx = 0; sx < 4; ++sx) {
+                int dx = (x-radius-1)*16+2+4*sx-8, ax = dx < 0 ? -dx : dx;
+                if ((ax <= ring_out && ax >= ring_in) || (dx >= tail_l && dx <= tail_r) ||
+                    (dx >= head_l && dx <= head_r)) ++covered[x];
+            }
+        }
+        for (x = 0; x < size; ++x) {
+            int px = cx-radius-1+x;
+            unsigned int alpha, remaining;
+            unsigned char *dst;
+            if (!covered[x] || px < 0 || px >= target->width) continue;
+            alpha = (covered[x]*255+8)/16; remaining = 255-alpha;
+            dst = target->pixels+((size_t)py*target->width+px)*4;
+            dst[0] = (red*alpha+dst[0]*remaining+127)/255;
+            dst[1] = (green*alpha+dst[1]*remaining+127)/255;
+            dst[2] = (blue*alpha+dst[2]*remaining+127)/255;
+            dst[3] = alpha+(dst[3]*remaining+127)/255;
+        }
+    }
+}
+
 static void folder_glyph(DockUI *ui, struct RastPort *rp, int x, int y, int drawer, int open)
 {
     const FolderView *f = &ui->folder;
@@ -1003,7 +1089,11 @@ static void paint_folder_content(DockUI *ui, struct RastPort *rp, int parts, Doc
         int center = offset+(f->count ? f->pad+(i%f->cols)*f->cell_width+f->cell_width/2 : width/2);
         int top = f->header+(i/f->cols)*f->cell_height+(f->count ? 0 : font_height+6);
         int label_top = top+icon+f->label_gap;
-        if (glyphs && (open || !f->loaded[i].pixels))
+        /* The open glyph is antialiased wherever the labels are (into an
+           RGBA target); a native pass draws it only with native labels. */
+        if (open && labels && target)
+            folder_open_glyph_aa(target,center,top+icon/2,icon/2-2,menu_colors[FOLDER_MUTED]);
+        else if (glyphs && (open ? labels : !f->loaded[i].pixels))
             folder_glyph(ui,rp,center,top+icon/2,!open && f->entries[first+i].drawer,open);
         if (!labels) continue;
         if (open && f->action_wrap) {
@@ -1049,9 +1139,15 @@ static void paint_folder(DockUI *ui)
     struct RastPort *buffer;
     int parts = FOLDER_PAINT_GLYPHS|FOLDER_PAINT_LABELS;
     if (f->motion && f->motion_frame.pixels) {
+        struct Layer *layer = ui->popup->WLayer;
+        /* A desktop click lets Workbench hold the layers for tens of ms.
+           Skip a motion frame rather than wait; the motion is timed, so the
+           next frame catches up. The final handoff frame always waits. */
+        if (!f->handoff && !AttemptLockLayerRom(layer)) return;
         if (f->handoff_bitmap) amiga_display_end_frame(ui->popup_display,ui->popup);
         else amiga_display_present(ui->popup_display,ui->popup,
             f->handoff ? &f->motion_backdrop : &f->motion_frame);
+        if (!f->handoff) UnlockLayerRom(layer);
         return;
     }
     if (ui->folder_aa && ui->popup_glass.pixels && (f->artwork_ready || prepare_folder_artwork(ui)))
@@ -1188,6 +1284,10 @@ static uint32_t motion_mix(uint32_t pixel, uint32_t under, unsigned int opacity)
     return (rb&UINT32_C(0xff00ff00))|((g&0xff00)<<8)|255;
 }
 
+/* One frame of the folder motion: the backdrop, and the scene scaled about
+   the pivot over it. Scene alpha is the artwork's opacity; the rest is
+   glass, which adds an eighth of the backdrop. The backdrop is read in place
+   and copied only beside and around the scaled box. */
 static void prepare_folder_motion(FolderView *f, unsigned int opacity)
 {
     const DockImage *scene = &f->motion_scene;
@@ -1195,41 +1295,67 @@ static void prepare_folder_motion(FolderView *f, unsigned int opacity)
     int top = folder_motion_axis(f,0,f->pivot_y);
     int bottom = folder_motion_axis(f,height,f->pivot_y);
     size_t stride = (size_t)width*4;
+    const uint32_t tint = glass_tint(3)&UINT32_C(0xffffff00); /* as finish_folder_layer */
     int y;
-    memcpy(f->motion_frame.pixels,f->motion_backdrop.pixels,stride*height);
-    if (!opacity) return;
-    for (y = top; y < bottom; ++y) {
+    for (y = 0; y < height; ++y) {
         unsigned char *row = f->motion_frame.pixels+(size_t)y*stride;
-        int source_y = clamp(f->pivot_y+(y-f->pivot_y)*FOLDER_SCALE_ONE/f->scale,0,height-1);
-        const unsigned char *source = scene->pixels+(size_t)source_y*stride;
-        int lo, hi, left, right, x, step, sample;
+        const unsigned char *back = f->motion_backdrop.pixels+(size_t)y*stride;
+        int source_y, lo, hi, left, right, x, step, sample;
+        const uint32_t *source, *under;
+        uint32_t *out;
+        if (!opacity || y < top || y >= bottom) { memcpy(row,back,stride); continue; }
+        source_y = clamp(f->pivot_y+(y-f->pivot_y)*FOLDER_SCALE_ONE/f->scale,0,height-1);
         popup_span(f,width,height,POPUP_RADIUS,source_y,&lo,&hi);
-        left = folder_motion_axis(f,lo,f->pivot_x);
-        right = folder_motion_axis(f,hi,f->pivot_x);
+        left = clamp(folder_motion_axis(f,lo,f->pivot_x),0,width);
+        right = clamp(folder_motion_axis(f,hi,f->pivot_x),left,width);
+        memcpy(row,back,(size_t)left*4);
+        memcpy(row+(size_t)right*4,back+(size_t)right*4,(size_t)(width-right)*4);
         if (right <= left) continue;
         step = (hi-lo)*256/(right-left);
         sample = lo*256;
-        for (x = left; x < right; ++x, sample += step) {
-            uint32_t pixel, under;
-            unsigned int transmission;
-            memcpy(&pixel,source+(sample>>8)*4,4);
-            transmission = 255-(pixel&255);
-            if (transmission || opacity < FOLDER_SCALE_ONE)
-                memcpy(&under,row+x*4,4);
-            if (transmission) {
-                uint32_t glass = (under>>3)&UINT32_C(0x1f1f1f00);
-                if (transmission < 255) {
-                    uint32_t rb = ((glass>>8)&UINT32_C(0x00ff00ff))*transmission+UINT32_C(0x00800080);
-                    uint32_t g = ((glass>>16)&255)*transmission+128;
-                    glass = (rb&UINT32_C(0xff00ff00))+((g&0xff00)<<8);
-                }
-                pixel += glass;
+        source = (const uint32_t *)(scene->pixels+(size_t)source_y*stride);
+        under = (const uint32_t *)back+left;
+        out = (uint32_t *)row+left;
+        /* Glass (alpha 0) adds an eighth of the backdrop; artwork (alpha
+           255) is copied; partial alpha scales the glass. Untouched glass
+           is one value (tint) in the scene, so a run of it depends only on
+           the backdrop: find where the samples leave the run and stream
+           those output pixels without sampling the scene. */
+#define FOLDER_GLASS(pixel, under) do { \
+            unsigned int transmission_ = 255-((pixel)&255); \
+            if (transmission_) { \
+                uint32_t glass_ = ((under)>>3)&UINT32_C(0x1f1f1f00); \
+                if (transmission_ < 255) { \
+                    uint32_t rb_ = ((glass_>>8)&UINT32_C(0x00ff00ff))*transmission_+UINT32_C(0x00800080); \
+                    uint32_t g_ = ((glass_>>16)&255)*transmission_+128; \
+                    glass_ = (rb_&UINT32_C(0xff00ff00))+((g_&0xff00)<<8); \
+                } \
+                (pixel) += glass_; \
+            } \
+        } while (0)
+        for (x = left; x < right;) {
+            int sx = sample>>8;
+            uint32_t pixel = source[sx];
+            if (pixel == tint) {
+                int end = sx+1, stop;
+                while (end < hi && source[end] == tint) ++end;
+                /* The first x whose sample reaches end. */
+                stop = left+(int)(((end-lo)*256+step-1)/step);
+                if (stop > right) stop = right;
+                if (opacity < FOLDER_SCALE_ONE)
+                    for (; x < stop; ++x, ++under, ++out)
+                        *out = motion_mix(tint+((*under>>3)&UINT32_C(0x1f1f1f00)),*under,opacity);
+                else
+                    for (; x < stop; ++x, ++under, ++out)
+                        *out = (tint+((*under>>3)&UINT32_C(0x1f1f1f00)))|255;
+                sample = lo*256+(x-left)*step;
+                continue;
             }
-            if (opacity < FOLDER_SCALE_ONE)
-                pixel = motion_mix(pixel,under,opacity);
-            else pixel |= 255;
-            memcpy(row+x*4,&pixel,4);
+            FOLDER_GLASS(pixel,*under);
+            *out = opacity < FOLDER_SCALE_ONE ? motion_mix(pixel,*under,opacity) : pixel|255;
+            ++x; sample += step; ++under; ++out;
         }
+#undef FOLDER_GLASS
     }
 }
 
@@ -1240,6 +1366,7 @@ static void start_folder_clock(FolderView *f, int duration)
     f->motion_start = now.ev_lo;
     f->motion_frames = 0;
     f->motion_paint_ticks = 0;
+    f->motion_prepare_sum = f->motion_present_sum = 0;
 }
 
 static void reset_folder_page(DockUI *ui)
@@ -1292,18 +1419,27 @@ static int advance_folder_motion(DockUI *ui)
         int target = closing ? FOLDER_SCALE_CLOSED : FOLDER_SCALE_ONE;
         unsigned int opacity = closing ?
             clamp(2*(FOLDER_SCALE_ONE-weight),0,FOLDER_SCALE_ONE) : FOLDER_SCALE_ONE;
+        ULONG prepared;
         f->scale = f->from_scale+(target-f->from_scale)*weight/256;
         prepare_folder_motion(f,opacity);
+        ReadEClock(&now); prepared = now.ev_lo;
         paint_folder(ui);
         ++f->motion_frames;
         ReadEClock(&now);
+        f->motion_prepare_sum += prepared-f->motion_start-elapsed;
+        f->motion_present_sum += now.ev_lo-prepared;
         f->motion_paint_ticks = now.ev_lo-f->motion_start-elapsed;
         return 0;
     }
     if (f->anchor.profile && hz) {
-        printf("Folder Stack %s: %lu us, %d frames, icon %d px, font %d px\n",
+        int frames = f->motion_frames > 1 ? f->motion_frames-!closing : 1;
+        printf("Folder Stack %s: %lu us, %d frames, icon %d px, font %d px, "
+            "scale_us_avg=%lu present_us_avg=%lu box=%dx%d\n",
             closing ? "dismissal" : "entrance",(unsigned long)((uint64_t)elapsed*1000000/hz),
-            f->motion_frames+1,f->anchor.icon_size,folder_font(ui)->tf_YSize);
+            f->motion_frames+1,f->anchor.icon_size,folder_font(ui)->tf_YSize,
+            (unsigned long)((uint64_t)f->motion_prepare_sum*1000000/hz/frames),
+            (unsigned long)((uint64_t)f->motion_present_sum*1000000/hz/frames),
+            f->motion_scene.width,f->motion_scene.height);
         fflush(stdout);
     }
     if (closing) {
@@ -1323,7 +1459,7 @@ static int prepare_folder_artwork(DockUI *ui)
     size_t pixels = (size_t)width*height;
     if (!ui->popup_display) ui->popup_display = amiga_display_open(ui->screen,width,height);
     if (!ui->popup_display) return 0;
-    amiga_display_set_converters(ui->popup_display,ui->encode,ui->decode);
+    amiga_display_set_converters(ui->popup_display,ui->encode,ui->decode,ui->encode565);
     if (!art->pixels) *art = (DockImage){width,height,malloc(pixels*4)};
     if (!art->pixels) return 0;
     if (ui->popup_glass.pixels) {
@@ -1440,8 +1576,10 @@ void dock_ui_set_blocking_hook(DockUI *ui, DockUIBlocking hook, void *context)
     ui->blocking_context = context;
 }
 
-void dock_ui_set_converters(DockUI *ui, DockConvertRGB24 encode, DockConvertRGB565 decode)
+void dock_ui_set_converters(DockUI *ui, DockConvertRGB24 encode, DockConvertRGB565 decode,
+    DockConvertRGB565 encode565)
 {
+    ui->encode565 = encode565;
     ui->encode = encode;
     ui->decode = decode;
 }

@@ -1280,7 +1280,7 @@ static int open_surface(App *app)
     if (!app->display || !image_alloc(&app->canvas, app->width, app->height) ||
         ((app->snapshot || app->pip_mode) && !image_alloc(&app->backdrop, app->width, app->height))) return 0;
     amiga_display_set_converters(app->display,app->renderer.pixels->rgba_to_rgb24,
-        app->renderer.pixels->decode565);
+        app->renderer.pixels->decode565,app->renderer.pixels->encode565);
     app->active = 0; app->hovered = -1;
     memset(app->placement, 0, sizeof(app->placement));
     if (!dock_edge_layout(&app->settings, app->edge, app->count, app->width, app->height,
@@ -1582,7 +1582,9 @@ static void animation_schedule(App *app)
             app->vblank_check_field += fields; app->vblank_check_at = now;
         }
     }
-    if (fast && delay == 20000 && app->vblank_open && app->vblank_rate_ok && !app->no_vsync) {
+    /* Zoom ticks and Folder Stack motion frames (timed, 4 ms requests)
+       both follow the display. */
+    if (fast && delay <= 20000 && app->vblank_open && app->vblank_rate_ok && !app->no_vsync) {
         /* One tick per display field. A field that passes before the read
            below only delays the tick by one field. */
         app->vblank.armed = 1;
@@ -3928,7 +3930,8 @@ static int acquire_workbench(App *app)
     if (!app->ui) { UnlockPubScreen(NULL,app->screen); app->screen = NULL; return 0; }
     dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
     dock_ui_set_fit_hook(app->ui,ui_fit,app);
-    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
+        app->renderer.pixels->encode565);
     app->workbench_closed = 0;
     prefs = current_ui_prefs(app);
     fit = ui_fit(app,&prefs);
@@ -3945,7 +3948,8 @@ static int acquire_workbench(App *app)
 #ifdef DOCK_AMMX
     if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
-    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
+        app->renderer.pixels->encode565);
     app->surface_error[0] = 0;
     return open_surface(app);
 }
@@ -4458,7 +4462,8 @@ int main(int argc, char **argv)
 #ifdef DOCK_AMMX
     if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
-    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
+        app->renderer.pixels->encode565);
     app->drop_port = CreateMsgPort();
     if (!app->drop_port) { message("Cannot open the Workbench drop port."); goto done; }
     i = open_surface(app);
@@ -4470,7 +4475,8 @@ int main(int argc, char **argv)
 #ifdef DOCK_AMMX
         if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
-        dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565);
+        dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
+        app->renderer.pixels->encode565);
         app->surface_error[0] = 0;
         i = open_surface(app);
     }

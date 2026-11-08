@@ -682,7 +682,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
     InputContext *c = context;
     int moved = 0, notify = 0;
     /* A held, external or right-button state can end on another screen. */
-    int engaged = c->held || c->external_held || c->right_held;
+    int engaged = c->held || c->external_held || c->right_held || c->close_held;
     for (e = events; e; e = e->ie_NextEvent) {
         if (e->ie_Class == IECLASS_NULL && c->shell_close &&
             e->ie_EventAddress == c->shell_close) {
@@ -831,7 +831,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
     }
     /* Pointer motion on another screen cannot change the dock. The live
        timer still notices when the dock screen returns to the front. */
-    if (notify && (engaged || c->held || c->external_held || c->right_held ||
+    if (notify && (engaged || c->held || c->external_held || c->right_held || c->close_held ||
         IntuitionBase->FirstScreen == c->dock_screen)) Signal(c->task, c->signal);
     return events;
 }
@@ -3525,7 +3525,9 @@ static void remove_input(App *app)
     if (app->handler_added) {
         /* The application owns the swallowed DOWN until its physical UP.
            Wait without spinning; never leak an unmatched release to another app. */
-        while (app->input_context.held || app->input_context.right_held) Wait(app->input_context.signal);
+        Disable(); app->input_context.close_valid = 0; Enable();
+        while (app->input_context.held || app->input_context.right_held || app->input_context.close_held)
+            Wait(app->input_context.signal);
         app->input_io->io_Command = IND_REMHANDLER;
         app->input_io->io_Data = &app->input_handler;
         DoIO((struct IORequest *)app->input_io);
@@ -3758,7 +3760,11 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
         Item *item = &app->items[index];
         int focused = item->running && (item->kind == PIN_PROGRAM || item->owner) &&
             item_window_action(app,item,WINDOW_FOCUS);
-        if (item->stack) open_stack_view(app,index);
+        /* A click on the open stack's close button (native modes; PiP
+           consumes it in the handler) closes it rather than reopening. */
+        if (item->stack && (dock_ui_folder_open(app->ui) || dock_ui_folder_moving(app->ui)))
+            dock_ui_dismiss_popup(app->ui);
+        else if (item->stack) open_stack_view(app,index);
         else if (!focused && !item->temporary) {
             if (launch_pin(item->path)) {
                 record_launch(app,item->pin_id);

@@ -177,6 +177,7 @@ unsigned char *amiga_pip_back_buffer(AmigaPip *p)
 #endif
     return p->pixels[p->front^1];
 }
+int amiga_pip_back_index(const AmigaPip *p) { return p?p->front^1:0; }
 int amiga_pip_stride(const AmigaPip *p) { return p?p->stride:0; }
 unsigned int amiga_pip_core_revision(const AmigaPip *p) { return p?p->core:0; }
 

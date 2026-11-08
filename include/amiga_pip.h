@@ -17,6 +17,9 @@ int amiga_pip_set_alignment(AmigaPip *pip, int x_offset, int y_offset);
 /* Enable the 0xF81F key on the next frame. Escape opaque magenta first. */
 int amiga_pip_set_keying(AmigaPip *pip, int enable);
 unsigned char *amiga_pip_back_buffer(AmigaPip *pip);
+/* 0 or 1: which buffer amiga_pip_back_buffer returns. A failed or suspended
+   present keeps it, so it then holds the newest conversion. */
+int amiga_pip_back_index(const AmigaPip *pip);
 int amiga_pip_stride(const AmigaPip *pip);
 int amiga_pip_present(AmigaPip *pip);
 unsigned int amiga_pip_core_revision(const AmigaPip *pip);

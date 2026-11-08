@@ -1,5 +1,6 @@
 #include "dock_core.h"
 #include "dock_geometry.h"
+#include "dock_renderer.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -843,18 +844,32 @@ static void blend_pixel(unsigned char *d, const unsigned char *s, int pressed)
     d[3] = 255;
 }
 
+/* The source rows and columns [left,right)x[top,bottom) that land inside
+   clip, itself bounded by the destination. Returns 0 when nothing does. */
+static int clip_source(const DockImage *dst, const DockImage *src, int x, int y,
+                       const DockRect *clip, int *left, int *top, int *right, int *bottom)
+{
+    int64_t cl = clip->left > 0 ? clip->left : 0, ct = clip->top > 0 ? clip->top : 0;
+    int64_t cr = clip->right < dst->width ? clip->right : dst->width;
+    int64_t cb = clip->bottom < dst->height ? clip->bottom : dst->height;
+    int64_t l = cl-x, t = ct-y, r = cr-x, b = cb-y;
+    if (l < 0) l = 0;
+    if (t < 0) t = 0;
+    if (r > src->width) r = src->width;
+    if (b > src->height) b = src->height;
+    if (l >= r || t >= b) return 0;
+    *left = (int)l; *top = (int)t; *right = (int)r; *bottom = (int)b;
+    return 1;
+}
+
 static void blend_mask(DockImage *dst, const DockImage *src, int x, int y,
-                        unsigned char *coverage, int pressed)
+                        unsigned char *coverage, int pressed, const DockRect *clip)
 {
     int sx, sy, left, top;
     int right, bottom;
     if (!dst || !src || !dst->pixels || !src->pixels ||
         dst->width <= 0 || dst->height <= 0 || src->width <= 0 || src->height <= 0) return;
-    if (x >= dst->width || y >= dst->height || x <= -src->width || y <= -src->height) return;
-    left = x < 0 ? -x : 0; top = y < 0 ? -y : 0;
-    right = src->width; bottom = src->height;
-    if ((int64_t)right > (int64_t)dst->width - x) right = (int)((int64_t)dst->width - x);
-    if ((int64_t)bottom > (int64_t)dst->height - y) bottom = (int)((int64_t)dst->height - y);
+    if (!clip_source(dst,src,x,y,clip,&left,&top,&right,&bottom)) return;
     for (sy = top; sy < bottom; ++sy) {
         const unsigned char *s = src->pixels + ((size_t)sy * src->width + left) * 4;
         unsigned char *d = dst->pixels + ((size_t)(sy + y) * dst->width + left + x) * 4;
@@ -888,15 +903,11 @@ static void blend_mask(DockImage *dst, const DockImage *src, int x, int y,
 /* blend_mask with the image's precomputed runs: the same pixels, without
    scanning transparent ones. */
 static void blend_runs(DockImage *dst, const DockImage *src, const uint16_t *runs,
-                       int x, int y, unsigned char *coverage, int pressed)
+                       int x, int y, unsigned char *coverage, int pressed, const DockRect *clip)
 {
     int sy, left, top, right, bottom, h = src->height;
     if (!dst->pixels || dst->width <= 0 || dst->height <= 0) return;
-    if (x >= dst->width || y >= dst->height || x <= -src->width || y <= -src->height) return;
-    left = x < 0 ? -x : 0; top = y < 0 ? -y : 0;
-    right = src->width; bottom = src->height;
-    if ((int64_t)right > (int64_t)dst->width - x) right = (int)((int64_t)dst->width - x);
-    if ((int64_t)bottom > (int64_t)dst->height - y) bottom = (int)((int64_t)dst->height - y);
+    if (!clip_source(dst,src,x,y,clip,&left,&top,&right,&bottom)) return;
     for (sy = top; sy < bottom; ++sy) {
         const uint16_t *r = runs+h+1+(size_t)runs[sy]*2, *end = runs+h+1+(size_t)runs[sy+1]*2;
         const unsigned char *srow = src->pixels+(size_t)sy*src->width*4;
@@ -921,12 +932,14 @@ static void blend_runs(DockImage *dst, const DockImage *src, const uint16_t *run
 
 void dock_blend(DockImage *dst, const DockImage *src, int x, int y)
 {
-    blend_mask(dst, src, x, y, NULL, 0);
+    DockRect full = {0,0,dst ? dst->width : 0,dst ? dst->height : 0};
+    blend_mask(dst, src, x, y, NULL, 0, &full);
 }
 
 void dock_blend_masked(DockImage *dst, const DockImage *src, int x, int y, unsigned char *coverage)
 {
-    blend_mask(dst, src, x, y, coverage, 0);
+    DockRect full = {0,0,dst ? dst->width : 0,dst ? dst->height : 0};
+    blend_mask(dst, src, x, y, coverage, 0, &full);
 }
 
 #if !defined(__BYTE_ORDER__)
@@ -1077,7 +1090,8 @@ static void panel_edge(unsigned char *pixel, const unsigned char *background,
 }
 
 static void draw_divider(DockImage *canvas, const DockRect *panel,
-    const DockPlacement *previous, const DockPlacement *last, int edge, int max_gap)
+    const DockPlacement *previous, const DockPlacement *last, int edge, int max_gap,
+    const DockRect *clip)
 {
     int bottom = edge == DOCK_EDGE_BOTTOM;
     int64_t gap_start = (int64_t)(bottom ? previous->x : previous->y)+previous->size;
@@ -1092,7 +1106,11 @@ static void draw_divider(DockImage *canvas, const DockRect *panel,
     line = gap_start+(gap_end-gap_start)/2;
     if (gap_end <= gap_start || line < (bottom ? panel->left : panel->top) ||
         line >= (bottom ? panel->right : panel->bottom)) return;
-    for (cross = start+inset; cross < end-inset; ++cross) {
+    if (line < (bottom ? clip->left : clip->top) || line >= (bottom ? clip->right : clip->bottom)) return;
+    start += inset; end -= inset;
+    if (start < (bottom ? clip->top : clip->left)) start = bottom ? clip->top : clip->left;
+    if (end > (bottom ? clip->bottom : clip->right)) end = bottom ? clip->bottom : clip->right;
+    for (cross = start; cross < end; ++cross) {
         int x = bottom ? (int)line : cross, y = bottom ? cross : (int)line;
         unsigned char *pixel = canvas->pixels+((size_t)y*canvas->width+x)*4;
         panel_edge(pixel,pixel,255,0,88);
@@ -1118,23 +1136,12 @@ static void background_span(unsigned char *pixels, const unsigned char *backdrop
 
 static const unsigned char dock_panel_background[4] = {20, 24, 32, 255};
 
-void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
-                 const DockCache *const *icons, const DockPlacement *p, int count,
-                 const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
-                 unsigned char *coverage, int pressed_item, int edge, int center_panel,
-                 DockGlass *glass)
+int dock_render_panel(const DockSettings *s, int edge, const DockPlacement *p, int count,
+                      int width, int height, int center_panel, DockRect *out, int *out_radius)
 {
-    enum { RIM_STRENGTH = 52 };
-    static const unsigned char flat_background[4] = {32, 36, 42, 255};
-    int x, y, shelf_top, shelf_bottom, left, right, radius, i;
-    int captured, width, height;
     DockRect rect;
-    unsigned char *pixels;
-    if (!canvas || !canvas->pixels || canvas->width < 1 || canvas->height < 1 ||
-        !dock_settings_valid(s) || count < 0 || count > DOCK_MAX_ITEMS ||
-        (count && (!icons || !p))) return;
-    width = canvas->width; height = canvas->height; pixels = canvas->pixels;
-    if (!dock_edge_panel_rect(s, (DockEdge)edge, p, count, width, height, &rect)) return;
+    int radius, top, bottom;
+    if (!dock_edge_panel_rect(s, (DockEdge)edge, p, count, width, height, &rect)) return 0;
     if (center_panel) {
         /* End slots have no artwork to extend that side of the panel.
            Mirror the farther edge of the animated row about its center. */
@@ -1146,32 +1153,88 @@ void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
             else rect.bottom = height-rect.top;
         }
     }
+    top = rect.top; bottom = rect.bottom;
+    if (rect.right <= rect.left || bottom <= top) top = bottom = 0;
+    radius = (edge == DOCK_EDGE_BOTTOM ? bottom-top : rect.right-rect.left)/4;
+    if (radius > (rect.right - rect.left) / 2) radius = (rect.right - rect.left) / 2;
+    if (radius > (bottom-top)/2) radius = (bottom-top)/2;
+    if (radius > DOCK_PANEL_MAX_RADIUS) radius = DOCK_PANEL_MAX_RADIUS;
+    if (radius < 0) radius = 0;
+    *out = rect; *out_radius = radius;
+    return 1;
+}
+
+/* Background (backdrop or flat fill) and zero coverage for columns [a,b) of row y. */
+static void background_row(unsigned char *pixels, unsigned char *coverage, const unsigned char *backdrop,
+                           const unsigned char *flat, int width, int y, int a, int b)
+{
+    size_t start = (size_t)y*width+a;
+    if (a >= b) return;
+    background_span(pixels, backdrop, flat, start, (size_t)(b-a));
+    if (coverage) memset(coverage+start, 0, (size_t)(b-a));
+}
+
+/* Rows [top,bottom) outside the plate: one span when the clip spans the width. */
+static void background_rows(unsigned char *pixels, unsigned char *coverage, const unsigned char *backdrop,
+                            const unsigned char *flat, int width, int top, int bottom, int left, int right)
+{
+    int y;
+    if (top >= bottom) return;
+    if (!left && right == width) {
+        size_t start = (size_t)width*top, n = (size_t)width*(bottom-top);
+        background_span(pixels, backdrop, flat, start, n);
+        if (coverage) memset(coverage+start, 0, n);
+    } else for (y = top; y < bottom; ++y)
+        background_row(pixels, coverage, backdrop, flat, width, y, left, right);
+}
+
+void dock_render_oriented_clip(DockImage *canvas, const DockImage *backdrop,
+                 const DockCache *const *icons, const DockPlacement *p, int count,
+                 const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
+                 unsigned char *coverage, int pressed_item, int edge, int center_panel,
+                 DockGlass *glass, const DockOverlay *overlays, int overlay_count,
+                 const DockRect *clip)
+{
+    enum { RIM_STRENGTH = 52 };
+    static const unsigned char flat_background[4] = {32, 36, 42, 255};
+    int x, y, shelf_top, shelf_bottom, left, right, radius, i;
+    int captured, width, height, first, last;
+    DockRect rect, c;
+    unsigned char *pixels;
+    const unsigned char *back;
+    if (!canvas || !canvas->pixels || canvas->width < 1 || canvas->height < 1 ||
+        !dock_settings_valid(s) || count < 0 || count > DOCK_MAX_ITEMS ||
+        (count && (!icons || !p)) || !clip) return;
+    if (overlay_count < 0 || !overlays) overlay_count = 0;
+    width = canvas->width; height = canvas->height; pixels = canvas->pixels;
+    /* Every canvas and coverage write below stays inside c. */
+    c.left = clip->left > 0 ? clip->left : 0; c.top = clip->top > 0 ? clip->top : 0;
+    c.right = clip->right < width ? clip->right : width;
+    c.bottom = clip->bottom < height ? clip->bottom : height;
+    if (c.left >= c.right || c.top >= c.bottom) return;
+    if (!dock_render_panel(s, edge, p, count, width, height, center_panel, &rect, &radius)) return;
     captured = backdrop && backdrop->pixels && backdrop->width == width && backdrop->height == height;
     if (!captured || !glass || !glass->image.pixels || !glass->ready ||
         glass->image.width != width || glass->image.height != height) glass = NULL;
+    back = captured ? backdrop->pixels : NULL;
     left = rect.left; right = rect.right;
     shelf_top = rect.top; shelf_bottom = rect.bottom;
     if (right <= left || shelf_bottom <= shelf_top) shelf_top = shelf_bottom = 0;
     /* The plate rows draw their own background around the plate; every
        other row gets the backdrop (or flat fill) and no coverage here. */
-    background_span(pixels, captured ? backdrop->pixels : NULL, flat_background, 0, (size_t)width*shelf_top);
-    background_span(pixels, captured ? backdrop->pixels : NULL, flat_background,
-                    (size_t)width*shelf_bottom, (size_t)width*(height-shelf_bottom));
-    if (coverage) {
-        memset(coverage, 0, (size_t)width*shelf_top);
-        memset(coverage+(size_t)width*shelf_bottom, 0, (size_t)width*(height-shelf_bottom));
-    }
-    radius = (edge == DOCK_EDGE_BOTTOM ? shelf_bottom-shelf_top : right-left)/4;
-    if (radius > (right - left) / 2) radius = (right - left) / 2;
-    if (radius > (shelf_bottom-shelf_top)/2) radius = (shelf_bottom-shelf_top)/2;
-    if (radius > DOCK_PANEL_MAX_RADIUS) radius = DOCK_PANEL_MAX_RADIUS;
-    if (radius < 0) radius = 0;
+    background_rows(pixels, coverage, back, flat_background, width,
+                    c.top, shelf_top < c.bottom ? shelf_top : c.bottom, c.left, c.right);
+    background_rows(pixels, coverage, back, flat_background, width,
+                    shelf_bottom > c.top ? shelf_bottom : c.top, c.bottom, c.left, c.right);
     panel_shape_prepare(shape, radius);
     if (!mix_half) mix_half = dock_mix_half_c;
-    if (right > left && shelf_bottom > shelf_top) for (y = shelf_top; y < shelf_bottom; ++y) {
-        int cy = y - shelf_top, row_inset = 0, px, center_left, center_right;
+    first = shelf_top > c.top ? shelf_top : c.top;
+    last = shelf_bottom < c.bottom ? shelf_bottom : c.bottom;
+    if (right > left && shelf_bottom > shelf_top) for (y = first; y < last; ++y) {
+        int cy = y - shelf_top, row_inset = 0, px, center_left, center_right, a, b;
         unsigned int outer = 255, inner = 255;
-        unsigned char *row = pixels + (size_t)y * width * 4, *d;
+        unsigned char *row = pixels + (size_t)y * width * 4;
+        size_t start = (size_t)y*width;
         if (shelf_bottom - 1 - y < cy) cy = shelf_bottom - 1 - y;
         if (cy < radius) {
             while (row_inset < radius) {
@@ -1180,64 +1243,78 @@ void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
                 ++row_inset;
             }
         }
-        d = row + (left + row_inset) * 4;
-        {
-            /* Outside the plate interior: background, no coverage. */
-            size_t start = (size_t)y*width, inner = (size_t)(left+row_inset), end = (size_t)(right-row_inset);
-            background_span(pixels, captured ? backdrop->pixels : NULL, flat_background, start, inner);
-            background_span(pixels, captured ? backdrop->pixels : NULL, flat_background,
-                            start+end, (size_t)width-end);
-            if (coverage) {
-                memset(coverage+start, 0, inner);
-                memset(coverage+start+inner, 255, end-inner);
-                memset(coverage+start+end, 0, (size_t)width-end);
-            }
-        }
+        /* Outside the plate interior: background, no coverage. */
+        background_row(pixels, coverage, back, flat_background, width, y,
+                       c.left, left+row_inset < c.right ? left+row_inset : c.right);
+        background_row(pixels, coverage, back, flat_background, width, y,
+                       right-row_inset > c.left ? right-row_inset : c.left, c.right);
+        a = left+row_inset > c.left ? left+row_inset : c.left;
+        b = right-row_inset < c.right ? right-row_inset : c.right;
+        if (coverage && a < b) memset(coverage+start+a, 255, (size_t)(b-a));
         if (glass) {
             /* The same bytes as the fill and mix below, mixed once per backdrop row. */
-            unsigned char *g = glass->image.pixels+(size_t)y*width*4;
+            unsigned char *g = glass->image.pixels+start*4;
             if (!glass->ready[y]) {
                 for (x = 0; x < width; ++x) memcpy(g+x*4,dock_panel_background,4);
-                mix_half(g,backdrop->pixels+(size_t)y*width*4,(unsigned long)width);
+                mix_half(g,backdrop->pixels+start*4,(unsigned long)width);
                 glass->ready[y] = 1;
             }
-            memcpy(d, g+(left+row_inset)*4, (size_t)(right-left-row_inset*2)*4);
-        } else {
-            for (x = left + row_inset; x < right - row_inset; ++x, d += 4)
-                memcpy(d,dock_panel_background,4);
-            if (captured) {
-                size_t offset = ((size_t)y * width + left + row_inset) * 4;
-                mix_half(pixels + offset, backdrop->pixels + offset, (unsigned long)(right - left - row_inset * 2));
-            }
+            if (a < b) memcpy(row+a*4, g+a*4, (size_t)(b-a)*4);
+        } else if (a < b) {
+            for (x = a; x < b; ++x) memcpy(row+x*4,dock_panel_background,4);
+            if (captured) mix_half(row+a*4, backdrop->pixels+(start+a)*4, (unsigned long)(b-a));
         }
         center_left = left + (cy < radius ? radius : 1);
         center_right = right - (cy < radius ? radius : 1);
         for (px = left + row_inset; px < center_left; ++px) {
-            unsigned char *l = row + px * 4;
-            unsigned char *r = row + (right - 1 - (px - left)) * 4;
+            int mirror = right - 1 - (px - left);
+            int draw_left = px >= c.left && px < c.right;
+            int draw_right = mirror != px && mirror >= c.left && mirror < c.right;
+            if (!draw_left && !draw_right) continue;
             if (cy < radius) panel_corner(shape,px-left,cy,radius,&outer,&inner);
             else { outer = 255; inner = 0; }
             if (outer == 255 && inner == 255) continue;
-            panel_edge(l,captured ? backdrop->pixels+(size_t)(l-pixels) : flat_background,
+            if (draw_left) panel_edge(row+px*4, captured ? back+(start+px)*4 : flat_background,
                 outer,inner,RIM_STRENGTH);
-            if (r != l) panel_edge(r, captured ? backdrop->pixels + (size_t)(r - pixels) : flat_background,
+            if (draw_right) panel_edge(row+mirror*4, captured ? back+(start+mirror)*4 : flat_background,
                 outer,inner,RIM_STRENGTH);
         }
-        if (!cy) for (px = center_left; px < center_right; ++px) {
-            unsigned char *edge_pixel = row+px*4;
-            panel_edge(edge_pixel,edge_pixel,255,0,RIM_STRENGTH);
+        if (!cy) {
+            a = center_left > c.left ? center_left : c.left;
+            b = center_right < c.right ? center_right : c.right;
+            for (px = a; px < b; ++px) {
+                unsigned char *edge_pixel = row+px*4;
+                panel_edge(edge_pixel,edge_pixel,255,0,RIM_STRENGTH);
+            }
         }
     }
     if (s->end_gap && count > 1)
-        draw_divider(canvas,&rect,&p[count-2],&p[count-1],edge,s->gap+s->end_gap);
+        draw_divider(canvas,&rect,&p[count-2],&p[count-1],edge,s->gap+s->end_gap,&c);
     for (i = 0; i < count; ++i) {
         int level = p[i].level;
         if (icons[i] && level >= 0 && level < DOCK_MAX_LEVELS && level < icons[i]->levels)
         {
             if (icons[i]->runs[level])
                 blend_runs(canvas, &icons[i]->image[level], icons[i]->runs[level], p[i].x, p[i].y,
-                           coverage, pressed_item == i+1);
-            else blend_mask(canvas, &icons[i]->image[level], p[i].x, p[i].y, coverage, pressed_item == i+1);
+                           coverage, pressed_item == i+1, &c);
+            else blend_mask(canvas, &icons[i]->image[level], p[i].x, p[i].y, coverage,
+                            pressed_item == i+1, &c);
         }
     }
+    for (i = 0; i < overlay_count; ++i)
+        if (overlays[i].image)
+            blend_mask(canvas, overlays[i].image, overlays[i].x, overlays[i].y, coverage, 0, &c);
+}
+
+void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
+                 const DockCache *const *icons, const DockPlacement *p, int count,
+                 const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
+                 unsigned char *coverage, int pressed_item, int edge, int center_panel,
+                 DockGlass *glass)
+{
+    DockRect full;
+    if (!canvas) return;
+    full = (DockRect){0, 0, canvas->width, canvas->height};
+    dock_render_oriented_clip(canvas, backdrop, icons, p, count, s, mix_half, shape, coverage,
+                              pressed_item, edge, center_panel, glass, NULL, 0, &full);
 }

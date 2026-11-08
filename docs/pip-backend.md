@@ -61,6 +61,15 @@ to the dock to cancel removal. Release outside to remove the pin.
 
 ## Updates and timing
 
+Each PiP buffer keeps the damage it has not received yet. Every draw adds
+its damage to both lists, also while PiP is suspended; a conversion encodes
+and keys only the back buffer's list, widened to 8-pixel spans for the AMMX
+kernels, and clears it even when the present fails, because the back buffer
+then stays the same. Coverage is renderer output only: the drag reveal, the
+popup or dialog clip and the keyed tail are applied to a scratch copy of each
+row span. A frame with an active mask converts whole, and so does the next
+conversion into a buffer that holds a masked frame.
+
 Poll the background every 100 ms at rest and every 20 ms during motion or a
 held button. Animation captures reset the background deadline. Matching
 source bytes and geometry skip decode, draw, and upload. Reuse all buffers.

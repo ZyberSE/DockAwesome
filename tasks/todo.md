@@ -424,6 +424,34 @@ Release archive rebuilt as 1.0 beta 1 (beta 1 was never published):
 75693347...ffb8eefe), packed with LhA on the Amiga; every file matches
 build/release/DockAwesome.
 
+## Damage-region rendering (plan-damage-rendering.md, PR 1)
+
+Vampire, 12 icons, `--pip --bench-sweep`, baseline 34dae0a against the
+damage build, run alternately per speed in one batch. Times in ms.
+
+| Size, speed | Render before | Render after | Compose | Conversion | Damage (compose / conversion) |
+| --- | --- | --- | --- | --- | --- |
+| 72, 3 | 35.9 | 33.0 (-8%) | 24.1 -> 23.3 | 11.8 -> 9.6 | 52% / 59% |
+| 72, 12 | 35.7 | 27.5 (-23%) | 23.8 -> 19.2 | 11.8 -> 8.2 | 52% / 57% |
+| 72, 25 | 35.3 | 31.0 (-12%) | 23.5 -> 21.5 | 11.7 -> 9.4 | 59% / 66% |
+| 42, 12 | 15.5 | 12.2 (-22%) | 10.0 -> 8.5 | 5.5 -> 3.6 | 42% / 49% |
+
+- [x] Goldens (384 scenarios) unchanged; damage fuzz 20,400 frames; PiP
+      double-buffer test; host-test and host-sanitize green.
+- [x] `--damage-check`: sweep at Size 72 speed 12, 167 frames, 0 compose
+      and 0 conversion mismatches; manual sessions on all three edges
+      (hover, Workbench drag and drop, reorder, popup, Settings over the
+      dock) 246 + 64 + 51 frames, 0 mismatches.
+- [ ] Physical scanout: not observed by a person; the damage check compares
+      the PiP back buffer with a full conversion before every present.
+- Why the gain is smaller than the damaged area: a host replay of the same
+  sweep shows 86-95% of icon pixels redrawn per frame, because moving the
+  pointer shifts the whole row by a pixel or more. Icon blending dominates
+  compose, so damage saves mostly plate and background. Speed 3 also has
+  about twice the rectangles per frame (9 vs 4.5), which adds per-row
+  call overhead in conversion. Next lever: keep distant icons still during
+  the wave (layout), then merge row spans in the conversion.
+
 ## Next: zoom wave matching macOS (requested 2026-11-08)
 
 Measured from the user's macOS screenshot (right edge, 2x pixels, rest

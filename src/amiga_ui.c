@@ -1614,11 +1614,25 @@ int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const 
        and the capitals of the font (measured on "H") centred vertically. */
     if (!label_ink(ui,&measure,label,&ink)) ink = (DockRect){0,0,text_width,ui->font_height};
     if (!label_ink(ui,&measure,"H",&caps)) caps = (DockRect){0,0,1,ui->font_height};
+    {
+        /* Accents, descenders and the label's own ink must stay inside the
+           rim: grow the padding on both sides alike, so the capitals stay
+           centred and every label of one font has the same height. */
+        static const char reference[] = "\xc5\xc4\xd6gjpqy_|";
+        DockRect tall;
+        int pad = LABEL_VPAD;
+        if (label_ink(ui,&measure,reference,&tall)) {
+            if (caps.top-tall.top+2 > pad) pad = caps.top-tall.top+2;
+            if (tall.bottom-caps.bottom+2 > pad) pad = tall.bottom-caps.bottom+2;
+        }
+        if (caps.top-ink.top+2 > pad) pad = caps.top-ink.top+2;
+        if (ink.bottom-caps.bottom+2 > pad) pad = ink.bottom-caps.bottom+2;
+        body = caps.bottom-caps.top+2*pad;
+        text_top = pad-caps.top;
+    }
     width = ink.right-ink.left+2*LABEL_PADDING;
-    body = caps.bottom-caps.top+2*LABEL_VPAD;
     if (width < body) width = body;
     text_x = (width-(ink.right-ink.left))/2-ink.left;
-    text_top = LABEL_VPAD-caps.top;
     tip = ui->window_shapes && edge == DOCK_EDGE_BOTTOM ? LABEL_TIP : 0;
     height = body+tip;
     if (!label_position(ui,edge,anchor,width,height,&ui->label_left,&ui->label_top)) return 0;

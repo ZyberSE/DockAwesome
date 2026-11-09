@@ -189,17 +189,53 @@ static LONG embedded_stack(BPTR seglist)
 /* Icons set to "Start from Shell" (tool type CLI) or "Start from ARexx"
    (REXX) run as Shell commands in the object's drawer, with an output
    window that opens only when the command writes. */
+/* Appends `text` in Shell double quotes, where * escapes " and itself.
+   Returns 0 when it does not fit. */
+static int shell_quote(char *out, size_t size, const char *text)
+{
+    size_t n = strlen(out);
+    if (n+1 >= size) return 0;
+    out[n++] = '"';
+    for (; *text; ++text) {
+        if (n+3 >= size) return 0;
+        if (*text == '"' || *text == '*') out[n++] = '*';
+        out[n++] = *text;
+    }
+    out[n++] = '"';
+    out[n] = 0;
+    return 1;
+}
+
 static int shell_launch(const char *path, const struct DiskObject *icon, LONG *error)
 {
-    char command[PATH_CAP*2+16], window[PATH_CAP+48];
-    BPTR file = Lock((STRPTR)path,ACCESS_READ), dir = file ? ParentDir(file) : 0, old, input;
+    char command[PATH_CAP*4+32], window[PATH_CAP+48];
+    BPTR file, dir, old, input;
     LONG stack = icon_stack(icon), result;
+    int fits;
+    command[0] = 0;
+    if (has_tool_type(icon,"REXX")) {
+        /* RX runs a quoted argument as ARexx source, not as a file, so a
+           one-line program calls the script by its full name. */
+        char call[PATH_CAP*2+16] = "call '";
+        size_t n = strlen(call);
+        const char *c;
+        for (c = path; *c && n+4 < sizeof(call); ++c) {
+            if (*c == '\'') call[n++] = '\'';
+            call[n++] = *c;
+        }
+        call[n++] = '\''; call[n] = 0;
+        strcpy(command,"RX ");
+        fits = !*c && shell_quote(command,sizeof(command),call);
+    } else if (icon->do_Type == WBPROJECT && icon->do_DefaultTool && icon->do_DefaultTool[0]) {
+        fits = shell_quote(command,sizeof(command),(const char *)icon->do_DefaultTool);
+        if (fits) strcat(command," ");
+        fits = fits && shell_quote(command,sizeof(command),path);
+    } else fits = shell_quote(command,sizeof(command),path);
+    if (!fits) { *error = ERROR_LINE_TOO_LONG; return 0; }
+    file = Lock((STRPTR)path,ACCESS_READ);
+    dir = file ? ParentDir(file) : 0;
     if (file) UnLock(file);
     if (!dir) { *error = IoErr() ? IoErr() : ERROR_OBJECT_NOT_FOUND; return 0; }
-    if (has_tool_type(icon,"REXX")) snprintf(command,sizeof(command),"RX \"%s\"",path);
-    else if (icon->do_Type == WBPROJECT && icon->do_DefaultTool && icon->do_DefaultTool[0])
-        snprintf(command,sizeof(command),"\"%s\" \"%s\"",(const char *)icon->do_DefaultTool,path);
-    else snprintf(command,sizeof(command),"\"%s\"",path);
     snprintf(window,sizeof(window),"CON:0/50//130/%s/AUTO/CLOSE/WAIT",FilePart((STRPTR)path));
     if (!(input = Open((STRPTR)window,MODE_OLDFILE))) input = Open((STRPTR)"NIL:",MODE_OLDFILE);
     if (stack < MIN_STACK) stack = MIN_STACK;

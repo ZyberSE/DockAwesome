@@ -232,3 +232,8 @@
   exactly one RAM:DockAwesome before asking anyone to look: a second PiP
   dock finds the PiP2 lease taken and quits silently under Run >NIL:, so
   the old build kept running and the user tested it (2026-11-09).
+
+## Keep a second SAGA overlay on; don't toggle it (2026-11-09)
+- Filmed on Coffin at 60 fps: each time PiP1 was opened, closed or reconfigured (label shown, drag started, Remove pill switched) the dock in PiP2 showed a doubled image below itself for ~3 frames. Moves (position registers only) never did.
+- Rule: open an extra overlay once, show the colour key when idle, and change only pointer/position registers. Reopen only to grow.
+- Go through the user's video frame by frame (ffmpeg crop + tile at full 60 fps) before guessing; the 3 fps sheet hid the cause.

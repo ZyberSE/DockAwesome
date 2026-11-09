@@ -394,8 +394,10 @@ static int pip_open(App *app)
             WA_BackFill, (ULONG)LAYERS_NOBACKFILL,
             WA_IDCMP, IDCMP_FLAGS & ~IDCMP_REFRESHWINDOW, TAG_DONE);
         if (!app->window) return 0;
-        /* Labels and dragged pins float in PiP1 when it is free. */
-        app->float_layer = amiga_float_create(app->screen, app->pip_x_offset, app->pip_y_offset);
+        /* Labels and dragged pins float in PiP1 when it is free; reserve
+           the largest icon with the Remove pill under it. */
+        app->float_layer = amiga_float_create(app->screen, app->pip_x_offset, app->pip_y_offset,
+            app->settings.max_size+64, app->settings.max_size+32);
         dock_ui_set_float(app->ui, app->float_layer);
         app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
         if (!app->appwindow) return 0;

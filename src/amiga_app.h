@@ -212,6 +212,7 @@ typedef struct {
     ULONG drop_messages, drop_arguments, drop_added, drop_reordered, drop_bad_paths;
     ULONG desktop_scans;
     ULONG drag_reveal_frames, drag_reveal_peak, popup_reveal_frames, dialog_reveal_frames;
+    ULONG drag_shift_frames, drag_shift_sum, drag_shift_peak; /* pointer travel since the mask's sample */
     uint64_t capture_ticks, decode_ticks, source_pixels;
     uint64_t settle_ticks, settle_peak;
     ULONG settles, settle_ms[16];
@@ -298,6 +299,8 @@ typedef struct App {
     unsigned char *source565, *coverage, *drag_mask;
     int drag_reference, drag_mask_live;
     DockRect drag_box; /* bounds every nonzero drag_mask pixel */
+    int drag_sample_x, drag_sample_y; /* the pointer (canvas) when drag_mask was read */
+    int drag_shown_x, drag_shown_y;   /* the pointer the last present revealed it at */
     uint64_t front_requested;
     uint64_t settle_started;
     int settling;

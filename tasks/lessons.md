@@ -242,3 +242,7 @@
 ## SAGA overlay order: PiP2 lies over PiP1 (2026-11-09)
 - On Coffin (core 11900+) PiP2's opaque pixels cover PiP1. I read a blurry video frame the other way and moved the dragged icon to PiP1 only; the user saw it vanish behind the dock's plate.
 - Rule: the dock (PiP2) draws whatever lies on its surface; PiP1 only adds what lies beyond it, as the same picture so the two meet without a seam.
+
+## Cancelling a Workbench drag in tests on Coffin (2026-11-09)
+- A right-click to cancel the drag opened a MagicMenu menu; Esc then closed the active drawer window. Reopen it with ARexx `WINDOW "<path>" OPEN`.
+- Rule: end a test drag by releasing over the icon's own window (or its start point) instead of the right button.

@@ -45,7 +45,8 @@ static int update_drag_mask(App *app, int sample)
     if (amiga_drop_catcher_active(app->drop_catcher) && app->input_context.external_held &&
         app->input_context.external_dragged && right > left && bottom > top) {
         int changed, reference_changed = 0;
-        if (!sample) return 0;
+        if (!sample)
+            return app->drag_mask_live && (x != app->drag_shown_x || y != app->drag_shown_y);
         if (!app->drag_reference) {
             if (amiga_display_drag_reference565(app->display,
                     amiga_drop_catcher_backing(app->drop_catcher),app->source565,pip_visible_width(app))) {
@@ -61,7 +62,9 @@ static int update_drag_mask(App *app, int sample)
                 &app->drag_box,app->left,app->top,left,top,right,bottom,app->renderer.pixels->bytes_equal);
             if (changed >= 0) {
                 app->drag_mask_live = 1;
-                return changed || reference_changed;
+                app->drag_sample_x = x; app->drag_sample_y = y;
+                /* The present places the mask at the pointer: a move alone redraws. */
+                return changed || reference_changed || x != app->drag_shown_x || y != app->drag_shown_y;
             }
         }
     }
@@ -208,6 +211,7 @@ typedef struct {
     App *app;
     DockRect clip;
     int popup, visible_width, count, ui_revealed;
+    int shift_x, shift_y; /* the drag mask moved with the pointer since its sample */
     ULONG revealed;
 } PipMask;
 
@@ -216,12 +220,17 @@ static void pip_mask(void *context, int y, int left, int right, unsigned char *s
     PipMask *m = context;
     App *app = m->app;
     int width = app->width;
-    if (app->drag_mask_live && y >= app->drag_box.top && y < app->drag_box.bottom) {
-        const unsigned char *mask = app->drag_mask+(size_t)y*width;
-        const unsigned char *first = memchr(mask+left,1,(size_t)(right-left));
-        int x;
-        if (first) for (x = (int)(first-mask); x < right; ++x)
-            if (mask[x] && span[x-left]) { span[x-left] = 0; if (m->count) ++m->revealed; }
+    if (app->drag_mask_live && y-m->shift_y >= app->drag_box.top && y-m->shift_y < app->drag_box.bottom) {
+        /* The native drag image follows the pointer; the mask, read up to
+           a few frames ago, is shifted to where the pointer is now. */
+        const unsigned char *mask = app->drag_mask+(size_t)(y-m->shift_y)*width;
+        int a = left-m->shift_x, b = right-m->shift_x, x;
+        const unsigned char *first;
+        if (a < app->drag_box.left) a = app->drag_box.left;
+        if (b > app->drag_box.right) b = app->drag_box.right;
+        first = b > a ? memchr(mask+a,1,(size_t)(b-a)) : NULL;
+        if (first) for (x = (int)(first-mask); x < b; ++x)
+            if (mask[x] && span[x+m->shift_x-left]) { span[x+m->shift_x-left] = 0; if (m->count) ++m->revealed; }
     }
     if (y >= m->clip.top && y < m->clip.bottom) {
         int a, b;
@@ -263,6 +272,15 @@ static void pip_show(App *app, const DockImage *frame)
     pending = &app->pip_pending[back];
     memset(&mask,0,sizeof(mask));
     mask.app = app; mask.visible_width = pip_visible_width(app); mask.count = app->profile;
+    if (app->drag_mask_live) {
+        int x = app->screen->MouseX-app->left, y = app->screen->MouseY-app->top;
+        ULONG travel;
+        mask.shift_x = x-app->drag_sample_x; mask.shift_y = y-app->drag_sample_y;
+        app->drag_shown_x = x; app->drag_shown_y = y;
+        travel = (ULONG)(abs(mask.shift_x)+abs(mask.shift_y));
+        ++app->stats.drag_shift_frames; app->stats.drag_shift_sum += travel;
+        if (travel > app->stats.drag_shift_peak) app->stats.drag_shift_peak = travel;
+    }
     mask.popup = dock_ui_popup_bounds(app->ui,&mask.clip);
     if (mask.popup) {
         mask.clip.left -= app->left; mask.clip.right -= app->left;

@@ -1059,6 +1059,10 @@ static void profile_report(App *app)
     if (app->pip_mode) {
         printf("PiP drag reveal: frames=%lu peak_pixels=%lu\n",
             (unsigned long)app->stats.drag_reveal_frames,(unsigned long)app->stats.drag_reveal_peak);
+        printf("PiP drag shift: frames=%lu avg_px=%lu peak_px=%lu (pointer travel between mask read and present)\n",
+            (unsigned long)app->stats.drag_shift_frames,
+            (unsigned long)(app->stats.drag_shift_frames ? app->stats.drag_shift_sum/app->stats.drag_shift_frames : 0),
+            (unsigned long)app->stats.drag_shift_peak);
         printf("PiP popup reveal: frames=%lu\n",(unsigned long)app->stats.popup_reveal_frames);
         printf("PiP dialog reveal: frames=%lu\n",(unsigned long)app->stats.dialog_reveal_frames);
         printf("PiP2: layer_busy=%lu\n",(unsigned long)app->stats.layer_busy);

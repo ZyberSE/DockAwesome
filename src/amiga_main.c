@@ -1460,15 +1460,6 @@ static void record_launch(App *app, uint32_t pin_id)
     app->launches[app->launch_count++].at = profile_clock();
 }
 
-static int workbench_running(void)
-{
-    int running;
-    Forbid();
-    running = FindPort((STRPTR)"WORKBENCH") != NULL;
-    Permit();
-    return running;
-}
-
 /* Opens a pin through Workbench, or starts it the way Workbench would when
    another desktop (Directory Opus on AmiKit) runs instead. A failure names
    the path and the reason dos reports. */
@@ -1482,7 +1473,7 @@ static int launch_pin(App *app, const char *path)
     };
     struct DiskObject *icon;
     int opened;
-    if (app->self_launch || !workbench_running()) {
+    if (self_launching(app)) {
         opened = launch_object(app,path,&error);
         icon = NULL;
     } else if (!(icon = GetIconTagList((STRPTR)path,get))) {
@@ -1691,7 +1682,8 @@ static void close_menu_item(App *app)
     if (index < 0) return;
     item = &app->items[index];
     if (!item->running) return;
-    if (item->kind == PIN_DRAWER) CloseWorkbenchObjectA((STRPTR)item->path,NULL);
+    if (item->kind == PIN_DRAWER && !self_launching(app)) CloseWorkbenchObjectA((STRPTR)item->path,NULL);
+    else if (item->kind == PIN_DRAWER) { if (item->lister) dopus_close_lister(app,item->lister); }
     else item_window_action(app,item,WINDOW_CLOSE);
     status_changed(app);
 }

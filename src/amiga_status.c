@@ -752,7 +752,8 @@ static LONG program_worker_entry(void)
         poll->valid = poll->unavailable = 0;
         if (poll->query & PIN_PROGRAM)
             poll_workbench_list(poll,PIN_PROGRAM,WBCTRLA_GetProgramList,WBCTRLA_FreeProgramList);
-        if (poll->query & PIN_DRAWER)
+        if ((poll->query & PIN_DRAWER) && poll->dopus_drawers) dopus_drawers(poll);
+        else if (poll->query & PIN_DRAWER)
             poll_workbench_list(poll,PIN_DRAWER,WBCTRLA_GetOpenDrawerList,WBCTRLA_FreeOpenDrawerList);
         if (poll->query & PIN_DOCUMENT) poll_document_windows(poll);
         if (poll->query & PIN_SHELL) poll_shells(poll);
@@ -865,6 +866,7 @@ void program_poll_schedule(App *app)
     poll->query = query;
     poll->settings = app->settings;
     poll->allow_new = room_for_running_icon(app);
+    poll->dopus_drawers = self_launching(app) && dopus_running();
     poll->new_path[0] = 0;
     for (i = 0; i < poll->count; ++i) {
         strcpy(poll->pins[i].path,app->items[i].path);
@@ -876,6 +878,7 @@ void program_poll_schedule(App *app)
         poll->pins[i].temporary = app->items[i].temporary;
         poll->pins[i].attributed = 0;
         poll->pins[i].owner = NULL;
+        poll->pins[i].lister = app->items[i].lister;
     }
     poll->now = now;
     poll->launch_ticks = (uint64_t)app->clock_hz*LAUNCH_SECONDS;
@@ -908,6 +911,7 @@ int program_poll_result(App *app, int *recreate)
         running = poll->pins[i].running || poll->pins[i].attributed;
         if (launch_active(app,app->items[pin].path)) running |= RUNNING_SELF;
         app->items[pin].owner = running ? poll->pins[i].owner : NULL;
+        if (poll->pins[i].kind == PIN_DRAWER) app->items[pin].lister = running ? poll->pins[i].lister : 0;
         if (poll->pins[i].kind == PIN_DOCUMENT)
             strcpy(app->items[pin].title_path,poll->pins[i].title_path);
         if (!!app->items[pin].running != !!running) changed = 1;

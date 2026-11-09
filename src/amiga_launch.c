@@ -5,6 +5,11 @@
    process with the icon's stack, and a WBStartup message whose reply says
    the program has ended. The program's code stays loaded until then. */
 #include "amiga_app.h"
+#include <rexx/storage.h>
+#include <proto/rexxsyslib.h>
+#include "amiga_folder.h"
+
+struct RxsLib *RexxSysBase;
 
 enum { NAME_CAP = 108, MIN_STACK = 4096 };
 
@@ -65,6 +70,67 @@ static int mark_items(App *app, const char *path, int running)
     return changed;
 }
 
+/* ARexx to Directory Opus 5 (port DOPUS.1). Commands from the main task
+   are sent without waiting; their replies arrive on launch_port. The status
+   worker asks and waits for answers. */
+static struct RexxMsg *rexx_message(struct MsgPort *reply, const char *command, LONG action)
+{
+    struct RexxMsg *msg;
+    if (!RexxSysBase || !(msg = CreateRexxMsg(reply,NULL,NULL))) return NULL;
+    if (!(msg->rm_Args[0] = (STRPTR)CreateArgstring((CONST_STRPTR)command,strlen(command)))) {
+        DeleteRexxMsg(msg);
+        return NULL;
+    }
+    msg->rm_Action = action;
+    return msg;
+}
+
+static void rexx_free(struct RexxMsg *msg)
+{
+    if ((msg->rm_Action & RXFF_RESULT) && !msg->rm_Result1 && msg->rm_Result2)
+        DeleteArgstring((UBYTE *)msg->rm_Result2);
+    DeleteArgstring((UBYTE *)msg->rm_Args[0]);
+    DeleteRexxMsg(msg);
+}
+
+static int rexx_put(struct RexxMsg *msg)
+{
+    struct MsgPort *port;
+    Forbid();
+    if ((port = FindPort((STRPTR)"DOPUS.1"))) PutMsg(port,&msg->rm_Node);
+    Permit();
+    return port != NULL;
+}
+
+static int rexx_send(struct MsgPort *reply, const char *command)
+{
+    struct RexxMsg *msg = rexx_message(reply,command,RXCOMM);
+    if (msg && !rexx_put(msg)) { rexx_free(msg); msg = NULL; }
+    return msg != NULL;
+}
+
+/* Sends and waits. The result string, if any, goes to `result`. Returns
+   the ARexx return code, or -1 when Directory Opus is not there. */
+static LONG rexx_call(const char *command, char *result, size_t size)
+{
+    struct MsgPort *reply = CreateMsgPort();
+    struct RexxMsg *msg = reply ? rexx_message(reply,command,RXCOMM|RXFF_RESULT) : NULL;
+    LONG rc = -1;
+    if (size) result[0] = 0;
+    if (msg && rexx_put(msg)) {
+        WaitPort(reply);
+        GetMsg(reply);
+        rc = msg->rm_Result1;
+        if (!rc && msg->rm_Result2 && size) {
+            strncpy(result,(const char *)msg->rm_Result2,size-1);
+            result[size-1] = 0;
+        }
+        rexx_free(msg);
+    } else if (msg) rexx_free(msg);
+    if (reply) DeleteMsgPort(reply);
+    return rc;
+}
+
 /* Fills args[n] with the parent of `file` and its name; takes `file`. */
 static int set_arg(struct DockLaunched *launch, int n, BPTR file)
 {
@@ -110,10 +176,17 @@ int launch_object(App *app, const char *path, LONG *error)
         struct TagItem get[] = {{ICONGETA_FailIfUnavailable,FALSE},{TAG_DONE,0}};
         icon = GetIconTagList((STRPTR)path,get);
     }
-    if (!icon || (icon->do_Type != WBTOOL && icon->do_Type != WBPROJECT)) {
-        *error = ERROR_OBJECT_WRONG_TYPE;
-        goto fail;
+    if (icon && icon->do_Type != WBTOOL && icon->do_Type != WBPROJECT) {
+        /* Drawers and disks open in the desktop's own windows. */
+        char command[PATH_CAP+16];
+        snprintf(command,sizeof(command),"lister new \"%s\"",path);
+        if (rexx_send(app->launch_port,command)) ++app->rexx_pending;
+        else *error = ERROR_OBJECT_WRONG_TYPE;
+        FreeDiskObject(icon);
+        launch_free(launch);
+        return !*error;
     }
+    if (!icon) { *error = ERROR_OBJECT_NOT_FOUND; goto fail; }
     if (!(file = Lock((STRPTR)path,ACCESS_READ))) { *error = IoErr(); goto fail; }
     if (icon->do_Type == WBPROJECT) {
         BPTR project_dir = ParentDir(file), tool;
@@ -197,7 +270,16 @@ int launch_reap(App *app)
     while ((msg = GetMsg(app->launch_port))) {
         struct DockLaunched **link = &app->launched;
         while (*link && &(*link)->startup.sm_Message != msg) link = &(*link)->next;
-        if (!*link) continue;
+        if (!*link) {
+            struct RexxMsg *rexx = (struct RexxMsg *)msg;
+            if (!RexxSysBase || !IsRexxMsg(rexx)) continue;
+            if (rexx->rm_Result1 && !app->notice[0])
+                snprintf(app->notice,sizeof(app->notice),"Directory Opus could not do\n%s",
+                    (const char *)rexx->rm_Args[0]);
+            rexx_free(rexx);
+            --app->rexx_pending;
+            continue;
+        }
         {
             struct DockLaunched *launch = *link;
             *link = launch->next;
@@ -210,6 +292,7 @@ int launch_reap(App *app)
 
 int launch_open(App *app)
 {
+    RexxSysBase = (struct RxsLib *)OpenLibrary((STRPTR)"rexxsyslib.library",36);
     app->launch_port = CreateMsgPort();
     return app->launch_port != NULL;
 }
@@ -219,10 +302,76 @@ int launch_open(App *app)
 void launch_close(App *app)
 {
     if (!app->launch_port) return;
-    while (app->launched) {
+    while (app->launched || app->rexx_pending) {
         WaitPort(app->launch_port);
         launch_reap(app);
     }
     DeleteMsgPort(app->launch_port);
     app->launch_port = NULL;
+    if (RexxSysBase) CloseLibrary((struct Library *)RexxSysBase);
+    RexxSysBase = NULL;
+}
+
+int workbench_running(void)
+{
+    int running;
+    Forbid();
+    running = FindPort((STRPTR)"WORKBENCH") != NULL;
+    Permit();
+    return running;
+}
+
+int dopus_running(void)
+{
+    int running;
+    Forbid();
+    running = FindPort((STRPTR)"DOPUS.1") != NULL;
+    Permit();
+    return running;
+}
+
+/* Workbench, unless --self-launch, opens what it can; otherwise we do. */
+int self_launching(const App *app)
+{
+    return app->self_launch || !workbench_running();
+}
+
+void dopus_close_lister(App *app, ULONG lister)
+{
+    char command[32];
+    snprintf(command,sizeof(command),"lister close %lu",(unsigned long)lister);
+    if (rexx_send(app->launch_port,command)) ++app->rexx_pending;
+}
+
+/* Status worker: open Directory Opus listers count as open drawers. */
+void dopus_drawers(ProgramPoll *poll)
+{
+    char handles[256], *cursor, *end;
+    void *requesters;
+    int i;
+    if (rexx_call("lister query all",handles,sizeof(handles)) < 0) return;
+    requesters = amiga_requesters_off(); /* a pin on an absent disk */
+    for (i = 0; i < poll->count; ++i)
+        if (poll->pins[i].kind == PIN_DRAWER) { poll->pins[i].running = 0; poll->pins[i].lister = 0; }
+    for (cursor = handles; *cursor; cursor = end) {
+        char command[48], path[PATH_CAP];
+        ULONG lister = strtoul(cursor,&end,10);
+        BPTR place;
+        if (end == cursor) break;
+        snprintf(command,sizeof(command),"lister query %lu path",(unsigned long)lister);
+        if (rexx_call(command,path,sizeof(path)) || !(place = Lock((STRPTR)path,ACCESS_READ))) continue;
+        for (i = 0; i < poll->count; ++i) {
+            BPTR pin;
+            if (poll->pins[i].kind != PIN_DRAWER || poll->pins[i].running) continue;
+            if (!(pin = Lock((STRPTR)poll->pins[i].path,ACCESS_READ))) continue;
+            if (SameLock(pin,place) == LOCK_SAME) {
+                poll->pins[i].running = 1;
+                poll->pins[i].lister = lister;
+            }
+            UnLock(pin);
+        }
+        UnLock(place);
+    }
+    amiga_requesters_restore(requesters);
+    poll->valid |= PIN_DRAWER;
 }

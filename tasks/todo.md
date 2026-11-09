@@ -660,11 +660,14 @@ Plan (ApolloOS keeps today's path unchanged):
       type"; Ctrl-C with two programs running closed the dock window and the
       process ended once both were closed. Graphics memory back to the
       value before the test.
-- [ ] 3. Drawers and disks without Workbench, through ARexx to DOPUS.1:
-      open with `lister new "<path>"`; the status poll reads open drawers
-      with `lister query all` and `lister query <handle> path` (dots), and
-      Close sends `lister close <handle>`. Scalos waits until someone can
-      check its ARexx interface.
+- [ ] 3. Drawers and disks without Workbench, through ARexx to DOPUS.1
+      (built, not yet run on hardware): open with `lister new "<path>"`
+      (sent without waiting; a failing reply becomes a notice); the status
+      worker reads `lister query all` and `lister query <handle> path` and
+      matches drawers with SameLock (dots); Close sends
+      `lister close <handle>`. Without DOpus a drawer pin says "object is not
+      of required type". Scalos waits until someone can check its ARexx
+      interface.
 - [x] 4. The failure text says "Could not open" plus path and reason, not
       "Workbench".
 - [ ] 5. Verify on the Vampire with --self-launch: tool, tool with a large

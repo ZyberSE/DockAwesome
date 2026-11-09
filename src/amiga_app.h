@@ -71,6 +71,7 @@ typedef struct {
     uint32_t pin_id;
     int running, kind, temporary, stack;
     const struct Task *owner; /* A task showing this item's window; compare only. */
+    ULONG lister;             /* The Directory Opus lister showing this drawer. */
 } Item;
 typedef struct {
     struct Screen *screen;
@@ -164,7 +165,9 @@ typedef struct {
         int running, kind, temporary;
         int attributed;            /* Output: a launched task still shows a window. */
         const struct Task *owner;  /* Output: a task showing this pin's window. */
+        ULONG lister;              /* Output: the Directory Opus lister showing it. */
     } pins[DOCK_MAX_ITEMS];
+    int dopus_drawers;             /* Directory Opus listers are the open drawers. */
     /* Dock launches: new apps appearing soon after belong to that pin. */
     DockLaunch launches[LAUNCH_SLOTS];
     int launch_count;
@@ -300,6 +303,7 @@ typedef struct App {
     struct MsgPort *launch_port;       /* WBStartup replies of our own launches */
     struct DockLaunched *launched;     /* programs we started, until they reply */
     int self_launch;                   /* --self-launch: never ask Workbench */
+    int rexx_pending;                  /* ARexx commands not yet replied */
     char surface_error[256];
 
     char config[CONFIG_CAP], shell_launcher_path[PATH_CAP];
@@ -544,6 +548,11 @@ int launch_object(App *app, const char *path, LONG *error);
 int launch_active(const App *app, const char *path);
 int launch_reap(App *app);
 void launch_close(App *app);
+int workbench_running(void);
+int dopus_running(void);
+int self_launching(const App *app);
+void dopus_close_lister(App *app, ULONG lister);
+void dopus_drawers(ProgramPoll *poll);
 
 /* amiga_workbench.c: the screennotify.library Workbench client. */
 void workbench_notify_open(App *app);

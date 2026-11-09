@@ -190,3 +190,7 @@
   PiP2 lease, check for a dock started from WBStartup.
 
 - Installing a dock build on the Amiga: quit the dock, then Rename the WBStartup binary to Disabled/ BEFORE copying (Workbench keeps a WBRun binary locked: Copy fails with "object is in use"). Run install steps one call at a time and check each result before deleting the uploaded copy or starting WBRun; a parallel batch restarted the old build and deleted the new upload (2026-11-09).
+- Never run `Avail FLUSH` through the Amiga agent on the Vampire: on
+  ApolloOS with 1.5 GB it did not return, Break did not stop it, and
+  afterwards neither the agent nor new programs started. Read free memory
+  from the Workbench title bar instead (2026-11-09).

@@ -1294,7 +1294,7 @@ static void draw(App *app)
     for (i = 0; i < count; ++i)
         if (icons[i] && app->items[row_item(app,i)].running)
             overlays[overlay_count++] = running_dot(app,&placement[i]);
-    if (dragged >= 0 && !app->gesture.remove_armed) {
+    if (dragged >= 0 && (!app->gesture.remove_armed || app->drag_on_band)) {
         int level = app->moving_item ? app->held_icon.level : app->placement[dragged].level;
         const DockImage *icon = &app->items[dragged].cache.image[level];
         overlays[overlay_count++] = (DockOverlay){icon, app->gesture.x-icon->width/2,
@@ -1678,32 +1678,36 @@ static int update_drag_preview(App *app)
         }
     }
     if (app->float_layer && !shaped) {
-        /* PiP1: no window, no save-under; a move writes two registers. */
-        int shown = app->drag_float;
-        if (!icon) {
-            if (!shown) return 0;
-            amiga_float_hide(app->float_layer); app->drag_float = 0;
-            return 1;
+        /* PiP1: no window, no save-under; a move writes two registers.
+           On a wide dock's rows PiP1 may not show (-1): the dock draws the
+           pin there itself, Remove armed or not (drag_on_band). The window
+           preview is only for PiP1 taken by another program, and closes
+           whenever PiP1 or the dock carries the pin. */
+        int shown = app->drag_float, band = app->drag_on_band, changed = 0;
+        if (icon) {
+            if (shown && app->drag_float_token == gesture->token && app->drag_float_icon == icon &&
+                app->drag_float_remove == gesture->remove_armed) {
+                if (amiga_float_move(app->float_layer,x-app->drag_float_width/2,
+                        y-app->drag_float_icon_height/2) >= 0) return 0;
+                shown = -1;
+            } else shown = show_drag_float(app,icon,gesture->remove_armed,x,y);
+            app->drag_float = shown > 0;
+            app->drag_float_token = gesture->token;
+            app->drag_float_icon = app->drag_float ? icon : NULL;
+        } else {
+            if (shown) amiga_float_hide(app->float_layer);
+            changed = shown;
+            app->drag_float = shown = 0;
         }
-        if (shown && app->drag_float_token == gesture->token && app->drag_float_icon == icon &&
-            app->drag_float_remove == gesture->remove_armed) {
-            if (amiga_float_move(app->float_layer,x-app->drag_float_width/2,
-                    y-app->drag_float_icon_height/2) < 0) app->drag_float = 0;
-            return 0;
-        }
-        shown = show_drag_float(app,icon,gesture->remove_armed,x,y);
-        app->drag_float = shown > 0;
-        app->drag_float_token = gesture->token;
-        app->drag_float_icon = app->drag_float ? icon : NULL;
-        if (app->drag_float) return 0;
-        /* On a wide dock's rows the dock draws the pin itself, unless it
-           would be removed: then the window preview below. */
-        if (shown < 0 && !gesture->remove_armed) {
+        app->drag_on_band = icon && shown < 0;
+        changed |= band != app->drag_on_band;
+        if (!icon || shown) {
             if (app->drag_preview) {
                 amiga_drag_preview_close(app->drag_preview); app->drag_preview = NULL;
-                return 1;
+                changed = 1;
             }
-            return 0;
+            app->preview_attempt = 0;
+            return changed;
         }
         /* PiP1 is taken: the window preview below. */
     }

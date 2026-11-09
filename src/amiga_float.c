@@ -23,6 +23,9 @@ enum { KEY565 = 0xf81f };
 /* PiP1 and PiP2 widths that shared rows on Coffin: 128 + 96 showed fine,
    128 + 992 did not. */
 enum { SHARE_WIDTH = 256 };
+/* Rows kept free between PiP1 and a wide PiP2: ending right on the row
+   above the dock still scrambled it (the next row is fetched ahead). */
+enum { BAND_GAP = 4 };
 
 typedef struct { int x, y, w, h; } Area;
 
@@ -48,9 +51,9 @@ struct AmigaFloat {
    room above it. */
 static int band_fit(const AmigaFloat *f, int y, int h)
 {
-    int top = dock_clamp(y,1,f->screen->Height-h);
-    if (top+h <= f->band_top || top >= f->band_bottom) return 1;
-    if (top >= f->band_top || f->band_top-h < 1) return -1;
+    int top = dock_clamp(y,1,f->screen->Height-h), limit = f->band_top-BAND_GAP;
+    if (top+h <= limit || top >= f->band_bottom+BAND_GAP) return 1;
+    if (top >= limit || limit-h < 1) return -1;
     return 2;
 }
 
@@ -106,7 +109,8 @@ static void layout(const AmigaFloat *f, int *left, int *top, int *ox, int *oy)
     *left = dock_clamp(f->x,0,f->screen->Width-f->cap_w);
     *top = dock_clamp(f->y,1,f->screen->Height-f->cap_h);
     /* Reaching onto the band: the overlay ends at the band's top. */
-    if (f->tight && *top < f->band_top && *top+f->cap_h > f->band_top) *top = f->band_top-f->cap_h;
+    if (f->tight && *top < f->band_top && *top+f->cap_h > f->band_top-BAND_GAP)
+        *top = f->band_top-BAND_GAP-f->cap_h;
     *ox = f->x-*left; *oy = f->y-*top;
 }
 

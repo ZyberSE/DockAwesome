@@ -71,8 +71,8 @@ AmigaPip *amiga_pip_open(struct Screen *screen, int x, int y, int width, int hei
         width > AMIGA_PIP_MAX_WIDTH || height > AMIGA_PIP_MAX_HEIGHT ||
         right_padding < 0 || right_padding >= width || x < 0 || y < 1 ||
         x > screen->Width-width+right_padding || y > screen->Height-height ||
-        GetBitMapAttr(screen->RastPort.BitMap,BMA_DEPTH) != 16) {
-        failure(error,error_capacity,"PiP2 needs a valid 16-bit SAGA screen region."); return NULL;
+        GetBitMapAttr(screen->RastPort.BitMap,BMA_DEPTH) < 15) {
+        failure(error,error_capacity,"PiP2 needs a valid 16-, 24- or 32-bit screen region."); return NULL;
     }
     /* On core 12515, 336 px showed stripes and 352 px worked with zero modulo. */
     if (width&31) {
@@ -189,7 +189,7 @@ int amiga_pip_present(AmigaPip *p)
     int x,y,next;
     if (!p) return 0;
     if (IntuitionBase->FirstScreen != p->screen ||
-        GetBitMapAttr(p->screen->RastPort.BitMap,BMA_DEPTH) != 16) {
+        GetBitMapAttr(p->screen->RastPort.BitMap,BMA_DEPTH) < 15) {
         amiga_pip_suspend(p); return 0;
     }
     if (!physical_position(p,p->x_offset,p->y_offset,&x,&y)) {

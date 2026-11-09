@@ -174,7 +174,7 @@ static int live_capture(App *app, int full_compare)
     if (app->profile) app->stats.capture_ticks += profile_clock()-started;
     if (result < 0) {
         amiga_pip_suspend(app->pip); app->pip_visible = 0; input_publish(app); app->failed = 1;
-        strcpy(app->surface_error, "PiP lost the RGB565 screen. Restart the dock on a supported screen.");
+        strcpy(app->surface_error, "PiP lost the screen. Restart the dock on a supported screen.");
         return 0;
     }
     if (result) {
@@ -377,7 +377,7 @@ static int pip_open(App *app)
     if (!amiga_pip_set_keying(app->pip, 1)) return 0;
     if (amiga_display_capture565(app->display, app->source565, app->left,
             app->top, 1, NULL, app->renderer.pixels->bytes_equal, NULL) < 0) {
-        strcpy(app->surface_error, "PiP needs a native big-endian RGB16 SAGA screen bitmap."); return 0;
+        strcpy(app->surface_error, "PiP cannot read this screen's pixel format."); return 0;
     }
     dock_renderer_backdrop_changed(&app->renderer);
     if (!app->caps.shaped_windows) {

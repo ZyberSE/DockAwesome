@@ -180,6 +180,60 @@ void amiga_display_set_converters(AmigaDisplay *d, DockConvertRGB24 encode, Dock
 
 int amiga_display_depth(const AmigaDisplay *d) { return d ? d->depth : 0; }
 
+/* Pixel formats the PiP capture reads; others fail the capture. */
+static int rgb565_source(ULONG format, ULONG bytes)
+{
+    switch (format) {
+    case PIXFMT_RGB16: case PIXFMT_RGB16PC: return bytes == 2;
+    case PIXFMT_RGB24: case PIXFMT_BGR24: return bytes == 3;
+    case PIXFMT_ARGB32: case PIXFMT_BGRA32: case PIXFMT_RGBA32: return bytes == 4;
+    default: return 0;
+    }
+}
+
+/* One row of n source pixels as big-endian RGB565, the PiP overlay's
+   format: the dock's own pixels are 16-bit whatever the screen. */
+static void row_to_rgb565(unsigned char *out, const unsigned char *in, int n, ULONG format)
+{
+    int r, g, b;
+    unsigned int v;
+    if (format == PIXFMT_RGB16) { memcpy(out,in,(size_t)n*2); return; }
+    for (; n > 0; --n, out += 2) {
+        switch (format) {
+        case PIXFMT_RGB16PC: out[0] = in[1]; out[1] = in[0]; in += 2; continue;
+        case PIXFMT_RGB24: r = in[0]; g = in[1]; b = in[2]; in += 3; break;
+        case PIXFMT_BGR24: b = in[0]; g = in[1]; r = in[2]; in += 3; break;
+        case PIXFMT_ARGB32: r = in[1]; g = in[2]; b = in[3]; in += 4; break;
+        case PIXFMT_BGRA32: b = in[0]; g = in[1]; r = in[2]; in += 4; break;
+        default: /* PIXFMT_RGBA32 */ r = in[0]; g = in[1]; b = in[2]; in += 4; break;
+        }
+        v = ((unsigned int)(r&0xf8)<<8)|((unsigned int)(g&0xfc)<<3)|((unsigned int)b>>3);
+        out[0] = (unsigned char)(v>>8); out[1] = (unsigned char)v;
+    }
+}
+
+/* A rectangle of a 24- or 32-bit bitmap as RGB565 rows of out_stride
+   bytes. Reads memory under LockBitMap, which takes no layer lock. */
+static int read_rect565(AmigaDisplay *d, struct BitMap *bitmap, int x, int y, int w, int h,
+    unsigned char *out, size_t out_stride)
+{
+    APTR lock, base = NULL;
+    ULONG stride = 0, format = ~0UL, bytes = 0, width = 0, height = 0;
+    int row;
+    lock = LockBitMapTags(bitmap, LBMI_BASEADDRESS, (ULONG)&base,
+        LBMI_BYTESPERROW, (ULONG)&stride, LBMI_BYTESPERPIX, (ULONG)&bytes,
+        LBMI_PIXFMT, (ULONG)&format, LBMI_WIDTH, (ULONG)&width,
+        LBMI_HEIGHT, (ULONG)&height, TAG_DONE);
+    if (!lock) return 0;
+    if (!base || !rgb565_source(format,bytes) || x < 0 || y < 0 ||
+        width < (ULONG)(x+w) || height < (ULONG)(y+h)) { UnLockBitMap(lock); return 0; }
+    for (row = 0; row < h; ++row)
+        row_to_rgb565(out+(size_t)row*out_stride,
+            (const unsigned char *)base+(size_t)(y+row)*stride+(size_t)x*bytes,w,format);
+    UnLockBitMap(lock);
+    return 1;
+}
+
 int amiga_display_capture565(AmigaDisplay *d, unsigned char *cache,
                             int x, int y, int force, const DockRect *check, DockBytesEqual equal,
                             DockRect *box)
@@ -189,7 +243,7 @@ int amiga_display_capture565(AmigaDisplay *d, unsigned char *cache,
     const unsigned char *source;
     size_t row_bytes, visible_bytes;
     int row, changed = force, left = 0, top = 0, right, bottom, visible_width;
-    if (!d || !cache || !d->cyber || d->depth != 16 ||
+    if (!d || !cache || !d->cyber || d->depth < 15 ||
         d->screen->RastPort.BitMap != d->source_bitmap || x < 0 || y < 0 ||
         x >= d->screen->Width || y+d->height > d->screen->Height) return -1;
     visible_width = d->screen->Width-x;
@@ -199,15 +253,24 @@ int amiga_display_capture565(AmigaDisplay *d, unsigned char *cache,
         LBMI_PIXFMT, (ULONG)&format, LBMI_WIDTH, (ULONG)&width,
         LBMI_HEIGHT, (ULONG)&height, TAG_DONE);
     if (!lock) return -1;
-    if (!base || bytes != 2 || format != PIXFMT_RGB16 ||
+    if (!base || !rgb565_source(format,bytes) ||
         width < (ULONG)(x+visible_width) || height < (ULONG)(y+d->height) ||
-        stride < width*2) {
+        stride < width*bytes) {
         UnLockBitMap(lock); return -1;
     }
     if (!equal) equal = dock_bytes_equal_c;
-    source = (const unsigned char *)base+(size_t)y*stride+x*2;
     row_bytes = (size_t)d->width*2;
     visible_bytes = (size_t)visible_width*2;
+    if (format == PIXFMT_RGB16) source = (const unsigned char *)base+(size_t)y*stride+x*2;
+    else {
+        /* Other formats compare as RGB565 rows in upload (it holds three
+           bytes a pixel), so the screen stays locked only for the copy. */
+        for (row = 0; row < d->height; ++row)
+            row_to_rgb565(d->upload+(size_t)row*row_bytes,
+                (const unsigned char *)base+(size_t)(y+row)*stride+(size_t)x*bytes,visible_width,format);
+        UnLockBitMap(lock); lock = NULL;
+        source = d->upload; stride = row_bytes;
+    }
     right = visible_width; bottom = d->height;
     if (check && check->left >= 0 && check->right <= right &&
         check->top >= 0 && check->bottom <= bottom &&
@@ -232,7 +295,7 @@ int amiga_display_capture565(AmigaDisplay *d, unsigned char *cache,
         if (visible_bytes < row_bytes) memset(line+visible_bytes,0,row_bytes-visible_bytes);
     }
     if (box && force) *box = (DockRect){0,0,d->width,d->height};
-    UnLockBitMap(lock);
+    if (lock) UnLockBitMap(lock);
     return changed;
 }
 
@@ -241,13 +304,16 @@ int amiga_display_drag_reference565(AmigaDisplay *d, struct BitMap *backing,
 {
     struct RastPort rp;
     int row;
-    if (!d || !d->cyber || d->depth != 16 ||
-        !backing || visible_width < 1 || visible_width > d->width ||
-        GetCyberMapAttr(backing,CYBRMATTR_PIXFMT) != PIXFMT_RGB16) return 0;
+    if (!d || !d->cyber || d->depth < 15 ||
+        !backing || visible_width < 1 || visible_width > d->width) return 0;
+    if (GetCyberMapAttr(backing,CYBRMATTR_PIXFMT) != PIXFMT_RGB16) {
+        if (!read_rect565(d,backing,0,0,visible_width,d->height,reference,(size_t)d->width*2)) return 0;
+    } else {
     InitRastPort(&rp);
     rp.BitMap = backing;
     if (ReadPixelArray(reference,0,0,d->width*2,&rp,0,0,
         visible_width,d->height,RECTFMT_RAW) != (ULONG)visible_width*d->height) return 0;
+    }
     if (visible_width < d->width) for (row = 0; row < d->height; ++row)
         memset(reference+((size_t)row*d->width+visible_width)*2,0,(d->width-visible_width)*2);
     return 1;
@@ -262,7 +328,7 @@ int amiga_display_drag_mask565(AmigaDisplay *d, const unsigned char *reference,
     int marked_top = -1, marked_bottom = 0;
     if (!d) return -1;
     width = d->width;
-    if (!d->cyber || d->depth != 16 || !reference || !mask ||
+    if (!d->cyber || d->depth < 15 || !reference || !mask ||
         d->screen->RastPort.BitMap != d->source_bitmap ||
         left < 0 || top < 0 || right > width || bottom > d->height ||
         left >= right || top >= bottom || x < 0 || y < 0 ||
@@ -279,10 +345,15 @@ int amiga_display_drag_mask565(AmigaDisplay *d, const unsigned char *reference,
     }
     /* Workbench can keep Layers locked throughout a drag. This RastPort has
        no Layer and the SAGA native GetImage copies without taking its lock. */
+    if (GetCyberMapAttr(d->source_bitmap,CYBRMATTR_PIXFMT) != PIXFMT_RGB16) {
+        if (!read_rect565(d,d->source_bitmap,x+left,y+top,right-left,bottom-top,
+                d->upload+((size_t)top*width+left)*2,(size_t)width*2)) return -1;
+    } else {
     InitRastPort(&rp);
     rp.BitMap = d->source_bitmap;
     if (ReadPixelArray(d->upload,left,top,width*2,&rp,x+left,y+top,
             right-left,bottom-top,RECTFMT_RAW) != (ULONG)(right-left)*(bottom-top)) return -1;
+    }
     for (row = scan_top; row < scan_bottom; ++row) {
         unsigned char *line = mask+(size_t)row*width;
         const unsigned char *a = reference+(size_t)row*width*2;

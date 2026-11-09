@@ -1709,6 +1709,90 @@ static void test_conversion_double_buffer(void)
     }
 }
 
+/* New colors at the same pixel addresses. Alpha, and so the runs, stay
+   valid: this is a rebuild that reused the freed addresses. */
+static void recolor_in_place(DockCache *cache, unsigned char delta)
+{
+    int l;
+    size_t i;
+    for (l = 0; l < cache->levels; ++l)
+        for (i = 0; i < (size_t)cache->image[l].width*cache->image[l].height*4; ++i)
+            if ((i&3) != 3) cache->image[l].pixels[i] = (unsigned char)(cache->image[l].pixels[i]+delta);
+}
+
+/* The canvas and coverage equal a fresh full render. */
+static void assert_full_render(const RenderFixture *f, const DockCache *const *icons,
+                               const DockPlacement *p, DockPanelShape *shape)
+{
+    size_t size = (size_t)f->width*f->height;
+    DockImage ref = {f->width,f->height,malloc(size*4)};
+    unsigned char *cov = malloc(size);
+    assert(ref.pixels && cov);
+    dock_render_oriented_mask(&ref,&f->backdrop,icons,p,FIX_COUNT,&f->s,NULL,shape,cov,0,f->edge,0,NULL);
+    assert(!memcmp(ref.pixels,f->canvas.pixels,size*4));
+    assert(!memcmp(cov,f->coverage,size));
+    free(ref.pixels); free(cov);
+}
+
+/* Slots compare cache stamps, so a cache rebuilt at the same addresses and
+   a reorder damage just their slots, with no dock_renderer_invalidate. */
+static void test_damage_stamp(void)
+{
+    RenderFixture f;
+    DockRenderer r;
+    DockPlacement p[FIX_COUNT];
+    const DockCache *icons[FIX_COUNT], *t;
+    DockPanelShape *shape = calloc(1,sizeof(*shape));
+    DockCache a = {0}, b = {0};
+    const unsigned char *address;
+    unsigned long stamp;
+    int i;
+    assert(shape);
+    memset(&f,0,sizeof(f));
+    f.s = dock_settings_default();
+    f.s.levels = 9; f.s.max_size = 64;
+    fixture_sources(&f);
+    /* Every build takes a new nonzero stamp; free clears it. */
+    assert(f.cache[0].stamp && f.cache[1].stamp > f.cache[0].stamp && f.cache[2].stamp > f.cache[1].stamp);
+    assert(dock_cache_build(&a,&f.cache[0].image[0],&f.s) && dock_cache_build(&b,&f.cache[0].image[0],&f.s));
+    assert(a.stamp && b.stamp > a.stamp);
+    stamp = b.stamp; dock_cache_restamp(&b); assert(b.stamp > stamp);
+    dock_cache_free(&a); dock_cache_free(&b);
+    assert(!a.stamp && !b.stamp);
+    fixture_open(&f,DOCK_EDGE_BOTTOM);
+    fixture_layout(&f,0,p);
+    fixture_icons(&f,icons);
+    memset(&r,0,sizeof(r));
+    r.pixels = dock_backend_portable(); r.coverage = f.coverage; r.edge = DOCK_EDGE_BOTTOM;
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(r.damage.full);
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(!r.damage.full && !r.damage.count);
+    /* Slot 2 alone shows cache 2. Without a new stamp the change is unseen. */
+    address = f.cache[2].image[0].pixels;
+    recolor_in_place(&f.cache[2],40);
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(!r.damage.full && !r.damage.count);
+    dock_cache_restamp(&f.cache[2]);
+    assert(f.cache[2].image[0].pixels == address);
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(!r.damage.full && r.damage.count == 1);
+    for (i = 0; i < FIX_COUNT; ++i)
+        assert(damage_covers(&r.damage,p[i].x+p[i].size/2,p[i].y+p[i].size/2) == (i == 2));
+    assert_full_render(&f,icons,p,shape);
+    /* A reorder: slots 1 and 2 swap caches. */
+    t = icons[1]; icons[1] = icons[2]; icons[2] = t;
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(!r.damage.full);
+    for (i = 0; i < FIX_COUNT; ++i)
+        assert(damage_covers(&r.damage,p[i].x+p[i].size/2,p[i].y+p[i].size/2) == (i == 1 || i == 2));
+    assert_full_render(&f,icons,p,shape);
+    dock_renderer_release(&r);
+    fixture_close(&f);
+    for (i = 0; i < 3; ++i) dock_cache_free(&f.cache[i]);
+    free(shape);
+}
+
 /* Damage fuzz: an incremental renderer (glass) and a damage-only redraw
    without glass both equal a fresh full render plus overlays, byte for byte,
    on every frame. */
@@ -1777,10 +1861,23 @@ static void test_damage_fuzz(void)
                 for (i = y0*f.width*4; i < (y0+n)*f.width*4 && i < size*4; ++i)
                     if ((i&3) != 3) f.backdrop.pixels[i] = (unsigned char)(f.backdrop.pixels[i]*7+frame);
                 dock_renderer_backdrop_changed(&r);
-            } else if (event < 94) {
+            } else if (event < 92) {
+                /* A reorder, found by the per-slot compare alone. */
                 int a = (int)fuzz_next(&seed,MAX_COUNT), c = (int)fuzz_next(&seed,MAX_COUNT);
                 const DockCache *t = icons[a]; icons[a] = icons[c]; icons[c] = t;
-                if (fuzz_next(&seed,2)) dock_renderer_invalidate(&r);
+            } else if (event < 93) {
+                /* A rebuild at the same addresses (cache 1 is also the drag
+                   overlay, which compares addresses only). */
+                DockCache *c = &f.cache[fuzz_next(&seed,2)*2];
+                recolor_in_place(c,(unsigned char)(1+fuzz_next(&seed,255)));
+                dock_cache_restamp(c);
+            } else if (event < 94) {
+                /* A real rebuild into the slot's cache, from its largest
+                   image, freeing the old pixels. */
+                DockCache *c = &f.cache[fuzz_next(&seed,2)*2], rebuilt;
+                assert(dock_cache_build(&rebuilt,&c->image[c->levels-1],&f.s));
+                dock_cache_free(c);
+                *c = rebuilt;
             } else if (event < 96) hidden = hidden >= 0 ? -1 : (int)fuzz_next(&seed,MAX_COUNT);
             else if (event < 97) f.s.end_gap = f.s.end_gap ? 0 : 6;
             /* else: an unchanged frame */
@@ -1851,7 +1948,7 @@ int main(void)
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();
     test_animation_and_pointer_anchor(); test_reference_timing_and_panel(); test_rounded_panel();
     test_convert(); test_native565(); test_key565(); test_overlay_coverage();
-    test_render_goldens(0); test_render_goldens(1); test_damage_add(); test_damage_divider(); test_damage_fuzz(); test_conversion_double_buffer();
+    test_render_goldens(0); test_render_goldens(1); test_damage_add(); test_damage_divider(); test_damage_stamp(); test_damage_fuzz(); test_conversion_double_buffer();
     printf("All core tests passed: normalization, alpha, layout bounds, clipping, 65536 blends, reorder, renderer.\n");
     printf("Default cache: %lu bytes/icon; 20 icons: %lu bytes.\n",
         (unsigned long)dock_cache_bytes(&defaults),

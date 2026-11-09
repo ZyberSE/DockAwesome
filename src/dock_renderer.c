@@ -200,6 +200,7 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
             const DockImage *image = level_image(icons[i], p[i].level);
             if (memcmp(&o->placement[i], &p[i], sizeof(*p)) ||
                 o->image[i] != (image ? image->pixels : NULL) ||
+                o->stamp[i] != (image ? icons[i]->stamp : 0) ||
                 o->pressed[i] != (r->pressed_item == i+1)) {
                 dock_damage_add(d, o->icon[i], width, height);
                 if (image) dock_damage_add(d, image_rect(image, p[i].x, p[i].y), width, height);
@@ -232,6 +233,7 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
         const DockImage *image = level_image(icons[i], p[i].level);
         o->placement[i] = p[i];
         o->image[i] = image ? image->pixels : NULL;
+        o->stamp[i] = image ? icons[i]->stamp : 0;
         o->icon[i] = image ? image_rect(image, p[i].x, p[i].y) : (DockRect){0,0,0,0};
         o->pressed[i] = r->pressed_item == i+1;
     }

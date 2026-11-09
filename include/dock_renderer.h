@@ -66,6 +66,7 @@ typedef struct {
     DockRect panel; /* Empty plates are stored as {0,0,0,0}. */
     DockPlacement placement[DOCK_MAX_ITEMS];
     const unsigned char *image[DOCK_MAX_ITEMS]; /* NULL when nothing is drawn. */
+    unsigned long stamp[DOCK_MAX_ITEMS]; /* The cache's stamp; 0 with no image. */
     DockRect icon[DOCK_MAX_ITEMS];
     unsigned char pressed[DOCK_MAX_ITEMS];
     DockOverlay overlay[DOCK_MAX_OVERLAYS];
@@ -92,9 +93,10 @@ typedef struct {
     DockDamage damage;
     DockRenderState previous;
 } DockRenderer;
-/* The next draw is full. Call it whenever an icon cache is freed, replaced
-   or rebuilt, or the item order or count changes: a rebuilt cache can reuse
-   a freed address. The other two calls imply it. */
+/* The next draw is full. A slot is redrawn when its placement, pressed
+   state, image address or cache stamp changes, so freeing, rebuilding,
+   swapping or reordering caches needs no call; change pixels in place only
+   with dock_cache_restamp. The other two calls imply it. */
 void dock_renderer_invalidate(DockRenderer *renderer);
 void dock_renderer_backdrop_changed(DockRenderer *renderer);
 void dock_renderer_release(DockRenderer *renderer);

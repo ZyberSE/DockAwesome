@@ -34,6 +34,10 @@ typedef struct {
     uint16_t *runs[DOCK_MAX_LEVELS];
     size_t bytes;
     int levels;
+    /* Nonzero and new for each built cache (see dock_cache_restamp); the
+       renderer compares it per slot, since a rebuilt cache can reuse freed
+       pixel addresses. Zero for caches assembled by hand. */
+    unsigned long stamp;
 } DockCache;
 typedef struct { int x, y, size, level; } DockPlacement;
 /* Track the zoom transition and each icon's subpixel center. */
@@ -64,6 +68,9 @@ int dock_cache_build_scaled(DockCache *out, const DockImage *source, const DockS
 /* One normalized image of size x size, as level 0 of a cache would be. */
 int dock_icon_build(DockImage *out, const DockImage *source, int size);
 void dock_cache_free(DockCache *cache);
+/* Gives the cache a new stamp from the counter builds use. Call it after
+   changing a cache's pixels in place so the renderer redraws its slot. */
+void dock_cache_restamp(DockCache *cache);
 /* Use window coordinates. An inactive dock returns resting sizes. */
 int dock_layout(const DockSettings *s, int count, int width, int height,
                 int mouse_x, int mouse_y, int active, DockPlacement *out);

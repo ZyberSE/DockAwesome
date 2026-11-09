@@ -73,15 +73,18 @@ Size 72 with 13 icons this took composition from 40.6 to 24.1 ms per frame.
 
 The renderer also keeps the inputs of its last draw and redraws only the
 damage: a list of up to 80 rectangles that never intersect (overlapping
-ones merge into their bounding box; overflow redraws everything). Changed
+ones merge into their bounding box; overflow redraws everything). A slot
+changes when its placement, pressed state, image address or cache stamp
+does. Every cache build takes a new stamp from one counter, because a
+rebuilt cache can reuse a freed address, so freeing, rebuilding, swapping
+or reordering caches needs no full redraw; the Folder Stack morph blends
+into one buffer and restamps it only when its inputs change. Changed
 slots add their old and new image rectangles, moved plate ends a strip that
 reaches the corner radius plus one pixel inward, the divider its old and new
 span, and running dots and the dragged icon, which the renderer now draws as
 overlays, their old and new rectangles. A different canvas, backdrop,
 coverage buffer, edge, centered plate, setting, item count, corner radius or
-plate thickness redraws everything, as does `dock_renderer_invalidate`. The
-main program calls it after every cache free, replace, build or swap and
-every reorder, because a rebuilt cache can reuse a freed address. Each
+plate thickness redraws everything, as does `dock_renderer_invalidate`. Each
 rectangle is drawn by `dock_render_oriented_clip`, which writes canvas and
 coverage only inside it, with the bytes a full draw gives there.
 `DockRenderer.damage` reports what the last draw wrote.

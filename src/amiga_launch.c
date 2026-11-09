@@ -210,12 +210,15 @@ int launch_object(App *app, const char *path, LONG *error)
     if (!launch->startup.sm_Segment) *error = IoErr();
     CurrentDir(old_dir);
     if (!launch->startup.sm_Segment) goto fail;
-    /* Workbench takes the larger of the tool's and the project's stack. */
-    stack = icon_stack(tool_icon);
-    if (icon_stack(icon) > stack) stack = icon_stack(icon);
+    /* Workbench runs a project with the project icon's stack and ignores
+       the tool's (RKM Libraries, Workbench chapter). A DefIcons project has
+       only a generic stack, so take the tool's when it is larger: more
+       stack never breaks a program. TOOLPRI comes from the icon opened. */
+    stack = icon_stack(icon);
+    if (icon_stack(tool_icon) > stack) stack = icon_stack(tool_icon);
     if (stack < MIN_STACK) stack = MIN_STACK;
     stack = (stack+3)&~3L;
-    if (tool_icon && (pri = (const char *)FindToolType((CONST_STRPTR *)tool_icon->do_ToolTypes,(CONST_STRPTR)"TOOLPRI"))) {
+    if ((pri = (const char *)FindToolType((CONST_STRPTR *)icon->do_ToolTypes,(CONST_STRPTR)"TOOLPRI"))) {
         LONG value;
         if (StrToLong((STRPTR)pri,&value) > 0) priority = dock_clamp(value,-128,127);
     }

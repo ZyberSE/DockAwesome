@@ -644,8 +644,9 @@ Plan (ApolloOS keeps today's path unchanged):
       - A bare default tool name is searched next to the project, then in
         the WBCTRLA_DuplicateSearchPath list (Workbench or DOpus), then C:,
         SYS:Utilities, SYS:Tools, SYS:System.
-      - LoadSeg, CreateNewProc with the larger icon stack (at least 4096),
-        TOOLPRI, home and current directory = the tool's drawer; a WBStartup
+      - LoadSeg, CreateNewProc with the larger icon stack (at least 4096;
+        Workbench itself uses the project's, RKM Libraries ch. 14), TOOLPRI
+        from the opened icon, home and current directory = the tool's drawer; a WBStartup
         with a lock per argument. No CLI tooltype or script support: plain
         Workbench 3.x has neither.
       - Replies come to launch_port in the event loop; the pin shows a dot

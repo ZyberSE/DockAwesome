@@ -752,15 +752,33 @@ Plan (branch pip-os3 from simplify-followups):
 The save-under drag preview lags (Intuition moves windows asynchronously)
 and labels have square corners without shapes. SAGA's second overlay,
 PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
-- [ ] 1. amiga_pip: choose the unit (PiP1 0xdff3d0, PiP2 0xdff3b0, own
+- [x] 1. amiga_pip: choose the unit (PiP1 0xdff3d0, PiP2 0xdff3b0, own
       lease each) and move an open overlay.
-- [ ] 2. amiga_float: an ARGB image shown in PiP1, alpha 0 as the key
-      colour, width padded to 32; show, move, hide; leased only while
-      shown.
-- [ ] 3. Dragged pin on PiP1 when PiP has no shapes: the icon at the size
-      the dock draws it, Remove as a pill once armed; the window preview
-      stays the fallback when PiP1 is taken.
-- [ ] 4. Hover labels on PiP1: render the pill (glass over the captured
-      screen, AA edges blended) to ARGB off screen, show in PiP1.
-- [ ] 5. Verify on Coffin 24-bit: drag in and out, Remove, labels,
-      PiP2 unaffected; ApolloOS unchanged.
+- [x] 2. amiga_float: an ARGB image shown in PiP1, alpha 0 as the key
+      colour, width padded to 32; opened once and kept on (keyed clear
+      when idle), reopened only to grow; cut at the screen edge.
+- [x] 3. Dragged pin on PiP1 when PiP has no shapes: the same picture as
+      the dock's (PiP2 lies over PiP1), redrawn on each size change,
+      Remove as a pill once armed; window preview when PiP1 is taken.
+- [x] 4. Hover labels on PiP1.
+- [x] 5. Verified on Coffin 24-bit by the user (videos IMG_2477-2479):
+      drag in/out, Remove, labels. ApolloOS: not yet rechecked.
+
+### Coffin polish (2026-11-10) — verified on Coffin, user approved
+- [x] A Folder Stack pin cannot be dragged (all modes and OSes).
+- [x] Workbench drag over the PiP dock: the drag image is painted into
+      PiP2 over the whole surface (holes lagged Workbench's image).
+- [x] Folder Stack and menus without window shapes: glass over the
+      captured screen, rounded edges and tip, AA glyph, entrance motion.
+- [x] rgb_rastport and alpha_text probed by drawing (both false on Coffin).
+- [x] Folder Stack grows from its tip and fades, both ways; quarter-step
+      fade via the 50% mix; 5-6 frames in 130 ms at 50 Hz.
+
+### Before merging pip-os3
+- [ ] ApolloOS regression after a reboot into ApolloOS: PiP sweep, drops
+      with the shaped catcher, --damage-check, labels and drag on PiP2 with
+      shapes, the new rgb/alpha probes (--caps must still say yes), menus
+      and Folder Stack motion (now scale + fade).
+- [ ] Run >file loses profile output on Coffin (use an Execute script).
+- [ ] Clean RAM: on Coffin (DockAwesome, coffin.json, movetest*, movewin,
+      winlist, pipprobe, mkicon, probe, leaktest, wbopen, mini).

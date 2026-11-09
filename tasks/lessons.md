@@ -212,3 +212,11 @@
   ApolloOS; Workbench left the same lock (2026-11-09).
 - RX treats a quoted first argument as ARexx source, not a file name. Run
   a script by path with RX "call '<path>'" (2026-11-09).
+- AmigaOS 3.9 Intuition holds the screen's LayerInfo lock through window
+  drags. A poll that gives up on AttemptSemaphore stalls for the whole
+  drag; skip only the part that needs the lock (Coffin PiP probe,
+  2026-11-09).
+- PiP and other overlays are invisible to screenshots: ask the user what
+  the monitor shows, and test the hardware path alone (a bare register
+  probe) before debugging the dock around it. The Coffin PiP "failure"
+  was the dock's own visible-width mask, not the hardware (2026-11-09).

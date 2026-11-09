@@ -3216,8 +3216,11 @@ static void present_frame(void *context, const DockImage *frame)
         masked = app->drag_mask_live || mask.popup ||
             (mask.clip.right > mask.clip.left && mask.clip.bottom > mask.clip.top);
         if (masked || app->pip_masked[back]) dock_damage_set_full(pending);
+        /* Unmasked, pip_mask changes nothing unless the window is narrower
+           than the canvas (the right-edge transport padding). */
         pixels = dock_convert565_damage(buffer,stride,frame,app->coverage,pending,app->scratch,
-            app->renderer.pixels->encode565,app->renderer.pixels->key565,pip_mask,&mask);
+            app->renderer.pixels->encode565,app->renderer.pixels->key565,
+            masked || mask.visible_width < frame->width ? pip_mask : NULL,&mask);
         if (app->profile) {
             ++app->stats.conversion_frames;
             app->stats.conversion_pixels += pixels;

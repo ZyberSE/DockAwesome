@@ -594,6 +594,7 @@ Baseline, build 219 (simplify commit), Size 36, 12 pins, 800x96 PiP canvas:
       Slider checked on the Vampire; a screen mode change is not yet tested.
 - [ ] 6. Compositor in dock_compose.c; shared clamp helpers
 - [x] 7. Hover label, Size slider, popup rows, drag mask (labels, popup row
-      hover and the slider checked on the Vampire). Coverage copy: pending.
+      hover and the slider checked on the Vampire). Unmasked PiP conversion keys
+      coverage in place: 2.17-2.24 -> 1.82 ms per sweep frame, 3 A/B pairs.
 - [ ] 8. PlatformCaps probe, pure profile choice, surface backend interface
 - [ ] 9. Install, clean RAM:, review and lessons

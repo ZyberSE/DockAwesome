@@ -101,11 +101,14 @@ unsigned long dock_convert565_damage(unsigned char *buffer, int stride,
         for (y = top; y < bottom; ++y) {
             unsigned char *out = buffer+(size_t)y*stride+(size_t)left*2;
             unsigned long count = (unsigned long)(right-left);
-            if (coverage) memcpy(scratch, coverage+(size_t)y*width+left, count);
+            const unsigned char *span = scratch;
+            /* Without a mask, key reads coverage in place: it never writes it. */
+            if (coverage && !mask) span = coverage+(size_t)y*width+left;
+            else if (coverage) memcpy(scratch, coverage+(size_t)y*width+left, count);
             else memset(scratch, 255, count);
             if (mask) mask(context, y, left, right, scratch);
             encode(out, frame->pixels+((size_t)y*width+left)*4, count);
-            key(out, scratch, count);
+            key(out, span, count);
             pixels += count;
         }
     }

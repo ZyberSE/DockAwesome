@@ -592,9 +592,13 @@ Baseline, build 219 (simplify commit), Size 36, 12 pins, 800x96 PiP canvas:
 - [x] 4. Folder Stack close button rebuilt only when its inputs change.
 - [x] 5. Bugs: stale dock_screen after Workbench reopen; slider vs Save rules.
       Slider checked on the Vampire; a screen mode change is not yet tested.
-- [ ] 6. Compositor in dock_compose.c; shared clamp helpers
+- [x] 6. Compositor in dock_compose.c; shared clamp helpers. Every m68k
+      function is instruction-identical; Vampire sweep unchanged.
 - [x] 7. Hover label, Size slider, popup rows, drag mask (labels, popup row
       hover and the slider checked on the Vampire). Unmasked PiP conversion keys
       coverage in place: 2.17-2.24 -> 1.82 ms per sweep frame, 3 A/B pairs.
-- [ ] 8. PlatformCaps probe, pure profile choice, surface backend interface
+- [x] 8a. DockCaps probe (amiga_caps.c), pure dock_choose_profile with
+      host tests, --caps. ApolloOS R9.5: cpu_080 yes (AttnFlags $a47f),
+      core 12398, profile pip/ammx/glass. Sweep A/B within noise.
+- [ ] 8b. Surface backend interface; split amiga_main.c
 - [ ] 9. Install, clean RAM:, review and lessons

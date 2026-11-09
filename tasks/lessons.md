@@ -164,3 +164,5 @@
   them (a fused kernel 30% faster in the bench was 9% slower live).
 - Workbench-started programs do not appear in Status. Before blaming a stale
   PiP2 lease, check for a dock started from WBStartup.
+
+- Installing a dock build on the Amiga: quit the dock, then Rename the WBStartup binary to Disabled/ BEFORE copying (Workbench keeps a WBRun binary locked: Copy fails with "object is in use"). Run install steps one call at a time and check each result before deleting the uploaded copy or starting WBRun; a parallel batch restarted the old build and deleted the new upload (2026-11-09).

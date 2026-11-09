@@ -220,3 +220,11 @@
   the monitor shows, and test the hardware path alone (a bare register
   probe) before debugging the dock around it. The Coffin PiP "failure"
   was the dock's own visible-width mask, not the hardware (2026-11-09).
+- Test Amiga interactions myself (amiga_drag, amiga_click, --profile
+  counters) before asking the user; ask only for what the agent cannot see
+  (the PiP layer on the monitor, a physical mouse, reboots). The user had
+  to say so after a run of "please try" requests (2026-11-09).
+- AmigaOS 3.9 Workbench cancels an icon drag if windows are moved or
+  restacked as it starts: a receiver that moves onto the dock at the press
+  stalled input about a second and got no AppMessage. A drop target there
+  must already be in place before the press (2026-11-09).

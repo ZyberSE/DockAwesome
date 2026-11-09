@@ -268,6 +268,7 @@ typedef struct App {
     struct Region *shape, *shape_pending;
     unsigned char *source565, *coverage, *drag_mask;
     int drag_reference, drag_mask_live;
+    DockRect drag_box; /* bounds every nonzero drag_mask pixel */
     uint64_t front_requested;
     uint64_t settle_started;
     int settling;
@@ -1249,6 +1250,7 @@ static void close_surface(App *app)
     free(app->coverage); app->coverage = NULL;
     free(app->drag_mask); app->drag_mask = NULL;
     app->drag_reference = app->drag_mask_live = 0;
+    app->drag_box = (DockRect){0,0,0,0};
     app->source_valid = app->pip_visible = 0;
     app->front_pending = 0;
     app->settling = 0;
@@ -2762,7 +2764,7 @@ static int update_drag_mask(App *app, int sample)
     enum { DRAG_RADIUS = 128 };
     int x = app->screen->MouseX-app->left, y = app->screen->MouseY-app->top;
     int left = x-DRAG_RADIUS, top = y-DRAG_RADIUS;
-    int right = x+DRAG_RADIUS+1, bottom = y+DRAG_RADIUS+1;
+    int right = x+DRAG_RADIUS+1, bottom = y+DRAG_RADIUS+1, row;
     if (left < 0) left = 0;
     if (top < 0) top = 0;
     if (right > app->window->Width) right = app->window->Width;
@@ -2783,7 +2785,7 @@ static int update_drag_mask(App *app, int sample)
         }
         if (app->drag_reference > 0) {
             changed = amiga_display_drag_mask565(app->display,app->source565,app->drag_mask,
-                app->left,app->top,left,top,right,bottom,app->renderer.pixels->bytes_equal);
+                &app->drag_box,app->left,app->top,left,top,right,bottom,app->renderer.pixels->bytes_equal);
             if (changed >= 0) {
                 app->drag_mask_live = 1;
                 return changed || reference_changed;
@@ -2791,7 +2793,10 @@ static int update_drag_mask(App *app, int sample)
         }
     }
     if (!app->drag_mask_live) return 0;
-    memset(app->drag_mask,0,(size_t)app->width*app->height);
+    for (row = app->drag_box.top; row < app->drag_box.bottom; ++row)
+        memset(app->drag_mask+(size_t)row*app->width+app->drag_box.left,0,
+            (size_t)(app->drag_box.right-app->drag_box.left));
+    app->drag_box = (DockRect){0,0,0,0};
     app->drag_mask_live = 0;
     return 1;
 }
@@ -3145,7 +3150,7 @@ static void pip_mask(void *context, int y, int left, int right, unsigned char *s
     PipMask *m = context;
     App *app = m->app;
     int width = app->width;
-    if (app->drag_mask_live) {
+    if (app->drag_mask_live && y >= app->drag_box.top && y < app->drag_box.bottom) {
         const unsigned char *mask = app->drag_mask+(size_t)y*width;
         const unsigned char *first = memchr(mask+left,1,(size_t)(right-left));
         int x;

@@ -142,7 +142,13 @@ typedef struct {
     int limit[SLIDER_COUNT]; /* What fits now. */
     int cap[SLIDER_COUNT];   /* Slider range, raised for larger saved values. */
     int zoom_cap;            /* ZOOM_CEILING, raised for a larger saved zoom. */
+    int shown_max[SLIDER_COUNT]; /* GTSL_Max the sliders were given. */
+    int moving, moving_level;    /* Slider reporting its knob level now, or -1. */
     char value[SLIDER_COUNT][16];
+    /* The fit hook ignores Size: its result for this edge, scale and
+       Folder Stack, while fit_valid. */
+    int fit_valid, fit_size, fit_edge, fit_scale;
+    char fit_folder[DOCK_PREFS_PATH_CAP];
 } SettingsView;
 
 typedef struct FolderReveal FolderReveal;
@@ -162,6 +168,13 @@ struct DockUI {
     struct Region *popup_shape;
     struct Region *label_shape;
     int label_left, label_top;
+    /* Kept across labels: the backdrop display and pixels, grown as needed,
+       and the font's ink boxes of "H" and of the tall reference string. */
+    AmigaDisplay *label_display;
+    unsigned char *label_pixels;
+    size_t label_capacity;
+    DockRect label_caps, label_tall;
+    int label_metrics; /* 0 unmeasured, 1 measured, 2 measured with label_tall */
     const MenuItem *popup_items;
     int popup_rows;
     AmigaDisplay *popup_display;
@@ -538,6 +551,8 @@ void dock_ui_destroy(DockUI *ui)
     amiga_font_aa_free(ui->chrome_aa);
     if (ui->text_alpha) CloseLibrary(ui->text_alpha);
     if (ui->folder_font) CloseFont(ui->folder_font);
+    amiga_display_close(ui->label_display);
+    free(ui->label_pixels);
     FreeScreenDrawInfo(ui->screen, ui->draw);
     free(ui);
 }
@@ -816,21 +831,49 @@ static void paint_popup_surface(DockUI *ui, const DockImage *surface)
     }
 }
 
-static void paint_popup(DockUI *ui)
+static void paint_popup_item(DockUI *ui, int i)
 {
     struct RastPort *rp = ui->popup->RPort;
-    int i, width = ui->popup->Width;
-    paint_popup_surface(ui,&ui->popup_glass);
-    for (i = 0; i < ui->popup_rows; ++i) {
-        int top = 3+i*ui->popup_row;
-        if (i == ui->popup_selected) {
-            popup_color(ui,rp,MENU_HOVER);
-            fill_rounded(rp,3,top,width-6,ui->popup_row,4);
-        }
-        paint_ui_text(ui,rp,ui->chrome_aa,ui->popup_items[i].label,10,
-            top+(ui->popup_row-ui->font_height)/2,
-            i == ui->popup_selected ? MENU_HOVER_TEXT : MENU_TEXT);
+    int top = 3+i*ui->popup_row;
+    if (i == ui->popup_selected) {
+        popup_color(ui,rp,MENU_HOVER);
+        fill_rounded(rp,3,top,ui->popup->Width-6,ui->popup_row,4);
     }
+    paint_ui_text(ui,rp,ui->chrome_aa,ui->popup_items[i].label,10,
+        top+(ui->popup_row-ui->font_height)/2,
+        i == ui->popup_selected ? MENU_HOVER_TEXT : MENU_TEXT);
+}
+
+static void paint_popup(DockUI *ui)
+{
+    int i;
+    paint_popup_surface(ui,&ui->popup_glass);
+    for (i = 0; i < ui->popup_rows; ++i) paint_popup_item(ui,i);
+}
+
+/* A hover change repaints only the rows it touches. Rows touch and each
+   one's highlight and text stay inside its band, so restoring the band's
+   full width from the tinted glass (rim and corners included) and drawing
+   that row again gives the pixels of a full repaint. Antialiased text
+   blends, so the band is restored first. Without RTG glass, repaint all. */
+static void paint_popup_hover(DockUI *ui, int previous)
+{
+    int rows[2], count = 0, i;
+    if (!ui->popup_glass.pixels || ui->glass_tint_shift ||
+        ui->popup_glass.width != ui->popup->Width || ui->popup_glass.height != ui->popup->Height) {
+        paint_popup(ui); return;
+    }
+    if (previous >= 0 && previous < ui->popup_rows) rows[count++] = previous;
+    if (ui->popup_selected >= 0 && ui->popup_selected < ui->popup_rows &&
+        ui->popup_selected != previous) rows[count++] = ui->popup_selected;
+    for (i = 0; i < count; ++i)
+        if (!amiga_display_present_tile(ui->popup_display,ui->popup,&ui->popup_glass,
+                0,3+rows[i]*ui->popup_row,ui->popup->Width,ui->popup_row)) {
+            paint_popup(ui); return;
+        }
+    SetFont(ui->popup->RPort,ui->draw->dri_Font);
+    SetDrMd(ui->popup->RPort,JAM1);
+    for (i = 0; i < count; ++i) paint_popup_item(ui,rows[i]);
 }
 
 static size_t folder_page_size(const FolderView *f)
@@ -1595,6 +1638,7 @@ void dock_ui_set_fit_hook(DockUI *ui, DockUIFit hook, void *context)
     if (!ui) return;
     ui->fit = hook;
     ui->fit_context = context;
+    ui->settings.fit_valid = 0;
 }
 
 void dock_ui_set_blocking_hook(DockUI *ui, DockUIBlocking hook, void *context)
@@ -1699,6 +1743,33 @@ static int label_ink(DockUI *ui, struct RastPort *rp, const char *text, DockRect
     return 1;
 }
 
+/* Capture the backdrop under a label into the display and pixels the UI
+   keeps between labels. Returns NULL, with glass empty, without one. */
+static AmigaDisplay *capture_label_glass(DockUI *ui, DockImage *glass,
+    int left, int top, int width, int height)
+{
+    size_t bytes = (size_t)width*height*4;
+    *glass = (DockImage){0};
+    if (!ui->popup_rgb) return NULL;
+    if (ui->label_display && !amiga_display_resize(ui->label_display,width,height)) {
+        amiga_display_close(ui->label_display);
+        ui->label_display = NULL;
+    }
+    if (!ui->label_display) ui->label_display = amiga_display_open(ui->screen,width,height);
+    if (!ui->label_display) return NULL;
+    amiga_display_set_converters(ui->label_display,ui->encode,ui->decode,ui->encode565);
+    if (bytes > ui->label_capacity) {
+        free(ui->label_pixels);
+        ui->label_pixels = malloc(bytes);
+        ui->label_capacity = ui->label_pixels ? bytes : 0;
+        if (!ui->label_pixels) return NULL;
+    }
+    *glass = (DockImage){width,height,ui->label_pixels};
+    if (amiga_display_capture(ui->label_display,glass,left,top)) return ui->label_display;
+    *glass = (DockImage){0};
+    return NULL;
+}
+
 /* With a captured backdrop, each pixel mixes backdrop, rim and the
    translucent surface by its outer and inner (1 px inset) coverage, so the
    ends and the tip are antialiased. Otherwise the rim and the surface are
@@ -1779,15 +1850,21 @@ int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const 
     /* Centre the ink, not the advance box: equal ink margins at both ends,
        and the capitals of the font (measured on "H") centred vertically. */
     if (!label_ink(ui,&measure,label,&ink)) ink = (DockRect){0,0,text_width,ui->font_height};
-    if (!label_ink(ui,&measure,"H",&caps)) caps = (DockRect){0,0,1,ui->font_height};
+    if (!ui->label_metrics) {
+        /* The font and its antialiasing are fixed for the UI's life. */
+        static const char reference[] = "\xc5\xc4\xd6gjpqy_|";
+        if (!label_ink(ui,&measure,"H",&ui->label_caps))
+            ui->label_caps = (DockRect){0,0,1,ui->font_height};
+        ui->label_metrics = label_ink(ui,&measure,reference,&ui->label_tall) ? 2 : 1;
+    }
+    caps = ui->label_caps;
     {
         /* Accents, descenders and the label's own ink must stay inside the
            rim: grow the padding on both sides alike, so the capitals stay
            centred and every label of one font has the same height. */
-        static const char reference[] = "\xc5\xc4\xd6gjpqy_|";
-        DockRect tall;
+        const DockRect tall = ui->label_tall;
         int pad = LABEL_VPAD;
-        if (label_ink(ui,&measure,reference,&tall)) {
+        if (ui->label_metrics == 2) {
             if (caps.top-tall.top+2 > pad) pad = caps.top-tall.top+2;
             if (tall.bottom-caps.bottom+2 > pad) pad = tall.bottom-caps.bottom+2;
         }
@@ -1807,12 +1884,15 @@ int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const 
     if (!outer) return 0;
     inner = outer+(size_t)width*height;
     for (y = 0; y < height; ++y) for (x = 0; x < width; ++x) {
-        outer[y*width+x] = (unsigned char)label_coverage(x,y,width,body,tip,tip_x,0);
-        inner[y*width+x] = (unsigned char)label_coverage(x,y,width,body,tip,tip_x,1);
+        /* The inset outline lies inside the outer one: no outer coverage,
+           no inner coverage. */
+        int o = label_coverage(x,y,width,body,tip,tip_x,0);
+        outer[y*width+x] = (unsigned char)o;
+        inner[y*width+x] = (unsigned char)(o ? label_coverage(x,y,width,body,tip,tip_x,1) : 0);
     }
-    display = capture_glass(ui,&glass,ui->label_left,ui->label_top,width,height);
+    display = capture_label_glass(ui,&glass,ui->label_left,ui->label_top,width,height);
     if (ui->window_shapes && !label_shape(ui,width,height,outer,glass.pixels ? 0 : 127)) {
-        free(outer); free(glass.pixels); amiga_display_close(display);
+        free(outer);
         dock_ui_hide_label(ui); return 0;
     }
     prepare_popup_colors(ui);
@@ -1826,8 +1906,6 @@ int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const 
         ui->label_left = ui->label->LeftEdge; ui->label_top = ui->label->TopEdge;
     } else dock_ui_hide_label(ui);
     free(outer);
-    free(glass.pixels);
-    amiga_display_close(display);
     return ui->label != NULL;
 }
 
@@ -2159,6 +2237,8 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
     s->cap[SCALE_SLIDER] = ui->draft.scale_percent > SCALE_SLIDER_MAX ? ui->draft.scale_percent : SCALE_SLIDER_MAX;
     s->zoom_cap = dock_scaled_size(ui->draft.size,ui->draft.scale_percent);
     if (s->zoom_cap < ZOOM_CEILING) s->zoom_cap = ZOOM_CEILING;
+    s->fit_valid = 0;
+    s->moving = -1;
     update_limits(ui,0);
 
     line = ui->font_height > ui->font.ta_YSize ? ui->font_height : ui->font.ta_YSize;
@@ -2204,6 +2284,7 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
         };
         g = s->slider[i] = gadget(ui,g,SLIDER_KIND,GID_SIZE+i,slider_labels[i],
             x,y,right-x-readout-GAP,row,PLACETEXT_LEFT,slider_tags);
+        s->shown_max[i] = s->limit[i];
         format_slider(s->value[i],i,value);
         g = s->readout[i] = gadget(ui,g,TEXT_KIND,0,NULL,right-readout,
             y+(row-line)/2,readout,line,0,readout_tags);
@@ -2476,10 +2557,14 @@ static int popup_poll(DockUI *ui, DockUIAction *result)
             }
         }
         else if (cls == IDCMP_MOUSEMOVE && hit != ui->popup_selected) {
-            ui->popup_selected = hit; paint_popup(ui);
+            int previous = ui->popup_selected;
+            ui->popup_selected = hit; paint_popup_hover(ui,previous);
         } else if (cls == IDCMP_MOUSEBUTTONS && code == SELECTDOWN) {
             if (hit < 0) close = 1;
-            else { ui->popup_pressed = hit; ui->popup_selected = hit; paint_popup(ui); }
+            else {
+                int previous = ui->popup_selected;
+                ui->popup_pressed = hit; ui->popup_selected = hit; paint_popup_hover(ui,previous);
+            }
         } else if (cls == IDCMP_MOUSEBUTTONS && code == SELECTUP) {
             if (hit >= 0 && hit == ui->popup_pressed) action = ui->popup_items[hit].action;
             close = 1;
@@ -2504,8 +2589,15 @@ static void update_limits(DockUI *ui, int live)
         strcpy(probe.folder,(const char *)input->Buffer);
     }
     if (ui->fit) {
-        int fit = ui->fit(ui->fit_context,&probe);
-        if (fit < size_max) size_max = fit;
+        if (!s->fit_valid || s->fit_edge != probe.edge || s->fit_scale != probe.scale_percent ||
+            strcmp(s->fit_folder,probe.folder)) {
+            s->fit_size = ui->fit(ui->fit_context,&probe);
+            s->fit_edge = probe.edge;
+            s->fit_scale = probe.scale_percent;
+            strcpy(s->fit_folder,probe.folder);
+            s->fit_valid = 1;
+        }
+        if (s->fit_size < size_max) size_max = s->fit_size;
     }
     if (size_max < slider_min[SIZE_SLIDER]) size_max = slider_min[SIZE_SLIDER];
     if (ui->draft.size > size_max) ui->draft.size = size_max;
@@ -2517,11 +2609,24 @@ static void update_limits(DockUI *ui, int live)
     s->limit[SCALE_SLIDER] = scale_max;
     if (!live) return;
     for (slider = 0; slider < SLIDER_COUNT; ++slider) {
-        int value = *slider_value(ui,slider);
-        GT_SetGadgetAttrs(s->slider[slider],ui->dialog,NULL,
-            GTSL_Max,s->limit[slider],GTSL_Level,value,TAG_DONE);
-        format_slider(s->value[slider],slider,value);
-        GT_SetGadgetAttrs(s->readout[slider],ui->dialog,NULL,GTTX_Text,(ULONG)s->value[slider],TAG_DONE);
+        int value = *slider_value(ui,slider), count = 0;
+        struct TagItem tags[3];
+        char text[sizeof(s->value[0])];
+        /* Setting GTSL_Max redraws the slider even when unchanged, and the
+           knob being dragged already shows its level. */
+        if (s->limit[slider] != s->shown_max[slider]) {
+            tags[count++] = (struct TagItem){GTSL_Max,(ULONG)s->limit[slider]};
+            s->shown_max[slider] = s->limit[slider];
+        }
+        if (slider != s->moving || value != s->moving_level)
+            tags[count++] = (struct TagItem){GTSL_Level,(ULONG)value};
+        tags[count] = (struct TagItem){TAG_DONE,0};
+        if (count) GT_SetGadgetAttrsA(s->slider[slider],ui->dialog,NULL,tags);
+        format_slider(text,slider,value);
+        if (strcmp(text,s->value[slider])) {
+            strcpy(s->value[slider],text);
+            GT_SetGadgetAttrs(s->readout[slider],ui->dialog,NULL,GTTX_Text,(ULONG)s->value[slider],TAG_DONE);
+        }
     }
 }
 
@@ -2535,6 +2640,16 @@ static void update_slider(DockUI *ui, int slider, int value)
     format_slider(s->value[slider],slider,value);
     GT_SetGadgetAttrs(s->readout[slider],ui->dialog,NULL,GTTX_Text,(ULONG)s->value[slider],TAG_DONE);
     update_limits(ui,1);
+}
+
+/* A slider reported its knob at level: the knob needs no GTSL_Level. */
+static void slider_moved(DockUI *ui, int slider, int level)
+{
+    SettingsView *s = &ui->settings;
+    s->moving = slider;
+    s->moving_level = level;
+    update_slider(ui,slider,level);
+    s->moving = -1;
 }
 
 static int settings_key(DockUI *ui, UWORD code)
@@ -2590,8 +2705,8 @@ static int dialog_poll(DockUI *ui)
         else if (!ui->showing_about) {
             if (cls == IDCMP_VANILLAKEY) action = settings_key(ui,code);
             else if (cls == IDCMP_MOUSEMOVE || cls == IDCMP_GADGETDOWN || cls == IDCMP_GADGETUP) {
-                if (g == ui->settings.slider[SIZE_SLIDER]) update_slider(ui,SIZE_SLIDER,code);
-                else if (g == ui->settings.slider[SCALE_SLIDER]) update_slider(ui,SCALE_SLIDER,code);
+                if (g == ui->settings.slider[SIZE_SLIDER]) slider_moved(ui,SIZE_SLIDER,code);
+                else if (g == ui->settings.slider[SCALE_SLIDER]) slider_moved(ui,SCALE_SLIDER,code);
                 else if (id == GID_POSITION && code < sizeof(settings_edges)/sizeof(settings_edges[0])) {
                     ui->draft.edge = settings_edges[code];
                     update_limits(ui,1);

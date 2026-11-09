@@ -581,12 +581,19 @@ Baseline, build 219 (simplify commit), Size 36, 12 pins, 800x96 PiP canvas:
   render 24.6 ms (compose 16.3, conversion 8.3), decode 2.1, compare 1.3.
 - --damage-check: 0 compose and 0 convert mismatches.
 
-- [ ] 1. Backdrop change damages only the changed box (PiP hot path)
-- [ ] 2. Snapshot/opaque present only damage; AMMX kernels in every mode
-- [ ] 3. Cache stamps replace address-based invalidation; one morph buffer
-- [ ] 4. Folder Stack close button rebuilt only when its inputs change
-- [ ] 5. Bugs: stale dock_screen after Workbench reopen; slider vs Save rules
+- [x] 1. Backdrop change damages only the changed box (PiP hot path).
+      Window behind the dock: render 24.6 -> 13.6 ms, 1 of 22 frames full,
+      changed box 42% of the canvas; --damage-check 0.
+- [x] 2. Snapshot/opaque present only damage; AMMX kernels in every mode.
+      Snapshot sweep: render 13.8 -> 5.9 ms, conversion 8.3 -> 0.64 ms;
+      a window passing over the dock repaints fully; --damage-check 0.
+- [x] 3. Cache stamps replace address-based invalidation; one morph buffer.
+      Folder Stack open/close and reorder: --damage-check 0 over 204 frames.
+- [x] 4. Folder Stack close button rebuilt only when its inputs change.
+- [x] 5. Bugs: stale dock_screen after Workbench reopen; slider vs Save rules.
+      Slider checked on the Vampire; a screen mode change is not yet tested.
 - [ ] 6. Compositor in dock_compose.c; shared clamp helpers
-- [ ] 7. Hover label, Size slider, popup rows, drag mask, coverage copy
+- [x] 7. Hover label, Size slider, popup rows, drag mask (labels, popup row
+      hover and the slider checked on the Vampire). Coverage copy: pending.
 - [ ] 8. PlatformCaps probe, pure profile choice, surface backend interface
 - [ ] 9. Install, clean RAM:, review and lessons

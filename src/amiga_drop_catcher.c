@@ -36,6 +36,7 @@ struct AmigaDropCatcher {
     int left, top, width, height;
     int shaped; /* catch by shape (ApolloOS) or by moving the window */
     int armed;  /* no shapes: the window waits on the dock's box */
+    AmigaDropCatcherStats stats;
     uint32_t serial;
     uint64_t deadline, next_icons, icons_not_before;
     int have_serial, active, waiting, failed;
@@ -231,6 +232,7 @@ static unsigned int end_catch(AmigaDropCatcher *c, int disarm)
         unsigned int flags = c->active ? AMIGA_DROP_RESTORED : 0;
         c->active = 0;
         if (disarm && c->armed) {
+            ++c->stats.disarms;
             set_catching(c, 0);
             c->armed = 0;
             c->backing_valid = 0;
@@ -273,6 +275,7 @@ static unsigned int arm_for_pointer(AmigaDropCatcher *c)
     c->backing_valid = 1;
     set_catching(c, 1);
     c->armed = 1;
+    ++c->stats.arms;
     return AMIGA_DROP_STARTED;
 }
 
@@ -308,7 +311,11 @@ unsigned int amiga_drop_catcher_update(AmigaDropCatcher *c,
         flags |= end_catch(c, 0);
         if (flags & AMIGA_DROP_ERROR) return flags;
         if (external_held && external_screen == c->screen) {
-            client = workbench_client_start(c, down_x, down_y);
+            if (c->armed) ++c->stats.presses_armed; else ++c->stats.presses_unarmed;
+            /* Armed means the pointer was checked on a Workbench icon with
+               the buttons up; Workbench holds the layers from the press on,
+               so do not ask again. */
+            client = !c->shaped && c->armed ? 1 : workbench_client_start(c, down_x, down_y);
             if (client < 0) return flags;
         }
         c->serial = external_serial; c->have_serial = 1;
@@ -340,6 +347,12 @@ unsigned int amiga_drop_catcher_update(AmigaDropCatcher *c,
         c->deadline = now + (grace ? grace : 1);
     }
     return flags;
+}
+
+AmigaDropCatcherStats amiga_drop_catcher_stats(const AmigaDropCatcher *c)
+{
+    AmigaDropCatcherStats none = {0};
+    return c ? c->stats : none;
 }
 
 int amiga_drop_catcher_active(const AmigaDropCatcher *c)

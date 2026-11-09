@@ -6,6 +6,10 @@ struct Window;
 struct Region;
 struct BitMap;
 typedef struct AmigaDropCatcher AmigaDropCatcher;
+/* --profile: without shapes, how often the receiver armed and disarmed and
+   whether Workbench presses found it armed. */
+typedef struct { unsigned long arms, disarms, presses_armed, presses_unarmed; } AmigaDropCatcherStats;
+AmigaDropCatcherStats amiga_drop_catcher_stats(const AmigaDropCatcher *catcher);
 
 enum {
     AMIGA_DROP_STARTED = 1,

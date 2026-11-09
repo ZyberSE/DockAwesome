@@ -780,7 +780,7 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
 - [x] Icon-less scripts run with Execute (ShapeShifter Launch, WOMyFiles).
 - [x] Quit for running apps on AmigaOS 3.x (posted IDCMP_CLOSEWINDOW).
 - [x] No drag preview past the screen-edge side of the dock.
-- [ ] Install for real on Coffin (WBStartup, WBDock to Disabled) when asked.
+- [x] Installed on Coffin 2026-11-10: SYS:WBStartup/DockAwesome (+ .info, DONOTWAIT), ENVARC:DockAwesome.json, WBDock moved to SYS:WBStartup/Disabled/. Build db01deb. Rollback: move WBDock back, delete the two DockAwesome files.
 
 ### Before merging pip-os3
 - [ ] ApolloOS regression after a reboot into ApolloOS: PiP sweep, drops
@@ -788,5 +788,4 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
       shapes, the new rgb/alpha probes (--caps must still say yes), menus
       and Folder Stack motion (now scale + fade).
 - [ ] Run >file loses profile output on Coffin (use an Execute script).
-- [ ] Clean RAM: on Coffin (DockAwesome, coffin.json, movetest*, movewin,
-      winlist, pipprobe, mkicon, probe, leaktest, wbopen, mini).
+- [x] Clean RAM: on Coffin (done 2026-11-10).

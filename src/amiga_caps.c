@@ -133,8 +133,10 @@ static int rgb_rastport(struct Screen *screen, int depth)
         rp.BitMap = bitmap;
         SetRPAttrsA(&rp,(struct TagItem *)tags);
         RectFill(&rp,0,0,0,0);
+        /* Compare at RGB565 precision: a 16-bit screen keeps 5-6 bits. */
         ok = ReadPixelArray(pixel,0,0,3,&rp,0,0,1,1,RECTFMT_RGB) == 1 &&
-            pixel[0] == 0x2a && pixel[1] == 0x5c && pixel[2] == 0x93;
+            (pixel[0]&0xf8) == (0x2a&0xf8) && (pixel[1]&0xfc) == (0x5c&0xfc) &&
+            (pixel[2]&0xf8) == (0x93&0xf8);
         WaitBlit();
         FreeBitMap(bitmap);
     }

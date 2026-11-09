@@ -1286,7 +1286,7 @@ static void draw(App *app)
     for (i = 0; i < count; ++i)
         if (icons[i] && app->items[row_item(app,i)].running)
             overlays[overlay_count++] = running_dot(app,&placement[i]);
-    if (dragged >= 0 && !app->gesture.remove_armed) {
+    if (dragged >= 0 && !app->gesture.remove_armed && !app->drag_float) {
         int level = app->moving_item ? app->held_icon.level : app->placement[dragged].level;
         const DockImage *icon = &app->items[dragged].cache.image[level];
         overlays[overlay_count++] = (DockOverlay){icon, app->gesture.x-icon->width/2,
@@ -1636,11 +1636,13 @@ static int show_drag_float(App *app, const DockImage *icon, int remove, int x, i
     return ok;
 }
 
-/* The native window that carries a dragged pin beyond the dock's surface.
-   Shaped (ApolloOS) it opens when the pin would be removed. Without shapes
-   it opens as soon as the icon reaches past the surface, in the size the
-   dock draws it, so the icon never vanishes at the edge; "Remove" shows
-   once the pin would be removed. */
+/* What carries a dragged pin beyond the dock's surface.
+   Shaped (ApolloOS) a window opens when the pin would be removed.
+   Without shapes and with PiP1, PiP1 carries the icon for the whole drag,
+   in the size the dock would draw it, and the dock leaves it out: one
+   picture, so no seam at the surface's edge when the size changes.
+   Without PiP1 a window opens as soon as the icon reaches past the
+   surface. "Remove" shows once the pin would be removed. */
 static int update_drag_preview(App *app)
 {
     DockGesture *gesture = &app->gesture;
@@ -1649,6 +1651,7 @@ static int update_drag_preview(App *app)
         pin_index(app,gesture->pin_id) : -1;
     int x = app->left+gesture->x, y = app->top+gesture->y;
     const DockImage *icon = NULL;
+    int inside = 0; /* the dock itself can draw the icon */
     if (index >= 0 && !app->items[index].temporary && !app->items[index].stack) {
         if (shaped) icon = gesture->remove_armed ? &app->items[index].cache.image[0] : NULL;
         else {
@@ -1657,27 +1660,32 @@ static int update_drag_preview(App *app)
             int left = gesture->x-app->items[index].cache.image[level].width/2;
             int top = gesture->y-app->items[index].cache.image[level].height/2;
             icon = &app->items[index].cache.image[level];
-            if (!gesture->remove_armed && left >= 0 && top >= 0 &&
-                left+icon->width <= visible && top+icon->height <= app->height) icon = NULL;
+            inside = !gesture->remove_armed && left >= 0 && top >= 0 &&
+                left+icon->width <= visible && top+icon->height <= app->height;
         }
     }
     if (app->float_layer && !shaped) {
         /* PiP1: no window, no save-under; a move writes two registers. */
+        int shown = app->drag_float;
         if (!icon) {
-            if (!app->drag_float) return 0;
+            if (!shown) return 0;
             amiga_float_hide(app->float_layer); app->drag_float = 0;
             return 1;
         }
-        if (app->drag_float && app->drag_float_token == gesture->token &&
+        if (shown && app->drag_float_token == gesture->token && app->drag_float_icon == icon &&
             app->drag_float_remove == gesture->remove_armed) {
             amiga_float_move(app->float_layer,x-app->drag_float_width/2,y-app->drag_float_icon_height/2);
             return 0;
         }
         app->drag_float = show_drag_float(app,icon,gesture->remove_armed,x,y);
         app->drag_float_token = gesture->token;
-        if (app->drag_float) return 0;
+        app->drag_float_icon = app->drag_float ? icon : NULL;
+        /* The dock leaves the icon out (or draws it again) from its next frame. */
+        if (app->drag_float) return !shown;
+        if (shown) return 1;
         /* PiP1 is taken: the window preview below. */
     }
+    if (inside) icon = NULL;
     if (!icon) {
         app->preview_attempt = 0;
         if (!app->drag_preview) return 0;

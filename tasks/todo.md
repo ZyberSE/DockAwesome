@@ -747,3 +747,20 @@ Plan (branch pip-os3 from simplify-followups):
       without lag (user), clicks and right-click menu, drop from a drawer.
 - [ ] Output of a dock started with Run >file is lost on Coffin (the
       foreground run with > keeps it); look into it.
+
+### Floating parts on PiP1 (no window shapes) (2026-11-09)
+The save-under drag preview lags (Intuition moves windows asynchronously)
+and labels have square corners without shapes. SAGA's second overlay,
+PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
+- [ ] 1. amiga_pip: choose the unit (PiP1 0xdff3d0, PiP2 0xdff3b0, own
+      lease each) and move an open overlay.
+- [ ] 2. amiga_float: an ARGB image shown in PiP1, alpha 0 as the key
+      colour, width padded to 32; show, move, hide; leased only while
+      shown.
+- [ ] 3. Dragged pin on PiP1 when PiP has no shapes: the icon at the size
+      the dock draws it, Remove as a pill once armed; the window preview
+      stays the fallback when PiP1 is taken.
+- [ ] 4. Hover labels on PiP1: render the pill (glass over the captured
+      screen, AA edges blended) to ARGB off screen, show in PiP1.
+- [ ] 5. Verify on Coffin 24-bit: drag in and out, Remove, labels,
+      PiP2 unaffected; ApolloOS unchanged.

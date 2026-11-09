@@ -22,11 +22,26 @@ Pointer -> layout -> renderer -> frame -> native window or PiP2
 | `dock_prefs.c` | JSON preferences |
 | `dock_profile.c` | Backend and feature choice from probed capabilities |
 | `amiga_caps.c` | CPU, chipset and OS capability probes, `--caps` |
-| `amiga_main.c` | Workbench integration, item state, input, and timers |
+| `amiga_main.c` | Items and icons, gestures, drawing, animation, timers, preferences, profile and the event loop |
+| `amiga_surface.c` | Common surface open and close steps, and the backend choice |
+| `amiga_surface_pip.c` | PiP backend: buffers and lease, live capture, coverage masks, conversion and present |
+| `amiga_surface_window.c` | Window backend (snapshot and opaque): backdrop, native window, damage upload |
+| `amiga_input_handler.c` | The `input.device` handler, its hit snapshots and button queue |
+| `amiga_status.c` | Workbench status worker, window list, window actions and Shell targets |
+| `amiga_workbench.c` | `screennotify.library` client: release and reacquire the Workbench screen |
 | `amiga_ui.c` | Menus, labels, Settings, About, and Folder Stack |
 | `about_font.c` | Prerendered Vera Sans glyphs for About (generated) |
 | `amiga_display.c` | Native capture and uploads for indexed and RTG screens |
 | `amiga_pip.c` | PiP2 buffers, alignment, presentation, and lease |
+
+The Amiga modules share one private header, `src/amiga_app.h`: the `App`
+state, the input handler's context and snapshots, the status worker's
+message, the profile counters, `SurfaceOps`, the cross-module
+declarations, and the small helpers (`row_placement`, `pin_index`,
+`profile_clock`, `viewport_limit` and others) as `static inline`, so each
+module inlines them as the single file did. `App` keeps its field order;
+`amiga_input.s` reads `VBlankState` by offset. Everything else stays
+`static` in its module.
 
 `dock_core.h` declares the caches, layout, settings, clamp helpers and
 kernels; `dock_compose.h` declares the compositor (`dock_render_oriented_clip`,
@@ -70,6 +85,35 @@ text the glass and `alpha_text`. On ApolloOS R9.5 on a Vampire every probe
 succeeds and the choices match the earlier scattered checks. A new target
 adds probes and table rows, not checks in drawing code. `--caps` prints
 both tables.
+
+## Surface backends
+
+A backend is a `SurfaceOps` table (`amiga_app.h`). `apply_profile` points
+`app->surface` at `amiga_surface_pip` or `amiga_surface_window` whenever it
+sets the profile, which happens only while no surface is open
+(`select_backend` at startup and on Workbench reopen,
+`fall_back_to_snapshot` after a failed PiP open), so the table that opened
+a surface also closes it. The table is called at most once per frame or
+event-loop wake; pixel loops never dispatch through it.
+
+| Entry | Called | Contract |
+| --- | --- | --- |
+| `open(app)` | end of `open_surface` | The common steps have placed the surface (`left`, `top`, `width`, `height`, `settings.edge_padding`), opened the display layer, allocated `canvas` (and `backdrop` for PiP or snapshot), laid out the row and, with `--damage-check`, the reference canvas. Fill the backdrop and call `dock_renderer_backdrop_changed`, open `app->window` and `app->appwindow` on `drop_port`, and allocate what `present` needs. Return 0 on failure (optionally with `surface_error`); `close_surface` releases a partial open. |
+| `close(app)` | middle of `close_surface` | After input, timers and gestures stop; before the display layer, canvas and renderer go. Release everything `open` made, including the window and AppWindow, in a safe order (PiP stops DMA before the window; regions outlive their windows). Safe after a partial open. |
+| `capture(app, full_compare)` | before a whole frame (first frame, Workbench reopen, bench) | Refresh the backdrop from the screen; nonzero when the frame must be redrawn. Window: nothing to do. |
+| `poll(app, due, redraw)` | once per event-loop wake | Background work such as the PiP live capture and drag image. `due` is the live timer, `redraw` a pending redraw; nonzero asks for a redraw. Set `app->failed` with `surface_error` when the surface is lost; the loop then stops. |
+| `present(app, frame)` | once per `draw`, the one indirect call per frame | Show the composed canvas, using `app->renderer.damage` for partial updates, and publish what depends on the shown frame (PiP: the input snapshot and the shown drop slot; window: the empty-dock hint). |
+
+A new target, such as a planar or classic AmigaOS 3.x screen, adds probes
+and a profile backend (see Platform capabilities) and one more table: open
+its window and buffers, convert `canvas` in `present` (the damage list
+bounds the work), and return 0 from `capture` and `poll` if its backdrop
+is fixed. Geometry limits that are backend specific are still keyed on
+`app->pip_mode`: `viewport_limit` (PiP's maximum size and 32 px width
+steps), the PiP width alignment, keyed right tail and spare pin room in
+`open_surface`, and PiP's input path (the `input.device` snapshots instead
+of IDCMP buttons, `pointer_inside`, `live_schedule`). A backend with other
+limits moves them into the table.
 
 ## Layout and memory
 

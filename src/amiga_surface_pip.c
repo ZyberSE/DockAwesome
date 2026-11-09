@@ -238,22 +238,22 @@ static void pip_mask(void *context, int y, int left, int right, unsigned char *s
     }
 }
 
-/* PiP2 lies over the screen, so a Workbench drag image under the dock's
-   opaque pixels is painted into the PiP buffer: the pixels read at the last
+/* PiP2 lies over the screen, so a Workbench drag image on the dock's
+   surface is painted into the PiP buffer: the pixels read at the last
    sample. Holes that let the screen through instead lagged behind the image
    (Workbench draws it after the pointer moves), cutting it at the plate.
-   Where the dock is clear the screen's own image shows. */
+   It is painted on the clear parts of the surface too, so the image on the
+   surface is one picture: half Workbench's and half ours lagged apart. */
 static ULONG paint_drag_image(App *app, unsigned char *buffer, int stride)
 {
     ULONG painted = 0;
     int y, x;
     for (y = app->drag_box.top; y < app->drag_box.bottom; ++y) {
         const unsigned char *mask = app->drag_mask+(size_t)y*app->width;
-        const unsigned char *cover = app->coverage+(size_t)y*app->width;
         const unsigned char *color = app->drag_color+(size_t)y*app->width*2;
         unsigned char *out = buffer+(size_t)y*stride;
         for (x = app->drag_box.left; x < app->drag_box.right; ++x)
-            if (mask[x] && cover[x]) {
+            if (mask[x]) {
                 unsigned int v = ((unsigned int)color[x*2]<<8)|color[x*2+1];
                 if (v == 0xf81f) v ^= 0x20; /* never the colour key */
                 out[x*2] = (unsigned char)(v>>8); out[x*2+1] = (unsigned char)v;

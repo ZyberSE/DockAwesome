@@ -250,3 +250,4 @@
 ## Workbench draws its drag image after the pointer moves (2026-11-10)
 - A per-sample log on Coffin showed the pointer at its new place while the screen still held the drag image at the old one; it caught up a sample later. Shifting the reveal to the pointer therefore made it worse, and holes in PiP2 always lag the image.
 - Rule: over the dock, paint the drag image's sampled pixels into the PiP buffer instead of revealing the screen; log per-sample data before choosing between such fixes.
+- Check the test itself before reading its numbers: my press missed the moved icon and started a lasso, and I read the lasso's pixel count as a regression. Take a screenshot during each scripted drag.

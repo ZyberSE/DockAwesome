@@ -112,6 +112,56 @@ unsigned long dock_convert565_damage(unsigned char *buffer, int stride,
     return pixels;
 }
 
+static int zero_bytes(const unsigned char *p, size_t n)
+{
+    while (n--) if (*p++) return 0;
+    return 1;
+}
+
+/* One RGB565 pixel as a single 16-bit load (rows start on even addresses;
+   GCC 6 routes a 2-byte memcpy through the stack). Only compared, so byte
+   order does not matter. */
+static unsigned int pixel565(const unsigned char *row, int x)
+{
+    return ((const uint16_t *)(const void *)row)[x];
+}
+
+DockRect dock_rgb565_refresh(unsigned char *cache, const unsigned char *source,
+    size_t source_stride, int width, int visible, int height, DockBytesEqual equal)
+{
+    DockRect box = {0,0,0,0};
+    size_t row_bytes = (size_t)width*2;
+    int y, a, b, low, high;
+    if (!cache || !source || width < 1 || height < 1) return box;
+    if (visible < 0) visible = 0;
+    if (visible > width) visible = width;
+    if (!equal) equal = dock_bytes_equal_c;
+    for (y = 0; y < height; ++y) {
+        unsigned char *line = cache+(size_t)y*row_bytes;
+        const unsigned char *src = source+(size_t)y*source_stride;
+        /* The tail past the screen is zero after any whole capture; only a
+           foreign write such as the drag reference leaves bytes there. */
+        if (equal(line,src,(unsigned long)visible*2) &&
+            zero_bytes(line+(size_t)visible*2,row_bytes-(size_t)visible*2)) continue;
+        /* [a,b) spans the differing pixels. Scanning from both ends costs
+           only changed rows, and stops at their first difference. */
+        for (a = 0; a < visible && pixel565(line,a) == pixel565(src,a); ++a) {}
+        if (a == visible) while (!pixel565(line,a)) ++a;
+        for (b = width; b > visible && !pixel565(line,b-1); --b) {}
+        if (b == visible) while (pixel565(line,b-1) == pixel565(src,b-1)) --b;
+        low = a > visible ? a : visible; high = b < visible ? b : visible;
+        if (a < high) memcpy(line+a*2, src+a*2, (size_t)(high-a)*2);
+        if (low < b) memset(line+low*2, 0, (size_t)(b-low)*2);
+        if (box.left == box.right) box = (DockRect){a, y, b, y+1};
+        else {
+            if (a < box.left) box.left = a;
+            if (b > box.right) box.right = b;
+            box.bottom = y+1;
+        }
+    }
+    return box;
+}
+
 static int clamp_int(int64_t v)
 {
     return v < INT_MIN ? INT_MIN : v > INT_MAX ? INT_MAX : (int)v;
@@ -236,6 +286,9 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
             if (v && v->image) dock_damage_add(d, image_rect(v->image, v->x, v->y), width, height);
         }
     }
+    /* Queued backdrop changes join after the compare; a full draw covers them. */
+    dock_damage_merge(d, &r->backdrop_damage, width, height);
+    dock_damage_clear(&r->backdrop_damage);
     full = (DockRect){0, 0, width, height};
     n = d->full ? 1 : d->count;
     for (i = 0; i < n; ++i)
@@ -276,6 +329,18 @@ void dock_renderer_backdrop_changed(DockRenderer *r)
     if (!r) return;
     dock_renderer_invalidate(r);
     if (r->glass.ready) memset(r->glass.ready,0,(size_t)r->glass.image.height);
+}
+
+void dock_renderer_backdrop_damaged(DockRenderer *r, DockRect box)
+{
+    int top, bottom;
+    if (!r || box.left >= box.right || box.top >= box.bottom) return;
+    /* The draw clips the box to its canvas. */
+    dock_damage_add(&r->backdrop_damage, box, INT_MAX, INT_MAX);
+    if (!r->glass.ready) return;
+    top = box.top > 0 ? box.top : 0;
+    bottom = box.bottom < r->glass.image.height ? box.bottom : r->glass.image.height;
+    if (top < bottom) memset(r->glass.ready+top, 0, (size_t)(bottom-top));
 }
 
 void dock_renderer_release(DockRenderer *r)

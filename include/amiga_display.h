@@ -19,10 +19,13 @@ void amiga_display_set_converters(AmigaDisplay *display, DockConvertRGB24 encode
     DockConvertRGB565 encode565);
 int amiga_display_capture(AmigaDisplay *display, DockImage *image, int x, int y);
 /* Native RGB16 cache: -1 unsupported/changed bitmap, 0 equal, 1 copied.
-   A valid check limits comparison in canvas coordinates. Damage still
-   refreshes the entire cache. The caller owns width*height*2 bytes. */
+   A valid check limits the comparison in canvas coordinates; a change there
+   still refreshes every stale pixel of the cache. A NULL box copies the
+   whole cache. Otherwise only the changed row spans are written
+   (dock_rgb565_refresh) and box receives their bounding box: empty when
+   equal, the whole canvas on force. The caller owns width*height*2 bytes. */
 int amiga_display_capture565(AmigaDisplay *display, unsigned char *cache,
-    int x, int y, int force, const DockRect *check, DockBytesEqual equal);
+    int x, int y, int force, const DockRect *check, DockBytesEqual equal, DockRect *box);
 /* Read the drag baseline from the catcher bitmap. The mask update reads
    native RGB16 through an unlayered RastPort on the supported SAGA screen.
    Its bounds are relative to the Dock canvas. Returns -1 on read failure. */

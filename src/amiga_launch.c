@@ -160,11 +160,67 @@ static LONG icon_stack(const struct DiskObject *icon)
     return icon ? icon->do_StackSize : 0;
 }
 
+static int has_tool_type(const struct DiskObject *icon, const char *type)
+{
+    return icon && FindToolType((CONST_STRPTR *)icon->do_ToolTypes,(CONST_STRPTR)type) != NULL;
+}
+
+/* A "$STACK:<bytes>" string in the program's hunks, which Workbench
+   honours since V45 (wb release notes, 45.165). */
+static LONG embedded_stack(BPTR seglist)
+{
+    static const char key[] = "$STACK:";
+    BPTR seg;
+    for (seg = seglist; seg; seg = *(const BPTR *)BADDR(seg)) {
+        const UBYTE *mem = (const UBYTE *)BADDR(seg);
+        ULONG size = ((const ULONG *)mem)[-1], i;
+        /* The allocation holds its size before and the next pointer at
+           the start; data runs from mem+4 to the end of the allocation. */
+        if (size < 16+sizeof(key)) continue;
+        for (i = 4; i+sizeof(key)+4 < size-4; ++i) {
+            LONG value;
+            if (mem[i] == '$' && !memcmp(mem+i,key,sizeof(key)-1) &&
+                StrToLong((STRPTR)mem+i+sizeof(key)-1,&value) > 0) return value;
+        }
+    }
+    return 0;
+}
+
+/* Icons set to "Start from Shell" (tool type CLI) or "Start from ARexx"
+   (REXX) run as Shell commands in the object's drawer, with an output
+   window that opens only when the command writes. */
+static int shell_launch(const char *path, const struct DiskObject *icon, LONG *error)
+{
+    char command[PATH_CAP*2+16], window[PATH_CAP+48];
+    BPTR file = Lock((STRPTR)path,ACCESS_READ), dir = file ? ParentDir(file) : 0, old, input;
+    LONG stack = icon_stack(icon), result;
+    if (file) UnLock(file);
+    if (!dir) { *error = IoErr() ? IoErr() : ERROR_OBJECT_NOT_FOUND; return 0; }
+    if (has_tool_type(icon,"REXX")) snprintf(command,sizeof(command),"RX \"%s\"",path);
+    else if (icon->do_Type == WBPROJECT && icon->do_DefaultTool && icon->do_DefaultTool[0])
+        snprintf(command,sizeof(command),"\"%s\" \"%s\"",(const char *)icon->do_DefaultTool,path);
+    else snprintf(command,sizeof(command),"\"%s\"",path);
+    snprintf(window,sizeof(window),"CON:0/50//130/%s/AUTO/CLOSE/WAIT",FilePart((STRPTR)path));
+    if (!(input = Open((STRPTR)window,MODE_OLDFILE))) input = Open((STRPTR)"NIL:",MODE_OLDFILE);
+    if (stack < MIN_STACK) stack = MIN_STACK;
+    old = CurrentDir(dir);
+    result = SystemTags((STRPTR)command, SYS_Input,(ULONG)input, SYS_Output,0,
+        SYS_Asynch,TRUE, SYS_UserShell,TRUE, NP_StackSize,(stack+3)&~3L, TAG_DONE);
+    CurrentDir(old);
+    UnLock(dir);
+    if (result == -1) {
+        *error = IoErr() ? IoErr() : ERROR_NO_FREE_STORE;
+        if (input) Close(input);
+        return 0;
+    }
+    return 1;
+}
+
 int launch_object(App *app, const char *path, LONG *error)
 {
     struct DockLaunched *launch;
     struct DiskObject *icon, *tool_icon = NULL;
-    LONG stack, priority = 0;
+    LONG stack, embedded, priority = 0;
     BPTR tool_dir, old_dir, file, current, home;
     struct Process *process;
     const char *pri;
@@ -187,6 +243,12 @@ int launch_object(App *app, const char *path, LONG *error)
         return !*error;
     }
     if (!icon) { *error = ERROR_OBJECT_NOT_FOUND; goto fail; }
+    if (has_tool_type(icon,"CLI") || has_tool_type(icon,"REXX")) {
+        int started = shell_launch(path,icon,error);
+        FreeDiskObject(icon);
+        launch_free(launch);
+        return started;
+    }
     if (!(file = Lock((STRPTR)path,ACCESS_READ))) { *error = IoErr(); goto fail; }
     if (icon->do_Type == WBPROJECT) {
         BPTR project_dir = ParentDir(file), tool;
@@ -210,12 +272,13 @@ int launch_object(App *app, const char *path, LONG *error)
     if (!launch->startup.sm_Segment) *error = IoErr();
     CurrentDir(old_dir);
     if (!launch->startup.sm_Segment) goto fail;
-    /* Workbench runs a project with the project icon's stack and ignores
-       the tool's (RKM Libraries, Workbench chapter). A DefIcons project has
-       only a generic stack, so take the tool's when it is larger: more
-       stack never breaks a program. TOOLPRI comes from the icon opened. */
+    /* As workbench.library 45+: the opened icon's stack, raised to the
+       tool icon's and to a $STACK: in the program when those are larger
+       (RKM Libraries ch. 14; wb release notes 45.134, 45.165). TOOLPRI
+       comes from the icon opened. */
     stack = icon_stack(icon);
     if (icon_stack(tool_icon) > stack) stack = icon_stack(tool_icon);
+    if ((embedded = embedded_stack(launch->startup.sm_Segment)) > stack) stack = embedded;
     if (stack < MIN_STACK) stack = MIN_STACK;
     stack = (stack+3)&~3L;
     if ((pri = (const char *)FindToolType((CONST_STRPTR *)icon->do_ToolTypes,(CONST_STRPTR)"TOOLPRI"))) {

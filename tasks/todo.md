@@ -647,8 +647,10 @@ Plan (ApolloOS keeps today's path unchanged):
       - LoadSeg, CreateNewProc with the larger icon stack (at least 4096;
         Workbench itself uses the project's, RKM Libraries ch. 14), TOOLPRI
         from the opened icon, home and current directory = the tool's drawer; a WBStartup
-        with a lock per argument. No CLI tooltype or script support: plain
-        Workbench 3.x has neither.
+        with a lock per argument. Icons set to "Start from Shell" (CLI) or "Start from
+        ARexx" (REXX) run through SystemTags with an AUTO output window, and a
+        $STACK: string in the program raises the stack, as workbench.library
+        45+ does (amiga-refs/amigaos-3.2, wb release notes).
       - Replies come to launch_port in the event loop; the pin shows a dot
         (RUNNING_SELF) until then. On quit the dock closes its windows and
         waits for the programs it started.

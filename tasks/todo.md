@@ -720,22 +720,30 @@ PiP2 itself is RGB565 only (SAGA formats: 8/15/16-bit, YUV), so the dock's
 own pixels are 16-bit; the desktop around and through it keeps its depth.
 
 Plan (branch pip-os3 from simplify-followups):
-- [ ] 1. Profile: PiP needs AMMX and core >= 11900 only. Window shapes and
+- [x] 1. Profile: PiP needs AMMX and core >= 11900 only. Window shapes and
       the 16-bit screen stop being requirements; apollo_pointer only on
       ApolloOS Intuition (shaped_windows). Update test_profile rows
       (AmigaOS 3.2/3.9 and 24/32-bit screens now choose PiP).
-- [ ] 2. Receiver window without shapes: a 1x1 window (no backfill) while
+- [x] 2. Receiver window without shapes: a 1x1 window (no backfill) while
       no drag is on; visible width from the canvas, not the window.
-- [ ] 3. Live capture keeps going when the layer list is busy (only the
+- [x] 3. Live capture keeps going when the layer list is busy (only the
       Z-order check needs it). Verify on ApolloOS before merging.
-- [ ] 4. Drops without shapes: on a Workbench icon press the receiver
-      grows to the dock box with ChangeWindowBox and paints the saved
-      backing (as the shaped catcher does); it shrinks back afterwards.
-      Measure whether the box change lands before Workbench's drag loop.
-- [ ] 5. 24- and 32-bit screens: capture converts RGB24/BGR24/ARGB32/
+- [x] 4. Drops without shapes. Moving the receiver at the press failed:
+      Workbench 3.9 stalls input and cancels the drag (receiver in place
+      at 3 of 3 releases, no AppMessage). It now arms ahead: buttons up and
+      the pointer on a Workbench icon or drawer puts the receiver on the
+      dock box (front, painting the desktop saved then); leaving puts it
+      back at 1x1. Coffin 16-bit, by the agent: Scout dropped from a drawer
+      was added; drags inside a drawer still work; a window moved under the
+      plate afterwards was followed (5 changes).
+- [ ] 5. (built, not run at 24/32 bits) 24- and 32-bit screens: capture converts RGB24/BGR24/ARGB32/
       BGRA32/RGBA32 rows to RGB565 for the same compare and decode path
       (the overlay is RGB565 anyway). Measure the capture cost against
       the 16-bit 4.0 ms.
 - [ ] 6. Verify: Coffin 16 and 24 bit (show at start, zoom, drag under,
       click, right-click menu, drop an icon, Folder Stack, Settings);
       ApolloOS unchanged (PiP sweep, drops, --damage-check); --caps rows.
+      Coffin 16-bit so far: shows at start, zoom, window dragged under it
+      without lag (user), clicks and right-click menu, drop from a drawer.
+- [ ] Output of a dock started with Run >file is lost on Coffin (the
+      foreground run with > keeps it); look into it.

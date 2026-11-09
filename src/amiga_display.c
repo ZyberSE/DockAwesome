@@ -288,6 +288,47 @@ int amiga_display_capture(AmigaDisplay *d, DockImage *im, int x, int y)
     return 1;
 }
 
+/* RTG only. Native big-endian RGB565 takes one encode and a raw copy on
+   RGB16 bitmaps (the RAW format capture uses), instead of RGB24 that the
+   OS converts again. RGB24 is supported by SAGA/P96, including drivers
+   whose RGBA path is incomplete. */
+static int native565(const AmigaDisplay *d, struct RastPort *port)
+{
+    return d->depth == 16 && d->rgba_to_rgb565 && port->BitMap &&
+        GetCyberMapAttr(port->BitMap,CYBRMATTR_PIXFMT) == PIXFMT_RGB16;
+}
+
+/* Converts one rectangle of im, packed at its own width in the upload
+   buffer, and writes it at the same place in port. Adds its stage times
+   and pixels to timing. */
+static void upload_rect(AmigaDisplay *d, struct RastPort *port, int rgb565, const DockImage *im,
+    const DockRect *r, uint64_t (*clock)(void), AmigaDisplayTiming *timing)
+{
+    int row, width = r->right-r->left, height = r->bottom-r->top;
+    size_t stride = (size_t)width*(rgb565 ? 2 : 3);
+    const unsigned char *source = im->pixels+((size_t)r->top*im->width+r->left)*4;
+    uint64_t started = clock ? clock() : 0, converted;
+    /* Whole rows are contiguous in both buffers: one call converts them. */
+    if (width == im->width) {
+        if (rgb565) d->rgba_to_rgb565(d->upload,source,(unsigned long)width*height);
+        else d->rgba_to_rgb24(d->upload,source,(unsigned long)width*height);
+    } else for (row = 0; row < height; ++row) {
+        const unsigned char *line = source+(size_t)row*im->width*4;
+        if (rgb565) d->rgba_to_rgb565(d->upload+(size_t)row*stride,line,width);
+        else d->rgba_to_rgb24(d->upload+(size_t)row*stride,line,width);
+    }
+    converted = clock ? clock() : 0;
+    /* CGX documentation warns the returned pixel count is unreliable. */
+    WritePixelArray(d->upload,0,0,stride,port,r->left,r->top,width,height,
+        rgb565 ? RECTFMT_RAW : RECTFMT_RGB);
+    if (!timing) return;
+    timing->pixels += (unsigned long)width*height;
+    if (clock) {
+        timing->conversion_ticks += converted-started;
+        timing->upload_ticks += clock()-converted;
+    }
+}
+
 static int present_port(AmigaDisplay *d, struct RastPort *port, const DockImage *im,
     uint64_t (*clock)(void), AmigaDisplayTiming *timing)
 {
@@ -295,55 +336,48 @@ static int present_port(AmigaDisplay *d, struct RastPort *port, const DockImage 
     uint64_t started = clock ? clock() : 0, converted;
     if (timing) memset(timing, 0, sizeof(*timing));
     if (!d || !port || !im || !im->pixels || im->width != d->width || im->height != d->height) return 0;
-    if (d->depth == 16 && d->rgba_to_rgb565 && port->BitMap &&
-        GetCyberMapAttr(port->BitMap,CYBRMATTR_PIXFMT) == PIXFMT_RGB16) {
-        /* Native big-endian RGB565: one encode and a raw copy, instead of
-           RGB24 that the OS converts again (the RAW format capture uses). */
-        d->rgba_to_rgb565(d->upload, im->pixels, (unsigned long)d->width*d->height);
-        converted = clock ? clock() : 0;
-        WritePixelArray(d->upload, 0, 0, d->width*2, port, 0, 0, d->width, d->height, RECTFMT_RAW);
-        if (clock && timing) {
+    if (d->depth > 8) {
+        DockRect whole = {0,0,d->width,d->height};
+        upload_rect(d,port,native565(d,port),im,&whole,clock,timing);
+        return 1;
+    }
+    for (y = 0; y < d->height; ++y) {
+        const unsigned char *s = im->pixels + (size_t)y * d->width * 4;
+        unsigned char *out = d->upload + (size_t)y * d->stride;
+        for (x = 0; x < d->width; ++x, s += 4)
+            out[x] = d->lookup[((s[0]>>4)<<8)|((s[1]>>4)<<4)|(s[2]>>4)];
+    }
+    converted = clock ? clock() : 0;
+    result = write_indexed_pixels(d,port) >= 0;
+    if (timing) {
+        timing->pixels = (unsigned long)d->width*d->height;
+        if (clock) {
             timing->conversion_ticks = converted-started;
             timing->upload_ticks = clock()-converted;
         }
-        return 1;
-    }
-    if (d->depth > 8) {
-        /* RGB24 is supported by SAGA/P96, including drivers whose RGBA path is incomplete. */
-        d->rgba_to_rgb24(d->upload, im->pixels, (unsigned long)d->width*d->height);
-    } else {
-        for (y = 0; y < d->height; ++y) {
-            const unsigned char *s = im->pixels + (size_t)y * d->width * 4;
-            unsigned char *out = d->upload + (size_t)y * d->stride;
-            for (x = 0; x < d->width; ++x, s += 4)
-                out[x] = d->lookup[((s[0]>>4)<<8)|((s[1]>>4)<<4)|(s[2]>>4)];
-        }
-    }
-    converted = clock ? clock() : 0;
-    if (d->depth > 8) {
-        WritePixelArray(d->upload, 0, 0, d->stride, port, 0, 0,
-                        d->width, d->height, RECTFMT_RGB);
-        /* CGX documentation warns the returned pixel count is unreliable. */
-        result = 1;
-    } else {
-        result = write_indexed_pixels(d,port) >= 0;
-    }
-    if (clock && timing) {
-        timing->conversion_ticks = converted-started;
-        timing->upload_ticks = clock()-converted;
     }
     return result;
 }
 
-int amiga_display_present_profiled(AmigaDisplay *d, struct Window *window, const DockImage *im,
-    uint64_t (*clock)(void), AmigaDisplayTiming *timing)
+int amiga_display_present_damage(AmigaDisplay *d, struct Window *window, const DockImage *im,
+    const DockDamage *damage, uint64_t (*clock)(void), AmigaDisplayTiming *timing)
 {
-    return present_port(d,window ? window->RPort : NULL,im,clock,timing);
+    DockRect rect[AMIGA_DISPLAY_TILES];
+    struct RastPort *port = window ? window->RPort : NULL;
+    int i, n, rgb565;
+    if (!damage || damage->full || !d || d->depth <= 8) return present_port(d,port,im,clock,timing);
+    if (timing) memset(timing,0,sizeof(*timing));
+    if (!port || !im || !im->pixels || im->width != d->width || im->height != d->height) return 0;
+    n = dock_damage_upload_rects(damage,d->width,d->height,AMIGA_DISPLAY_TILES,rect);
+    if (!n) return 1;
+    rgb565 = native565(d,port);
+    for (i = 0; i < n; ++i) upload_rect(d,port,rgb565,im,&rect[i],clock,timing);
+    return 1;
 }
 
 int amiga_display_present(AmigaDisplay *d, struct Window *window, const DockImage *im)
 {
-    return amiga_display_present_profiled(d, window, im, NULL, NULL);
+    return present_port(d,window ? window->RPort : NULL,im,NULL,NULL);
 }
 
 struct RastPort *amiga_display_begin_frame(AmigaDisplay *d, const DockImage *background)
@@ -386,24 +420,12 @@ void amiga_display_end_frame(AmigaDisplay *d, struct Window *window)
 int amiga_display_present_tile(AmigaDisplay *d, struct Window *window, const DockImage *im,
     int x, int y, int width, int height)
 {
-    int row, stride = width*3;
+    DockRect r;
     if (!d || !window || !im || !im->pixels || d->depth <= 8 ||
         im->width != d->width || im->height != d->height ||
         x < 0 || y < 0 || width < 1 || height < 1 || width > d->width-x || height > d->height-y)
         return 0;
-    if (d->depth == 16 && d->rgba_to_rgb565 && window->RPort->BitMap &&
-        GetCyberMapAttr(window->RPort->BitMap,CYBRMATTR_PIXFMT) == PIXFMT_RGB16) {
-        for (row = 0; row < height; ++row) {
-            const unsigned char *source = im->pixels+((size_t)(y+row)*im->width+x)*4;
-            d->rgba_to_rgb565(d->upload+(size_t)row*width*2,source,width);
-        }
-        WritePixelArray(d->upload,0,0,width*2,window->RPort,x,y,width,height,RECTFMT_RAW);
-        return 1;
-    }
-    for (row = 0; row < height; ++row) {
-        const unsigned char *source = im->pixels+((size_t)(y+row)*im->width+x)*4;
-        d->rgba_to_rgb24(d->upload+(size_t)row*stride,source,width);
-    }
-    WritePixelArray(d->upload,0,0,stride,window->RPort,x,y,width,height,RECTFMT_RGB);
+    r = (DockRect){x,y,x+width,y+height};
+    upload_rect(d,window->RPort,native565(d,window->RPort),im,&r,NULL,NULL);
     return 1;
 }

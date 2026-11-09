@@ -3,7 +3,8 @@
 ## Builds
 
 `make` builds DockAwesome for the Vampire 68080 with AMMX (`-m68080`,
-`DOCK_AMMX`). There is no build for other CPUs. See the
+`DOCK_AMMX`). There is no build for other CPUs, so every backend uses the
+AMMX kernels; `--ammx` is still accepted. See the
 [build instructions](../README.md#build-and-test).
 
 The build links with `-noixemul`. The app and larger probes request a

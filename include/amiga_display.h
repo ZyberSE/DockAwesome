@@ -1,6 +1,6 @@
 #ifndef AMIGA_DISPLAY_H
 #define AMIGA_DISPLAY_H
-#include "dock_geometry.h"
+#include "dock_renderer.h"
 struct Screen;
 struct Window;
 struct BitMap;
@@ -35,9 +35,16 @@ void amiga_display_end_frame(AmigaDisplay *display, struct Window *window);
 /* Partial uploads are available on RTG. Indexed screens use a full repaint. */
 int amiga_display_present_tile(AmigaDisplay *display, struct Window *window,
     const DockImage *image, int x, int y, int width, int height);
-typedef struct { uint64_t conversion_ticks, upload_ticks; } AmigaDisplayTiming;
-/* Optional stage measurements use a caller-owned monotonic clock; normal uploads do not read it. */
-int amiga_display_present_profiled(AmigaDisplay *display, struct Window *window,
-    const DockImage *image, uint64_t (*clock)(void), AmigaDisplayTiming *timing);
+/* Stage measurements use a caller-owned monotonic clock (stage ticks stay
+   zero without one); pixels counts what was converted. */
+typedef struct { uint64_t conversion_ticks, upload_ticks; unsigned long pixels; } AmigaDisplayTiming;
+/* Uploads only the damaged rectangles of image (their bounding box above
+   AMIGA_DISPLAY_TILES), nothing for empty damage. NULL or full damage and
+   indexed screens upload everything. timing is optional; normal uploads
+   pass no clock and never read one. */
+#define AMIGA_DISPLAY_TILES 8
+int amiga_display_present_damage(AmigaDisplay *display, struct Window *window,
+    const DockImage *image, const DockDamage *damage, uint64_t (*clock)(void),
+    AmigaDisplayTiming *timing);
 int amiga_display_depth(const AmigaDisplay *display);
 #endif

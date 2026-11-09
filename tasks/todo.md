@@ -619,3 +619,51 @@ Review (2026-11-09):
 - Next measured costs: PiP compose 5.6 ms per sweep frame; a backdrop box
   still remixes whole glass rows; GCC places draw/event_loop in
   .text.unlikely (size-optimized), worth an A/B with __attribute__((hot)).
+
+## Launching pins without Workbench (AmiKit / Directory Opus)
+
+Report: on AmiKit for Vampire every pin click shows "Workbench could not
+open this object." AmiKit runs Directory Opus 5 Magellan as the desktop
+instead of Workbench.
+
+Cause, from the DOpus 5 source (github.com/BlitterStudio/dopus5,
+source/Library/wb.c): DOpus patches OpenWorkbenchObjectA only on OS4
+(`#ifdef __amigaos4__`). On 68k the call goes to workbench.library, which
+fails without the Workbench process. DOpus's own OS4 patch does what we
+need: `FindPort("WORKBENCH") ? original : launch ourselves`. On 68k DOpus
+does patch WorkbenchControlA: WBCTRLA_DuplicateSearchPath returns its path
+list; GetProgramList and GetOpenDrawerList are unsupported. Its ARexx port is
+DOPUS.1, and `lister new <path>` opens a drawer.
+
+Plan (ApolloOS keeps today's path unchanged):
+- [ ] 1. caps: `dopus` (FindPort "DOPUS.1"), printed by --caps; test rows.
+- [ ] 2. src/amiga_launch.c: a Workbench-style launch for tools and projects,
+      used when there is no WORKBENCH port (or with the hidden test option
+      --self-launch).
+      - Icon via GetIconTagList (DefIcons fallback). WBTOOL runs the path;
+        WBPROJECT runs its default tool with the document as argument 1.
+      - A bare default tool name is searched in the directory of the
+        project, then the WBCTRLA_DuplicateSearchPath list (Workbench or
+        DOpus), then C:.
+      - LoadSeg, CreateNewProc with the icon's stack (at least 4096, rounded
+        to 4), TOOLPRI, home and current directory = the program's
+        directory; PutMsg a WBStartup with locks for every argument.
+      - Tooltype CLI, or a file with the script bit: SystemTags,
+        asynchronous, output to NIL:.
+      - The reply comes to a dock port in the event loop wait mask: then
+        UnLoadSeg, unlock and free. The pin is shown running until then.
+      - On quit the dock closes its windows first and then waits for the
+        replies of programs it started (their code must stay loaded).
+- [ ] 3. Drawers and disks without Workbench: ARexx `lister new "<path>"`
+      to DOPUS.1. Scalos waits until someone can check its ARexx interface.
+- [ ] 4. The failure text says "Could not open" plus path and reason, not
+      "Workbench".
+- [ ] 5. Verify on the Vampire with --self-launch: tool, tool with a large
+      stack (Status in a Shell), project with .info, DefIcons document, a
+      CLI tooltype, a script, Folder Stack open, the dock quit while a
+      started program runs, PiP sweep unchanged. Then a test build for the
+      AmiKit user with --caps.
+
+Not in this change: running dots and Close for drawers under DOpus (no open
+drawer list); Workbench's program list under DOpus (dots come from our own
+launches and the window pass).

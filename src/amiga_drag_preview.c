@@ -21,7 +21,7 @@ struct AmigaDragPreview {
     struct Window *window;
     struct Region *shape;
     int width, height, icon_height, left, top;
-    int shaped;
+    int shaped, remove;
     int text_width, label_width, label_top;
     /* Without shapes the window keeps a copy of what lies under it (a
        save-under, as for a BOB) and draws the icon over it. */
@@ -80,6 +80,7 @@ static int render(AmigaDragPreview *p)
     else memcpy(p->frame.pixels,p->background.pixels,(size_t)p->width*p->height*4);
     dock_blend(&p->frame,&p->icon,(p->width-p->icon.width)/2,0);
     if (!amiga_display_present(p->display,p->window,&p->frame)) return 0;
+    if (!p->shaped && !p->remove) return 1;
     if (!(info = GetScreenDrawInfo(p->screen))) return 0;
     SetFont(rp,p->screen->RastPort.Font);
     SetAPen(rp,info->dri_Pens[BACKGROUNDPEN]);
@@ -93,7 +94,7 @@ static int render(AmigaDragPreview *p)
 }
 
 AmigaDragPreview *amiga_drag_preview_open(struct Screen *screen, const DockImage *icon,
-    int shaped, int x, int y)
+    int shaped, int remove, int x, int y)
 {
     AmigaDragPreview *p;
     if (!screen || !icon || !icon->pixels || !screen->RastPort.Font) return NULL;
@@ -101,6 +102,7 @@ AmigaDragPreview *amiga_drag_preview_open(struct Screen *screen, const DockImage
     if (!p) return NULL;
     p->screen = screen;
     p->shaped = shaped;
+    p->remove = remove;
     p->text_width = amiga_text_length(&screen->RastPort,label,sizeof(label)-1);
     p->label_width = p->text_width+10;
     p->label_top = icon->height+4;
@@ -159,6 +161,13 @@ void amiga_drag_preview_move(AmigaDragPreview *p, int x, int y)
     MoveWindow(p->window,left-p->left,top-p->top);
     p->left = left; p->top = top;
     /* Smart Refresh carries this drawing along when the move lands. */
+    if (!p->shaped) render(p);
+}
+
+void amiga_drag_preview_set_remove(AmigaDragPreview *p, int remove)
+{
+    if (!p || p->remove == !!remove) return;
+    p->remove = !!remove;
     if (!p->shaped) render(p);
 }
 

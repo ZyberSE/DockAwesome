@@ -1605,13 +1605,32 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
     }
 }
 
+/* The native window that carries a dragged pin beyond the dock's surface.
+   Shaped (ApolloOS) it opens when the pin would be removed. Without shapes
+   it opens as soon as the icon reaches past the surface, in the size the
+   dock draws it, so the icon never vanishes at the edge; "Remove" shows
+   once the pin would be removed. */
 static int update_drag_preview(App *app)
 {
     DockGesture *gesture = &app->gesture;
-    int index = gesture->active && !gesture->cancelled && gesture->remove_armed ?
+    int shaped = app->pip_mode && app->caps.shaped_windows;
+    int index = gesture->active && gesture->dragged && !gesture->cancelled ?
         pin_index(app,gesture->pin_id) : -1;
     int x = app->left+gesture->x, y = app->top+gesture->y;
-    if (index < 0 || app->items[index].temporary || app->items[index].stack) {
+    const DockImage *icon = NULL;
+    if (index >= 0 && !app->items[index].temporary && !app->items[index].stack) {
+        if (shaped) icon = gesture->remove_armed ? &app->items[index].cache.image[0] : NULL;
+        else {
+            int level = app->moving_item ? app->held_icon.level : app->placement[index].level;
+            int visible = app->pip_mode ? app->width-app->settings.edge_padding : app->width;
+            int left = gesture->x-app->items[index].cache.image[level].width/2;
+            int top = gesture->y-app->items[index].cache.image[level].height/2;
+            icon = &app->items[index].cache.image[level];
+            if (!gesture->remove_armed && left >= 0 && top >= 0 &&
+                left+icon->width <= visible && top+icon->height <= app->height) icon = NULL;
+        }
+    }
+    if (!icon) {
         app->preview_attempt = 0;
         if (!app->drag_preview) return 0;
         amiga_drag_preview_close(app->drag_preview); app->drag_preview = NULL;
@@ -1619,14 +1638,12 @@ static int update_drag_preview(App *app)
     }
     if (app->drag_preview) {
         amiga_drag_preview_move(app->drag_preview,x,y);
+        amiga_drag_preview_set_remove(app->drag_preview,gesture->remove_armed);
         return 0;
     }
     if (app->preview_attempt == gesture->token) return 0;
     app->preview_attempt = gesture->token;
-    /* Shaped windows (ApolloOS) give the preview the icon's outline; without
-       them it saves what lies under it. */
-    app->drag_preview = amiga_drag_preview_open(app->screen,&app->items[index].cache.image[0],
-        app->pip_mode && app->caps.shaped_windows,x,y);
+    app->drag_preview = amiga_drag_preview_open(app->screen,icon,shaped,gesture->remove_armed,x,y);
     return app->drag_preview != NULL;
 }
 

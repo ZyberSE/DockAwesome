@@ -489,7 +489,7 @@ void dock_ui_close_dialog(DockUI *ui)
     ui->showing_about = 0;
 }
 
-DockUI *dock_ui_create(struct Screen *screen, int window_shapes)
+DockUI *dock_ui_create(struct Screen *screen, int window_shapes, int glass, int alpha_text)
 {
     DockUI *ui;
     struct Library *DiskfontBase;
@@ -499,9 +499,7 @@ DockUI *dock_ui_create(struct Screen *screen, int window_shapes)
     if (!ui) return NULL;
     ui->screen = screen;
     ui->window_shapes = window_shapes;
-    /* ApolloOS exposes the AROS RGB RastPort tags on its RTG screens. */
-    ui->popup_rgb = window_shapes && GfxBase->LibNode.lib_NegSize >= 0x40e &&
-        GetBitMapAttr(screen->RastPort.BitMap,BMA_DEPTH) > 8;
+    ui->popup_rgb = glass;
     ui->draw = GetScreenDrawInfo(screen);
     if (!ui->draw || !ui->draw->dri_Font) {
         if (ui->draw) FreeScreenDrawInfo(screen,ui->draw);
@@ -527,12 +525,9 @@ DockUI *dock_ui_create(struct Screen *screen, int window_shapes)
         ui->folder_font = OpenFont(&folder_face);
     }
     if (ui->popup_rgb && ui->folder_font) ui->folder_aa = amiga_font_aa_create(ui->folder_font);
-    if (ui->popup_rgb) {
+    /* amiga_caps_probe checked V51 BltTemplateAlpha; keep the base open. */
+    if (alpha_text) {
         ui->text_alpha = OpenLibrary((STRPTR)"cybergraphics.library",51);
-        if (ui->text_alpha && ui->text_alpha->lib_NegSize < 0xde) {
-            CloseLibrary(ui->text_alpha);
-            ui->text_alpha = NULL;
-        }
         if (ui->text_alpha) ui->chrome_aa = amiga_font_aa_create(ui->draw->dri_Font);
     }
     ui->popup_selected = ui->popup_pressed = -1;

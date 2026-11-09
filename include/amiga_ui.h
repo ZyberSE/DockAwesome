@@ -27,8 +27,10 @@ typedef struct {
 } DockUIAction;
 typedef int (*DockUIReadIcon)(const void *context, const char *path, DockImage *icon);
 
-/* The caller keeps screen and the graphics/intuition libraries alive. */
-DockUI *dock_ui_create(struct Screen *screen, int window_shapes);
+/* The caller keeps screen and the graphics/intuition libraries alive.
+   The flags come from DockProfile (ui_shapes, ui_glass, aa_text): shaped
+   windows, RGB glass, and antialiased text through cybergraphics alpha. */
+DockUI *dock_ui_create(struct Screen *screen, int window_shapes, int glass, int alpha_text);
 void dock_ui_set_converters(DockUI *ui, DockConvertRGB24 encode, DockConvertRGB565 decode,
     DockConvertRGB565 encode565);
 /* Called with 1 before and 0 after a UI call that blocks the main task, such

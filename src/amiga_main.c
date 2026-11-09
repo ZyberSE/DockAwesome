@@ -12,6 +12,7 @@
 #include "amiga_text.h"
 #include "amiga_ui.h"
 #include "amiga_version.h"
+#include "amiga_caps.h"
 #include <exec/execbase.h>
 #include <exec/interrupts.h>
 #include <hardware/intbits.h>
@@ -71,7 +72,6 @@ extern void dock_call_console_input(InputHandlerCode code, struct InputEvent *ev
 #endif
 enum { PIN_PROGRAM = 1, PIN_DRAWER = 2, PIN_SHELL = 4, PIN_DOCUMENT = 8 };
 enum { RUNNING_WORKBENCH = 1, RUNNING_WINDOW = 2 };
-enum { BACKEND_OPAQUE, BACKEND_SNAPSHOT, BACKEND_PIP };
 typedef struct {
     char path[PATH_CAP], title_path[PATH_CAP]; DockCache cache;
     uint32_t pin_id;
@@ -288,7 +288,9 @@ typedef struct App {
     struct Library *screen_notify;
     struct MsgPort *workbench_port;
     APTR workbench_client;
-    int workbench_closed, window_shapes;
+    int workbench_closed;
+    DockCaps caps; /* Probed at startup; screen fields on each reopen. */
+    DockProfile features; /* Chosen from caps when the backend is selected. */
     int present_whole; /* The next native present uploads the whole canvas. */
     int held_drops; /* Leading queued drops already in screen coordinates. */
     struct AppWindow *appwindow;
@@ -365,11 +367,6 @@ static int viewport_limit(const App *app, DockEdge edge);
 static void input_invalidate(App *app);
 static void sync_input_ui(App *app);
 static void stack_button_build(App *app);
-
-static int intuition_extension(ULONG offset)
-{
-    return IntuitionBase->LibNode.lib_Version == 50 && IntuitionBase->LibNode.lib_NegSize >= offset;
-}
 
 static void item_free(Item *item)
 {
@@ -1139,8 +1136,8 @@ static __attribute__((noinline)) int save_config(App *app)
     prefs->scale_percent = app->scale_percent;
     prefs->levels = app->settings.levels;
     prefs->edge = app->edge;
-    prefs->snapshot = app->requested_backend == BACKEND_SNAPSHOT;
-    prefs->pip_mode = app->requested_backend == BACKEND_PIP;
+    prefs->snapshot = app->requested_backend == DOCK_BACKEND_SNAPSHOT;
+    prefs->pip_mode = app->requested_backend == DOCK_BACKEND_PIP;
     prefs->pip_x_offset = app->pip_x_offset;
     prefs->pip_y_offset = app->pip_y_offset;
     prefs->count = 0;
@@ -2297,18 +2294,16 @@ static int show_shell_window(const App *app, const ShellTarget *selected)
 
 static InputHandlerCode apollo_console_close_handler(const App *app)
 {
-    const struct Library *input = &app->input_io->io_Device->dd_Library;
     const struct Library *console;
     InputHandlerCode code = NULL;
     enum { CD_INPUT_HANDLER_LVO = 42 };
-    /* The close dispatch is specific to the audited Apollo implementations.
-       Validate the installed handler against console.device's own vector. */
-    if (IntuitionBase->LibNode.lib_Version != 50 || IntuitionBase->LibNode.lib_Revision != 7 ||
-        input->lib_Version != 41 || input->lib_Revision != 4) return NULL;
+    /* The close dispatch is specific to the audited Apollo implementations
+       (caps.apollo_console). Validate the installed handler against
+       console.device's own vector. */
+    if (!app->caps.apollo_console) return NULL;
     Forbid();
     console = (const struct Library *)FindName(&SysBase->DeviceList,(STRPTR)"console.device");
-    if (console && console->lib_Version == 41 && console->lib_Revision == 7 &&
-        console->lib_NegSize >= CD_INPUT_HANDLER_LVO) {
+    if (console && console->lib_NegSize >= CD_INPUT_HANDLER_LVO) {
         const unsigned char *vector = (const unsigned char *)console-CD_INPUT_HANDLER_LVO;
         if (vector[0] == 0x4e && vector[1] == 0xf9) memcpy(&code,vector+2,sizeof(code));
     }
@@ -2379,7 +2374,6 @@ static int document_window_matches(const App *app, const Item *item,
 
 static int item_window_action(const App *app, const Item *item, int action)
 {
-    enum { WINDOW_ACTION_LVO = 942 };
     DirectoryIdentity directory = {0};
     const char *name = NULL, *alias = NULL;
     char canonical[PATH_CAP];
@@ -2387,7 +2381,7 @@ static int item_window_action(const App *app, const Item *item, int action)
     struct Screen *screen;
     ULONG lock;
     int matches = 0;
-    if (action != WINDOW_FOCUS && !intuition_extension(WINDOW_ACTION_LVO)) return 0;
+    if (action != WINDOW_FOCUS && !app->caps.window_action) return 0;
     if (item->owner) {
         /* The task known to show this item's window, whatever its name. */
     } else if (item->kind == PIN_PROGRAM) {
@@ -2485,7 +2479,7 @@ static void program_poll_open(App *app)
     app->program_poll.message.mn_ReplyPort = app->program_replies;
     app->program_poll.message.mn_Length = offsetof(ProgramPoll,owners);
     if (app->program_worker) app->status_window_stamp = status_window_stamp(app);
-    if (app->program_worker && intuition_extension(930)) {
+    if (app->program_worker && app->caps.status_notify) {
         LONG bit = AllocSignal(-1);
         if (bit >= 0) {
             enum { AFTER_OPENWINDOW = 1<<4, AFTER_CLOSEWINDOW = 1<<10 };
@@ -3549,7 +3543,7 @@ static void input_attach_screen(App *app, struct Screen *screen)
     Disable();
     if (!screen) c->active = NULL;
     c->dock_screen = screen;
-    c->apollo_pointer = app->pip_mode;
+    c->apollo_pointer = app->features.apollo_pointer;
     c->close_valid = 0;
     c->popup_open = 0;
     if (c->held) c->held_cancelled = 1;
@@ -4075,6 +4069,7 @@ typedef struct { struct Message message; ULONG type; APTR value; } WorkbenchNoti
 
 static void workbench_notify_open(App *app)
 {
+    if (!app->caps.screen_notify) return;
     app->screen_notify = OpenLibrary((STRPTR)"screennotify.library",1);
     if (!app->screen_notify) return;
     app->workbench_port = CreateMsgPort();
@@ -4120,19 +4115,26 @@ static void release_workbench(App *app)
     app->workbench_closed = 1;
 }
 
-static void select_backend(App *app)
+static void apply_profile(App *app, int backend, int explicit_pip)
 {
-    int pip_ready = 0;
-    app->pip_mode = app->requested_backend == BACKEND_PIP;
-    app->snapshot = app->requested_backend == BACKEND_SNAPSHOT;
-#ifdef DOCK_AMMX
-    /* The build requires a 68080 (-m68080), so its AMMX kernels serve
-       every backend, not only PiP. */
-    app->use_ammx = 1;
-    pip_ready = app->pip_mode && app->window_shapes &&
-        GetBitMapAttr(app->screen->RastPort.BitMap,BMA_DEPTH) == 16;
-#endif
-    if (app->pip_mode && !pip_ready) { app->pip_mode = 0; app->snapshot = 1; }
+    app->features = dock_choose_profile(&app->caps,backend,explicit_pip);
+    app->pip_mode = app->features.backend == DOCK_BACKEND_PIP;
+    app->snapshot = app->features.backend == DOCK_BACKEND_SNAPSHOT;
+    /* The 68080 build's AMMX kernels serve every backend, not only PiP. */
+    app->use_ammx = app->features.pixels == DOCK_PIXELS_AMMX;
+}
+
+/* Follow the (new) Workbench screen; features.error reports an explicit
+   PiP request that cannot be met. */
+static void select_backend(App *app, int explicit_pip)
+{
+    amiga_caps_probe_screen(&app->caps,app->screen);
+    apply_profile(app,app->requested_backend,explicit_pip);
+}
+
+static DockUI *create_ui(const App *app)
+{
+    return dock_ui_create(app->screen,app->features.ui_shapes,app->features.ui_glass,app->features.aa_text);
 }
 
 /* Pixel kernels for use_ammx, shared with the controls. */
@@ -4149,7 +4151,7 @@ static void use_pixel_backend(App *app)
 /* After a closed PiP surface: open the snapshot backend instead. */
 static int fall_back_to_snapshot(App *app)
 {
-    app->pip_mode = 0; app->snapshot = 1;
+    apply_profile(app,DOCK_BACKEND_SNAPSHOT,0);
     use_pixel_backend(app);
     app->surface_error[0] = 0;
     return open_surface(app);
@@ -4165,8 +4167,8 @@ static int acquire_workbench(App *app)
     int fit, ok;
     app->screen = LockPubScreen(NULL);
     if (!app->screen) return 0;
-    select_backend(app);
-    app->ui = dock_ui_create(app->screen,app->window_shapes);
+    select_backend(app,0);
+    app->ui = create_ui(app);
     if (!app->ui) { UnlockPubScreen(NULL,app->screen); app->screen = NULL; return 0; }
     dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
     dock_ui_set_fit_hook(app->ui,ui_fit,app);
@@ -4515,7 +4517,7 @@ static void usage(void)
          "            [--snapshot | --opaque | --pip] [--ammx] [--profile]\n"
          "            [--pip-dump prefix] [--pip-x-offset n] [--pip-y-offset n]\n"
          "            [--bench-sweep speed] [--damage-check] [--no-vsync]\n"
-         "            [Workbench paths...] [--version]\n"
+         "            [Workbench paths...] [--version] [--caps]\n"
          "Drop Workbench icons to pin them. Click a pin to open it.\n"
          "Drag to reorder. Drag out or press Delete to remove a pin.\n"
          "R refreshes the background. Esc or Ctrl-C quits.\n"
@@ -4528,14 +4530,27 @@ static void usage(void)
          "--bench-sweep 1..64 sweeps a synthetic pointer at that many pixels per\n"
          "frame, prints the profile and exits. --damage-check compares every\n"
          "frame with a full composition and PiP conversion and reports mismatches.\n"
-         "--no-vsync paces zoom animation with the 20 ms timer instead of the display.");
+         "--no-vsync paces zoom animation with the 20 ms timer instead of the display.\n"
+         "--caps prints the probed CPU, chipset and OS features and the chosen\n"
+         "backend, then exits. Include it in bug reports.");
+}
+
+/* Before the libraries are open. A Workbench start has no console. */
+static void early_message(int argc, const char *text)
+{
+    if (argc) puts(text);
+    else if ((IntuitionBase = (struct IntuitionBase *)OpenLibrary((STRPTR)"intuition.library", 39))) {
+        message(text);
+        CloseLibrary((struct Library *)IntuitionBase);
+        IntuitionBase = NULL;
+    }
 }
 
 int main(int argc, char **argv)
 {
     App *app = calloc(1, sizeof(*app));
     int i, status = 20, initial_count, config_state;
-    int explicit_pip = 0;
+    int explicit_pip = 0, caps_only = 0;
     if (!app) return 20;
     app->settings = dock_settings_default(); app->input_bit = app->vblank_bit = -1;
     {
@@ -4557,19 +4572,21 @@ int main(int argc, char **argv)
             if (strlen(argv[++i]) >= sizeof(app->config)) { free(app); return 20; }
             strcpy(app->config, argv[i]);
         }
+        else if (!strcmp(argv[i], "--caps")) caps_only = 1;
+    }
+    /* The binary is built for the 68080: stop before any AMMX kernel runs.
+       --caps still reports what this machine offers. */
+    if (!caps_only && !amiga_caps_cpu_080()) {
+        early_message(argc, "DockAwesome needs a Vampire with a 68080 CPU.\n"
+            "exec reports no 68080 (AttnFlags bit 10). Run DockAwesome --caps for details.");
+        free(app); return 20;
     }
     dock_prefs_defaults(&app->prefs);
     config_state = read_config(app);
     if (config_state < 0) {
         char error[CONFIG_CAP+48];
         snprintf(error, sizeof(error), "Cannot read JSON preferences from %s.", app->config);
-        /* A Workbench start has no console. Intuition is not open yet. */
-        if (argc) puts(error);
-        else if ((IntuitionBase = (struct IntuitionBase *)OpenLibrary((STRPTR)"intuition.library", 39))) {
-            message(error);
-            CloseLibrary((struct Library *)IntuitionBase);
-            IntuitionBase = NULL;
-        }
+        early_message(argc, error);
         free(app); return 20;
     }
     app->settings.base_size = app->prefs.size;
@@ -4625,8 +4642,8 @@ int main(int argc, char **argv)
         puts("PiP alignment must be an integer from -128 to 128."); free(app); return 20;
     }
     if (app->pip_dump[0] && !app->pip_mode) { puts("--pip-dump requires --pip."); free(app); return 20; }
-    app->requested_backend = app->pip_mode ? BACKEND_PIP :
-        app->snapshot ? BACKEND_SNAPSHOT : BACKEND_OPAQUE;
+    app->requested_backend = app->pip_mode ? DOCK_BACKEND_PIP :
+        app->snapshot ? DOCK_BACKEND_SNAPSHOT : DOCK_BACKEND_OPAQUE;
     explicit_pip |= !!app->pip_dump[0];
 #ifndef DOCK_AMMX
     if (app->use_ammx) { puts("Use the DockAwesome080 build for --ammx."); free(app); return 20; }
@@ -4640,16 +4657,17 @@ int main(int argc, char **argv)
     if (!IntuitionBase || !GfxBase || !IconBase || !WorkbenchBase || !LayersBase || !UtilityBase) {
         message("Needs AmigaOS 3.x, graphics/intuition V39 and icon/workbench V44 or newer."); goto done;
     }
-    app->window_shapes = intuition_extension(858) && LayersBase->lib_Version >= 50;
     app->screen = LockPubScreen(NULL);
     if (!app->screen) { message("Cannot access the Workbench screen."); goto done; }
+    amiga_caps_probe(&app->caps,app->screen);
     /* --pip and --pip-dump always request PiP. */
-    select_backend(app);
-    if (explicit_pip && !app->pip_mode) {
-        message("PiP needs DockAwesome080, Intuition and Layers V50, and a SAGA RGB565 screen.");
-        goto done;
+    select_backend(app,explicit_pip);
+    if (caps_only) {
+        amiga_caps_print(&app->caps,&app->features,app->requested_backend);
+        status = 0; goto done;
     }
-    app->ui = dock_ui_create(app->screen,app->window_shapes);
+    if (app->features.error) { message(dock_profile_error_text(app->features.error)); goto done; }
+    app->ui = create_ui(app);
     if (!app->ui) { message("Cannot set up the dock controls."); goto done; }
     dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
     dock_ui_set_fit_hook(app->ui,ui_fit,app);

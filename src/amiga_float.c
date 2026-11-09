@@ -68,19 +68,18 @@ static int reserve(AmigaFloat *f, int w, int h)
     return 1;
 }
 
-/* The overlay's top left, and the picture's offset in it, for the picture
-   at f->x, f->y kept on the screen (and one line down, a PiP rule). */
+/* The overlay's top left (on the screen and one line down, a PiP rule)
+   and the picture's offset in it. The picture follows f->x, f->y past the
+   screen's edges and is cut there, as the dock's own copy of it is. */
 static void layout(const AmigaFloat *f, int *left, int *top, int *ox, int *oy)
 {
-    int x = dock_clamp(f->x,0,f->screen->Width-f->width);
-    int y = dock_clamp(f->y,1,f->screen->Height-f->height);
-    *left = x < f->screen->Width-f->cap_w ? x : f->screen->Width-f->cap_w;
-    *top = y < f->screen->Height-f->cap_h ? y : f->screen->Height-f->cap_h;
-    *ox = x-*left; *oy = y-*top;
+    *left = dock_clamp(f->x,0,f->screen->Width-f->cap_w);
+    *top = dock_clamp(f->y,1,f->screen->Height-f->cap_h);
+    *ox = f->x-*left; *oy = f->y-*top;
 }
 
-/* Draw the picture (or nothing) at ox, oy into the back buffer and show it
-   there with the overlay at left, top. */
+/* Draw the picture (or nothing) at ox, oy, cut to the overlay, into the
+   back buffer and show it there with the overlay at left, top. */
 static int render(AmigaFloat *f, int picture, int left, int top, int ox, int oy)
 {
     int back = amiga_pip_back_index(f->pip), stride, row;
@@ -89,10 +88,15 @@ static int render(AmigaFloat *f, int picture, int left, int top, int ox, int oy)
     fill_key(f,buffer,f->drawn[back]);
     f->drawn[back] = (Area){0};
     if (picture) {
-        for (row = 0; row < f->height; ++row)
-            memcpy(buffer+(size_t)(oy+row)*stride+(size_t)ox*2,
-                f->image+(size_t)row*f->width,(size_t)f->width*2);
-        f->drawn[back] = (Area){ox,oy,f->width,f->height};
+        int col0 = ox < 0 ? -ox : 0, row0 = oy < 0 ? -oy : 0;
+        int col1 = f->cap_w-ox < f->width ? f->cap_w-ox : f->width;
+        int row1 = f->cap_h-oy < f->height ? f->cap_h-oy : f->height;
+        if (col1 > col0 && row1 > row0) {
+            for (row = row0; row < row1; ++row)
+                memcpy(buffer+(size_t)(oy+row)*stride+(size_t)(ox+col0)*2,
+                    f->image+(size_t)row*f->width+col0,(size_t)(col1-col0)*2);
+            f->drawn[back] = (Area){ox+col0,oy+row0,col1-col0,row1-row0};
+        }
     }
     if (!amiga_pip_move(f->pip,left,top) || !amiga_pip_present(f->pip)) return 0;
     f->ox = ox; f->oy = oy;

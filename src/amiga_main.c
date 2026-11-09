@@ -1286,7 +1286,7 @@ static void draw(App *app)
     for (i = 0; i < count; ++i)
         if (icons[i] && app->items[row_item(app,i)].running)
             overlays[overlay_count++] = running_dot(app,&placement[i]);
-    if (dragged >= 0 && !app->gesture.remove_armed && !app->drag_float) {
+    if (dragged >= 0 && !app->gesture.remove_armed) {
         int level = app->moving_item ? app->held_icon.level : app->placement[dragged].level;
         const DockImage *icon = &app->items[dragged].cache.image[level];
         overlays[overlay_count++] = (DockOverlay){icon, app->gesture.x-icon->width/2,
@@ -1638,9 +1638,10 @@ static int show_drag_float(App *app, const DockImage *icon, int remove, int x, i
 
 /* What carries a dragged pin beyond the dock's surface.
    Shaped (ApolloOS) a window opens when the pin would be removed.
-   Without shapes and with PiP1, PiP1 carries the icon for the whole drag,
-   in the size the dock would draw it, and the dock leaves it out: one
-   picture, so no seam at the surface's edge when the size changes.
+   Without shapes and with PiP1, PiP1 shows the icon for the whole drag in
+   the size the dock draws it, redrawn on each size change. PiP2 lies over
+   PiP1, so on its surface the dock's own icon shows; beyond it, PiP1's.
+   Both are the same picture, so there is no seam at the surface's edge.
    Without PiP1 a window opens as soon as the icon reaches past the
    surface. "Remove" shows once the pin would be removed. */
 static int update_drag_preview(App *app)
@@ -1680,9 +1681,7 @@ static int update_drag_preview(App *app)
         app->drag_float = show_drag_float(app,icon,gesture->remove_armed,x,y);
         app->drag_float_token = gesture->token;
         app->drag_float_icon = app->drag_float ? icon : NULL;
-        /* The dock leaves the icon out (or draws it again) from its next frame. */
-        if (app->drag_float) return !shown;
-        if (shown) return 1;
+        if (app->drag_float) return 0;
         /* PiP1 is taken: the window preview below. */
     }
     if (inside) icon = NULL;

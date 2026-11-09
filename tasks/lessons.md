@@ -238,3 +238,7 @@
 - What was ruled out on Coffin: compose/convert mismatch (--damage-check: 0/0), a dock image in the captured backdrop (--pip-dump source is clean).
 - Rule: when only the user can see the symptom, first confirm with them what exactly they mean (send a still from their own video), then change code.
 - Go through the user's video frame by frame (ffmpeg crop + tile at full 60 fps) before guessing; the 3 fps sheet hid detail.
+
+## SAGA overlay order: PiP2 lies over PiP1 (2026-11-09)
+- On Coffin (core 11900+) PiP2's opaque pixels cover PiP1. I read a blurry video frame the other way and moved the dragged icon to PiP1 only; the user saw it vanish behind the dock's plate.
+- Rule: the dock (PiP2) draws whatever lies on its surface; PiP1 only adds what lies beyond it, as the same picture so the two meet without a seam.

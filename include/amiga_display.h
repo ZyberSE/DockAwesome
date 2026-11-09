@@ -9,6 +9,10 @@ struct RastPort;
 typedef struct AmigaDisplay AmigaDisplay;
 AmigaDisplay *amiga_display_open(struct Screen *screen, int width, int height);
 void amiga_display_close(AmigaDisplay *display);
+/* Reuse an RTG display for a new size, growing its upload buffer as needed.
+   Returns 0 on indexed screens, a changed screen bitmap or no memory;
+   the caller then closes it and opens a new one. */
+int amiga_display_resize(AmigaDisplay *display, int width, int height);
 /* encode565 writes big-endian RGB565, used for direct uploads to RGB16
    bitmaps; NULL keeps the RGB24 upload. */
 void amiga_display_set_converters(AmigaDisplay *display, DockConvertRGB24 encode, DockConvertRGB565 decode,
@@ -24,8 +28,11 @@ int amiga_display_capture565(AmigaDisplay *display, unsigned char *cache,
    Its bounds are relative to the Dock canvas. Returns -1 on read failure. */
 int amiga_display_drag_reference565(AmigaDisplay *display, struct BitMap *backing,
     unsigned char *reference, int visible_width);
+/* marked bounds every nonzero mask pixel (empty when left >= right): only
+   its union with the pointer box is scanned, and it returns the new bound.
+   NULL scans the whole mask. */
 int amiga_display_drag_mask565(AmigaDisplay *display, const unsigned char *reference,
-    unsigned char *mask, int x, int y, int left, int top, int right, int bottom,
+    unsigned char *mask, DockRect *marked, int x, int y, int left, int top, int right, int bottom,
     DockBytesEqual equal);
 int amiga_display_present(AmigaDisplay *display, struct Window *window, const DockImage *image);
 /* With no background, the caller initializes the returned back buffer. */

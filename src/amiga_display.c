@@ -23,6 +23,7 @@ struct AmigaDisplay {
     DockConvertRGB565 rgb565_to_rgba, rgba_to_rgb565;
     int width, height, depth, stride;
     unsigned char *upload, *lookup;
+    size_t upload_capacity; /* RTG upload bytes, so amiga_display_resize can reuse them */
     int shared_lookup;
     ULONG palette[256 * 3];
     struct RastPort temp;
@@ -119,7 +120,8 @@ AmigaDisplay *amiga_display_open(struct Screen *screen, int width, int height)
             amiga_display_close(d); return NULL;
         }
         d->stride = width * 3;
-        d->upload = malloc((size_t)d->stride * height);
+        d->upload_capacity = (size_t)d->stride * height;
+        d->upload = malloc(d->upload_capacity);
     } else {
         /* WritePixelArray8 requires 16-pixel row alignment and a one-row temporary bitmap. */
         d->stride = (width + 15) & ~15;
@@ -145,6 +147,25 @@ void amiga_display_close(AmigaDisplay *d)
     free_lookup(d); free(d->upload);
     if (d->cyber) CloseLibrary(d->cyber);
     free(d);
+}
+
+int amiga_display_resize(AmigaDisplay *d, int width, int height)
+{
+    size_t bytes;
+    if (!d || d->depth <= 8 || width < 1 || height < 1 ||
+        d->screen->RastPort.BitMap != d->source_bitmap) return 0;
+    if (width == d->width && height == d->height) return 1;
+    bytes = (size_t)width*3*height;
+    if (bytes > d->upload_capacity) {
+        unsigned char *upload = malloc(bytes);
+        if (!upload) return 0;
+        free(d->upload);
+        d->upload = upload;
+        d->upload_capacity = bytes;
+    }
+    if (d->frame_bitmap) { WaitBlit(); FreeBitMap(d->frame_bitmap); d->frame_bitmap = NULL; }
+    d->width = width; d->height = height; d->stride = width*3;
+    return 1;
 }
 
 void amiga_display_set_converters(AmigaDisplay *d, DockConvertRGB24 encode, DockConvertRGB565 decode,
@@ -223,11 +244,12 @@ int amiga_display_drag_reference565(AmigaDisplay *d, struct BitMap *backing,
 }
 
 int amiga_display_drag_mask565(AmigaDisplay *d, const unsigned char *reference,
-    unsigned char *mask, int x, int y, int left, int top, int right, int bottom,
+    unsigned char *mask, DockRect *marked, int x, int y, int left, int top, int right, int bottom,
     DockBytesEqual equal)
 {
     struct RastPort rp;
-    int row, col, changed = 0, width;
+    int row, col, changed = 0, width, scan_left = left, scan_top = top, scan_right = right, scan_bottom = bottom;
+    int marked_top = -1, marked_bottom = 0;
     if (!d) return -1;
     width = d->width;
     if (!d->cyber || d->depth != 16 || !reference || !mask ||
@@ -236,29 +258,48 @@ int amiga_display_drag_mask565(AmigaDisplay *d, const unsigned char *reference,
         left >= right || top >= bottom || x < 0 || y < 0 ||
         x+right > d->screen->Width || y+bottom > d->screen->Height) return -1;
     if (!equal) equal = dock_bytes_equal_c;
+    /* Stale 1s can only lie inside the previous box: scan its union with
+       the pointer box. Without a box, scan the whole mask. */
+    if (!marked) { scan_left = scan_top = 0; scan_right = width; scan_bottom = d->height; }
+    else if (marked->left < marked->right && marked->top < marked->bottom) {
+        if (marked->left < scan_left) scan_left = marked->left > 0 ? marked->left : 0;
+        if (marked->top < scan_top) scan_top = marked->top > 0 ? marked->top : 0;
+        if (marked->right > scan_right) scan_right = marked->right < width ? marked->right : width;
+        if (marked->bottom > scan_bottom) scan_bottom = marked->bottom < d->height ? marked->bottom : d->height;
+    }
     /* Workbench can keep Layers locked throughout a drag. This RastPort has
        no Layer and the SAGA native GetImage copies without taking its lock. */
     InitRastPort(&rp);
     rp.BitMap = d->source_bitmap;
     if (ReadPixelArray(d->upload,left,top,width*2,&rp,x+left,y+top,
             right-left,bottom-top,RECTFMT_RAW) != (ULONG)(right-left)*(bottom-top)) return -1;
-    for (row = 0; row < d->height; ++row) {
+    for (row = scan_top; row < scan_bottom; ++row) {
         unsigned char *line = mask+(size_t)row*width;
         const unsigned char *a = reference+(size_t)row*width*2;
         const unsigned char *b = d->upload+(size_t)row*width*2;
+        int any = 0;
         if (row < top || row >= bottom || equal(a+left*2,b+left*2,(right-left)*2)) {
-            if (memchr(line,1,width)) { memset(line,0,width); changed = 1; }
+            if (memchr(line+scan_left,1,scan_right-scan_left)) {
+                memset(line+scan_left,0,scan_right-scan_left); changed = 1;
+            }
             continue;
         }
-        if (left && memchr(line,1,left)) { memset(line,0,left); changed = 1; }
-        if (right < width && memchr(line+right,1,width-right)) {
-            memset(line+right,0,width-right); changed = 1;
+        if (left > scan_left && memchr(line+scan_left,1,left-scan_left)) {
+            memset(line+scan_left,0,left-scan_left); changed = 1;
+        }
+        if (right < scan_right && memchr(line+right,1,scan_right-right)) {
+            memset(line+right,0,scan_right-right); changed = 1;
         }
         for (col = left; col < right; ++col) {
             int pixel = a[col*2] != b[col*2] || a[col*2+1] != b[col*2+1];
+            any |= pixel;
             if (line[col] != pixel) { line[col] = pixel; changed = 1; }
         }
+        if (any) { if (marked_top < 0) marked_top = row; marked_bottom = row+1; }
     }
+    /* Every 1 now lies in the pointer box, on the rows found. */
+    if (marked) *marked = marked_top < 0 ? (DockRect){0,0,0,0} :
+        (DockRect){left,marked_top,right,marked_bottom};
     return changed;
 }
 

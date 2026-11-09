@@ -673,11 +673,35 @@ Plan (ApolloOS keeps today's path unchanged):
       interface.
 - [x] 4. The failure text says "Could not open" plus path and reason, not
       "Workbench".
+- [x] 3b. Directory Opus 4.17 (ApolloOS, Coffin) also names its port
+      DOPUS.1 but has no lister commands: the probe and every ARexx send
+      now also need dopus5.library in memory. With DOpus 4 running,
+      --caps says dopus no and a drawer pin gives "object is not of
+      required type" without talking to it (Vampire, 2026-11-09).
 - [ ] 5. Verify on the Vampire with --self-launch: tool, tool with a large
       stack (Status in a Shell), project with .info, DefIcons document, a
       CLI tooltype, a script, Folder Stack open, the dock quit while a
       started program runs, PiP sweep unchanged. Then a test build for the
       AmiKit user with --caps.
+
+Vampire, ApolloOS R9.5, --self-launch, test tools in RAM: (2026-11-09):
+- TOOLPRI=-5 on a tool icon: the process ran at -5. A project with no
+  TOOLPRI started its tool at 0, as Workbench does.
+- $STACK:200000 in a tool with an 8192 icon: 200000 bytes.
+- Project (stack 100000, default tool "plain" next to it): plain started
+  with 100000 bytes and WBStartup args plain + doc in RAM:lt.
+- CLI tooltype: ran from a Shell, argc 1, current dir the icon's drawer.
+  The command got the Shell's default stack (40960 here), not the icon's
+  50000: SystemTags' NP_StackSize sets the Shell process, and Directory
+  Opus 5 launches CLI icons the same way.
+- REXX tooltype: RX "<path>" ran the path as ARexx source (error 41);
+  fixed with RX "call '<path>'". hello.rexx and "it's a script.rexx" then
+  ran from the dock in their drawer.
+- Lock check: a drawer stayed locked after its tool ended, but Workbench's
+  own OpenWorkbenchObjectA of the same libnix test tool leaves the same
+  lock, and a tool with no C startup leaves none with any combination of
+  NP_CurrentDir/NP_HomeDir. Not caused by the dock's launcher.
+- Not run: DOpus 5 listers (only DOpus 4.17 here); needs AmiKit.
 
 Not possible under DOpus: a list of running programs. Its launch list is
 private (LibData.launch_list) and neither ARexx nor dopus5.library exposes

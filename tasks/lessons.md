@@ -201,3 +201,14 @@
   R4 autodocs and release notes are now in ../amiga-refs/amigaos-3.2; the
   wb release notes showed $STACK: and the CLI/REXX tool types, which I had
   wrongly called absent from Workbench 3.x (2026-11-09).
+- Screenshots do not show the SAGA PiP layer. The installed dock (PiP, from
+  WBStartup) is invisible in them, and its hover labels ("Music",
+  "Internet") look like stray text. Put a test dock on another edge, or quit
+  the installed one, before clicking: test clicks at the bottom started
+  AmigaAMP through the installed dock (2026-11-09).
+- Before blaming the dock for a leaked lock (or other resource), repeat the
+  launch with a control: the same tool through Workbench, and a tool with no
+  C startup. A drawer "leak" here came from the libnix test tool on
+  ApolloOS; Workbench left the same lock (2026-11-09).
+- RX treats a quoted first argument as ARexx source, not a file name. Run
+  a script by path with RX "call '<path>'" (2026-11-09).

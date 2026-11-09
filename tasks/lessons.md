@@ -246,3 +246,7 @@
 ## Cancelling a Workbench drag in tests on Coffin (2026-11-09)
 - A right-click to cancel the drag opened a MagicMenu menu; Esc then closed the active drawer window. Reopen it with ARexx `WINDOW "<path>" OPEN`.
 - Rule: end a test drag by releasing over the icon's own window (or its start point) instead of the right button.
+
+## Workbench draws its drag image after the pointer moves (2026-11-10)
+- A per-sample log on Coffin showed the pointer at its new place while the screen still held the drag image at the old one; it caught up a sample later. Shifting the reveal to the pointer therefore made it worse, and holes in PiP2 always lag the image.
+- Rule: over the dock, paint the drag image's sampled pixels into the PiP buffer instead of revealing the screen; log per-sample data before choosing between such fixes.

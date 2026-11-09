@@ -379,7 +379,7 @@ int amiga_display_drag_reference565(AmigaDisplay *d, struct BitMap *backing,
 
 int amiga_display_drag_mask565(AmigaDisplay *d, const unsigned char *reference,
     unsigned char *mask, DockRect *marked, int x, int y, int left, int top, int right, int bottom,
-    DockBytesEqual equal)
+    DockBytesEqual equal, unsigned char *colors)
 {
     struct RastPort rp;
     int row, col, changed = 0, width, scan_left = left, scan_top = top, scan_right = right, scan_bottom = bottom;
@@ -433,6 +433,10 @@ int amiga_display_drag_mask565(AmigaDisplay *d, const unsigned char *reference,
             int pixel = a[col*2] != b[col*2] || a[col*2+1] != b[col*2+1];
             any |= pixel;
             if (line[col] != pixel) { line[col] = pixel; changed = 1; }
+            if (pixel && colors) {
+                unsigned char *c = colors+((size_t)row*width+col)*2;
+                if (c[0] != b[col*2] || c[1] != b[col*2+1]) { c[0] = b[col*2]; c[1] = b[col*2+1]; changed = 1; }
+            }
         }
         if (any) { if (marked_top < 0) marked_top = row; marked_bottom = row+1; }
     }

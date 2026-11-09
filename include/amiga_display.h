@@ -33,10 +33,11 @@ int amiga_display_drag_reference565(AmigaDisplay *display, struct BitMap *backin
     unsigned char *reference, int visible_width);
 /* marked bounds every nonzero mask pixel (empty when left >= right): only
    its union with the pointer box is scanned, and it returns the new bound.
-   NULL scans the whole mask. */
+   NULL scans the whole mask. colors (RGB565, the reference's layout), when
+   given, receives the screen's pixel wherever the mask is set. */
 int amiga_display_drag_mask565(AmigaDisplay *display, const unsigned char *reference,
     unsigned char *mask, DockRect *marked, int x, int y, int left, int top, int right, int bottom,
-    DockBytesEqual equal);
+    DockBytesEqual equal, unsigned char *colors);
 int amiga_display_present(AmigaDisplay *display, struct Window *window, const DockImage *image);
 /* An RGBA image into an RTG RastPort (an off-screen bitmap) at 0,0, and
    back out of it. Return 0 on failure. */

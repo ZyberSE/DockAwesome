@@ -45,8 +45,7 @@ static int update_drag_mask(App *app, int sample)
     if (amiga_drop_catcher_active(app->drop_catcher) && app->input_context.external_held &&
         app->input_context.external_dragged && right > left && bottom > top) {
         int changed, reference_changed = 0;
-        if (!sample)
-            return app->drag_mask_live && (x != app->drag_shown_x || y != app->drag_shown_y);
+        if (!sample) return 0;
         if (!app->drag_reference) {
             if (amiga_display_drag_reference565(app->display,
                     amiga_drop_catcher_backing(app->drop_catcher),app->source565,pip_visible_width(app))) {
@@ -59,12 +58,11 @@ static int update_drag_mask(App *app, int sample)
         }
         if (app->drag_reference > 0) {
             changed = amiga_display_drag_mask565(app->display,app->source565,app->drag_mask,
-                &app->drag_box,app->left,app->top,left,top,right,bottom,app->renderer.pixels->bytes_equal);
+                &app->drag_box,app->left,app->top,left,top,right,bottom,app->renderer.pixels->bytes_equal,
+                app->drag_color);
             if (changed >= 0) {
                 app->drag_mask_live = 1;
-                app->drag_sample_x = x; app->drag_sample_y = y;
-                /* The present places the mask at the pointer: a move alone redraws. */
-                return changed || reference_changed || x != app->drag_shown_x || y != app->drag_shown_y;
+                return changed || reference_changed;
             }
         }
     }
@@ -205,14 +203,12 @@ static int live_capture(App *app, int full_compare)
 }
 
 /* Coverage masks for one row span of a PiP conversion, applied to the
-   scratch copy: the native drag image under a Workbench drag, the popup or
-   an owned dialog over the dock, and the keyed tail past the window. */
+   scratch copy: the popup or an owned dialog over the dock, and the keyed
+   tail past the window. */
 typedef struct {
     App *app;
     DockRect clip;
     int popup, visible_width, count, ui_revealed;
-    int shift_x, shift_y; /* the drag mask moved with the pointer since its sample */
-    ULONG revealed;
 } PipMask;
 
 static void pip_mask(void *context, int y, int left, int right, unsigned char *span)
@@ -220,18 +216,6 @@ static void pip_mask(void *context, int y, int left, int right, unsigned char *s
     PipMask *m = context;
     App *app = m->app;
     int width = app->width;
-    if (app->drag_mask_live && y-m->shift_y >= app->drag_box.top && y-m->shift_y < app->drag_box.bottom) {
-        /* The native drag image follows the pointer; the mask, read up to
-           a few frames ago, is shifted to where the pointer is now. */
-        const unsigned char *mask = app->drag_mask+(size_t)(y-m->shift_y)*width;
-        int a = left-m->shift_x, b = right-m->shift_x, x;
-        const unsigned char *first;
-        if (a < app->drag_box.left) a = app->drag_box.left;
-        if (b > app->drag_box.right) b = app->drag_box.right;
-        first = b > a ? memchr(mask+a,1,(size_t)(b-a)) : NULL;
-        if (first) for (x = (int)(first-mask); x < b; ++x)
-            if (mask[x] && span[x+m->shift_x-left]) { span[x+m->shift_x-left] = 0; if (m->count) ++m->revealed; }
-    }
     if (y >= m->clip.top && y < m->clip.bottom) {
         int a, b;
         if (m->popup) {
@@ -254,6 +238,31 @@ static void pip_mask(void *context, int y, int left, int right, unsigned char *s
     }
 }
 
+/* PiP2 lies over the screen, so a Workbench drag image under the dock's
+   opaque pixels is painted into the PiP buffer: the pixels read at the last
+   sample. Holes that let the screen through instead lagged behind the image
+   (Workbench draws it after the pointer moves), cutting it at the plate.
+   Where the dock is clear the screen's own image shows. */
+static ULONG paint_drag_image(App *app, unsigned char *buffer, int stride)
+{
+    ULONG painted = 0;
+    int y, x;
+    for (y = app->drag_box.top; y < app->drag_box.bottom; ++y) {
+        const unsigned char *mask = app->drag_mask+(size_t)y*app->width;
+        const unsigned char *cover = app->coverage+(size_t)y*app->width;
+        const unsigned char *color = app->drag_color+(size_t)y*app->width*2;
+        unsigned char *out = buffer+(size_t)y*stride;
+        for (x = app->drag_box.left; x < app->drag_box.right; ++x)
+            if (mask[x] && cover[x]) {
+                unsigned int v = ((unsigned int)color[x*2]<<8)|color[x*2+1];
+                if (v == 0xf81f) v ^= 0x20; /* never the colour key */
+                out[x*2] = (unsigned char)(v>>8); out[x*2+1] = (unsigned char)v;
+                ++painted;
+            }
+    }
+    return painted;
+}
+
 /* Encode and key the frame into the back buffer and show it, unless
    another screen or a native menu is in front. */
 static void pip_show(App *app, const DockImage *frame)
@@ -262,6 +271,7 @@ static void pip_show(App *app, const DockImage *frame)
     DockDamage *pending;
     int back, masked, stride;
     unsigned long pixels;
+    ULONG painted = 0;
     unsigned char *buffer;
     uint64_t started = app->profile ? profile_clock() : 0, encoded, converted;
     if (pip_blocked_by_screen_or_menu(app)) return;
@@ -272,15 +282,6 @@ static void pip_show(App *app, const DockImage *frame)
     pending = &app->pip_pending[back];
     memset(&mask,0,sizeof(mask));
     mask.app = app; mask.visible_width = pip_visible_width(app); mask.count = app->profile;
-    if (app->drag_mask_live) {
-        int x = app->screen->MouseX-app->left, y = app->screen->MouseY-app->top;
-        ULONG travel;
-        mask.shift_x = x-app->drag_sample_x; mask.shift_y = y-app->drag_sample_y;
-        app->drag_shown_x = x; app->drag_shown_y = y;
-        travel = (ULONG)(abs(mask.shift_x)+abs(mask.shift_y));
-        ++app->stats.drag_shift_frames; app->stats.drag_shift_sum += travel;
-        if (travel > app->stats.drag_shift_peak) app->stats.drag_shift_peak = travel;
-    }
     mask.popup = dock_ui_popup_bounds(app->ui,&mask.clip);
     if (mask.popup) {
         mask.clip.left -= app->left; mask.clip.right -= app->left;
@@ -303,6 +304,7 @@ static void pip_show(App *app, const DockImage *frame)
     }
     /* This buffer now holds the current frame, whether or not the
        present below succeeds. */
+    if (app->drag_mask_live) painted = paint_drag_image(app,buffer,stride);
     dock_damage_clear(pending);
     app->pip_masked[back] = masked;
     if (app->check565) {
@@ -313,15 +315,16 @@ static void pip_show(App *app, const DockImage *frame)
         dock_damage_set_full(&whole);
         dock_convert565_damage(app->check565,frame->width*2,frame,app->coverage,&whole,app->scratch,
             app->renderer.pixels->encode565,app->renderer.pixels->key565,pip_mask,&reference);
+        if (app->drag_mask_live) paint_drag_image(app,app->check565,frame->width*2);
         for (y = 0; y < frame->height; ++y)
             if (memcmp(buffer+(size_t)y*stride,app->check565+(size_t)y*frame->width*2,(size_t)frame->width*2)) {
                 ++app->stats.convert_mismatch;
                 break;
             }
     }
-    if (app->profile && mask.revealed) {
+    if (app->profile && painted) {
         ++app->stats.drag_reveal_frames;
-        if (mask.revealed > app->stats.drag_reveal_peak) app->stats.drag_reveal_peak = mask.revealed;
+        if (painted > app->stats.drag_reveal_peak) app->stats.drag_reveal_peak = painted;
     }
     converted = app->profile ? profile_clock() : 0;
     app->pip_visible = amiga_pip_present(app->pip);
@@ -380,6 +383,7 @@ static int pip_open(App *app)
     app->source565 = malloc((size_t)app->width*app->height*2);
     app->coverage = calloc((size_t)app->width, app->height);
     app->drag_mask = calloc((size_t)app->width, app->height);
+    app->drag_color = calloc((size_t)app->width*2, app->height);
     app->scratch = malloc((size_t)app->width);
     app->renderer.coverage = app->coverage;
     /* PiP owns all visible pixels. The native receiver only has a
@@ -387,7 +391,7 @@ static int pip_open(App *app)
     app->shape = NewRegion();
     app->stats.shape_rects = region_rect_count(app->shape);
     if (app->stats.shape_rects > app->stats.shape_rects_peak) app->stats.shape_rects_peak = app->stats.shape_rects;
-    if (!app->source565 || !app->coverage || !app->drag_mask || !app->scratch || !app->shape) return 0;
+    if (!app->source565 || !app->coverage || !app->drag_mask || !app->drag_color || !app->scratch || !app->shape) return 0;
     app->pip = amiga_pip_open(app->screen, app->left, app->top, app->width,
         app->height, right_padding, app->surface_error, sizeof(app->surface_error));
     if (!app->pip) return 0;
@@ -460,6 +464,7 @@ static void pip_close(App *app)
     app->renderer.coverage = NULL;
     free(app->coverage); app->coverage = NULL;
     free(app->drag_mask); app->drag_mask = NULL;
+    free(app->drag_color); app->drag_color = NULL;
     app->drag_reference = app->drag_mask_live = 0;
     app->drag_box = (DockRect){0,0,0,0};
     app->source_valid = app->pip_visible = 0;

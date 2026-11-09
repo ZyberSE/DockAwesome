@@ -139,7 +139,9 @@ static int live_capture(App *app, int full_compare)
         struct Layer *layer;
         int obscured = 0;
         clip = dialog_clip(app);
-        for (layer = app->window->WLayer->front; layer; layer = layer->front)
+        /* The one-pixel receiver (no shapes) comes to the front when it
+           catches a drop; its place at rest does not matter. */
+        if (app->caps.shaped_windows) for (layer = app->window->WLayer->front; layer; layer = layer->front)
             if (layer->Window && layer->Window != app->window &&
                 !dock_ui_owns_window(app->ui,layer->Window) &&
                 !amiga_drag_preview_owns(app->drag_preview,layer->Window)) { obscured = 1; break; }
@@ -383,14 +385,19 @@ static int pip_open(App *app)
     if (!app->caps.shaped_windows) {
         /* Classic Intuition has no window shapes. The receiver rests as one
            undrawn pixel in the screen corner, outside the captured box, and
-           keeps the event loop's port. */
+           moves onto the dock only while a Workbench icon drag may end there. */
         app->window = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)app->screen,
             WA_Left, 0, WA_Top, 0, WA_Width, 1, WA_Height, 1,
             WA_Borderless, TRUE, WA_Activate, FALSE, WA_RMBTrap, TRUE,
             WA_SimpleRefresh, TRUE, WA_NoCareRefresh, TRUE,
             WA_BackFill, (ULONG)LAYERS_NOBACKFILL,
             WA_IDCMP, IDCMP_FLAGS & ~IDCMP_REFRESHWINDOW, TAG_DONE);
-        return app->window != NULL;
+        if (!app->window) return 0;
+        app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
+        if (!app->appwindow) return 0;
+        app->drop_catcher = amiga_drop_catcher_init(app->screen, app->window, NULL,
+            app->left, app->top, pip_visible_width(app), app->height);
+        return app->drop_catcher != NULL;
     }
     app->window = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)app->screen,
         WA_Left, app->left, WA_Top, app->top, WA_Width, app->width-right_padding, WA_Height, app->height,
@@ -406,7 +413,7 @@ static int pip_open(App *app)
     app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
     if (!app->appwindow) return 0;
     app->drop_catcher = amiga_drop_catcher_init(app->screen, app->window,
-        app->shape, pip_visible_width(app), app->height);
+        app->shape, app->left, app->top, pip_visible_width(app), app->height);
     return app->drop_catcher != NULL;
 }
 

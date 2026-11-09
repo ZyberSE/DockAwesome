@@ -194,3 +194,9 @@
   ApolloOS with 1.5 GB it did not return, Break did not stop it, and
   afterwards neither the agent nor new programs started. Read free memory
   from the Workbench title bar instead (2026-11-09).
+- Read ../amiga-refs (RKM Libraries/Devices 3rd ed., HRM, Apollo docs)
+  before building on OS behaviour, not only third-party source: its
+  Workbench chapter showed that Workbench runs a project with the project
+  icon's stack and TOOLPRI, which the first launcher had wrong. The
+  toolchain's ndk-include is NDK 3.2 (V47) headers; there are no 3.2
+  autodocs locally (2026-11-09).

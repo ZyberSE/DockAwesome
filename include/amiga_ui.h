@@ -49,7 +49,6 @@ int dock_ui_open_popup(DockUI *ui, DockEdge edge, int anchor_x, int anchor_y,
     int item_action, int can_keep, int drawer);
 int dock_ui_open_folder(DockUI *ui, DockEdge edge, int x, int y, const char *path,
     int icon_size, DockUIReadIcon read_icon, const void *context, int profile);
-void dock_ui_close_popup(DockUI *ui);
 void dock_ui_dismiss_popup(DockUI *ui);
 int dock_ui_popup_bounds(const DockUI *ui, DockRect *bounds);
 void dock_ui_popup_span(const DockUI *ui, int row, int *left, int *right);

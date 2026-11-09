@@ -26,10 +26,11 @@ void dock_damage_merge(DockDamage *dst, const DockDamage *src, int width, int he
    on whole quads and octets; widened or overlapping spans are harmless
    because encode plus key is idempotent per pixel. The coverage span is
    copied to scratch (width bytes), mask may clear it, then key uses it:
-   coverage itself is never written. A NULL coverage counts as covered. */
+   coverage itself is never written. A NULL coverage counts as covered.
+   Returns the pixels converted, widening included; 0 when nothing is. */
 typedef void (*DockCoverageMask)(void *context, int y, int left, int right,
                                  unsigned char *coverage_span);
-void dock_convert565_damage(unsigned char *buffer, int stride,
+unsigned long dock_convert565_damage(unsigned char *buffer, int stride,
     const DockImage *frame, const unsigned char *coverage,
     const DockDamage *damage, unsigned char *scratch,
     DockConvertRGB565 encode, DockKeyRGB565 key,
@@ -41,7 +42,8 @@ typedef struct { const DockImage *image; int x, y; } DockOverlay;
 #define DOCK_MAX_OVERLAYS (DOCK_MAX_ITEMS+1)
 
 /* The plate as drawn: dock_edge_panel_rect with the center_panel mirror,
-   and its corner radius. Returns 0 when nothing is drawn. */
+   and its corner radius. An empty plate is {0,0,0,0} with radius 0.
+   Returns 0 when nothing is drawn. */
 int dock_render_panel(const DockSettings *s, int edge, const DockPlacement *p, int count,
                       int width, int height, int center_panel, DockRect *rect, int *radius);
 /* dock_render_oriented_mask plus overlays, writing canvas and coverage only
@@ -57,9 +59,9 @@ void dock_render_oriented_clip(DockImage *canvas, const DockImage *backdrop,
 /* The inputs of the last draw, compared field by field to find damage. */
 typedef struct {
     int valid;
-    const unsigned char *canvas, *backdrop, *coverage;
+    const unsigned char *canvas, *backdrop, *coverage; /* backdrop: NULL when not captured. */
     const void *pixels;
-    int width, height, captured, edge, center_panel, count, radius, overlay_count;
+    int width, height, edge, center_panel, count, radius, overlay_count;
     DockSettings settings;
     DockRect panel; /* Empty plates are stored as {0,0,0,0}. */
     DockPlacement placement[DOCK_MAX_ITEMS];

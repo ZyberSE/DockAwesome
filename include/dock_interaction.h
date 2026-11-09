@@ -3,6 +3,8 @@
 #include "dock_core.h"
 
 enum { DOCK_GESTURE_DOWN, DOCK_GESTURE_MOVE, DOCK_GESTURE_UP, DOCK_GESTURE_CANCEL };
+/* Pointer travel in pixels beyond which a press becomes a drag. */
+enum { DOCK_DRAG_THRESHOLD = 4 };
 enum {
     DOCK_INPUT_COORDS_VALID = 1,
     DOCK_INPUT_SAME_SCREEN = 2,

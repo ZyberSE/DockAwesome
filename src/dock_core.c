@@ -83,7 +83,7 @@ void dock_cache_free(DockCache *cache)
 enum { RUN_OPAQUE = 0x8000 };
 /* Runs of nonzero alpha per row, split where opacity changes; see DockCache.
    Run indices and lengths fit 16 bits for images up to 255 px. */
-static uint16_t *build_runs(const DockImage *im, size_t *bytes)
+static uint16_t *build_runs(const DockImage *im)
 {
     uint16_t *runs = NULL;
     size_t count = 0;
@@ -91,11 +91,7 @@ static uint16_t *build_runs(const DockImage *im, size_t *bytes)
     if (w < 1 || h < 1 || w > 255 || h > 255) return NULL;
     for (pass = 0; pass < 2; ++pass) {
         size_t n = 0;
-        if (pass) {
-            *bytes = ((size_t)h+1+count*2)*sizeof(uint16_t);
-            runs = (uint16_t *)malloc(*bytes);
-            if (!runs) return NULL;
-        }
+        if (pass && !(runs = (uint16_t *)malloc(((size_t)h+1+count*2)*sizeof(uint16_t)))) return NULL;
         for (y = 0; y < h; ++y) {
             const unsigned char *row = im->pixels+(size_t)y*w*4;
             if (pass) runs[y] = (uint16_t)n;
@@ -455,10 +451,8 @@ static int cache_build(DockCache *out, const DockImage *source, const DockSettin
         if (!taps_build(&xt,w,cw,4) || !taps_build(&yt,h,ch,cw*4)) goto done;
         resample(dst->pixels+((size_t)oy*n+ox)*4,n*4,w,h,premultiplied,cw,&xt,&yt,column);
     }
-    for (l = 0; l < out->levels; ++l) {
-        size_t bytes = 0;
-        if (!(out->runs[l] = build_runs(&out->image[l],&bytes))) goto done;
-    }
+    for (l = 0; l < out->levels; ++l)
+        if (!(out->runs[l] = build_runs(&out->image[l]))) goto done;
     ok = 1;
 done:
     taps_free(&xt); taps_free(&yt);
@@ -545,6 +539,15 @@ static int32_t wave_weight(int32_t offset)
         sample[j+1]*((-3*f3+4*f2+(f<<12))/2/256)+sample[j+2]*((f3-f2)/2/256);
 }
 
+/* Item i's size plus the gaps to its neighbors: its share of the row's total. */
+static int slot_span(const DockSettings *s, const DockPlacement *p, int count, int i)
+{
+    int span = p[i].size;
+    if (i) span += pair_gap(s, p[i-1].size, p[i].size);
+    if (i+1 < count) span += pair_gap(s, p[i].size, p[i+1].size);
+    return span;
+}
+
 int dock_layout(const DockSettings *s, int count, int width, int height,
                 int mx, int my, int active, DockPlacement *out)
 {
@@ -608,14 +611,10 @@ int dock_layout(const DockSettings *s, int count, int width, int height,
         for (i = 0; i < count; ++i)
             if (out[i].level && (largest < 0 || out[i].level > out[largest].level)) largest = i;
         if (largest < 0) return 0;
-        total -= out[largest].size;
-        if (largest) total -= pair_gap(s, out[largest-1].size, out[largest].size);
-        if (largest+1 < count) total -= pair_gap(s, out[largest].size, out[largest+1].size);
+        total -= slot_span(s, out, count, largest);
         --out[largest].level;
         out[largest].size = level_size(s, out[largest].level);
-        total += out[largest].size;
-        if (largest) total += pair_gap(s, out[largest-1].size, out[largest].size);
-        if (largest+1 < count) total += pair_gap(s, out[largest].size, out[largest+1].size);
+        total += slot_span(s, out, count, largest);
     }
     {
         int relative = mx-start, mapped = 0;
@@ -696,13 +695,9 @@ void dock_animation_reset(DockAnimation *animation)
    before the start when its size jumps, and the overlap push can carry the
    last one past the end: shift the row, then pack from the violated end. */
 static void keep_row_inside(DockAnimation *animation, DockPlacement *current,
-    const DockPlacement *before, const DockPlacement *target, int count)
+    int count, int start, int end)
 {
-    int last = count-1, i, shift;
-    int start = before[0].x < target[0].x ? before[0].x : target[0].x;
-    int end = before[last].x+before[last].size, target_end = target[last].x+target[last].size;
-    int over, under;
-    if (target_end > end) end = target_end;
+    int last = count-1, i, shift, over, under;
     under = start-current[0].x;
     if (under > 0) {
         shift = end-(current[last].x+current[last].size);
@@ -737,7 +732,7 @@ int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlace
                       const DockPlacement *target, int count)
 {
     enum { TRANSITION_TICKS = 8 };
-    int i, active = 0, envelope;
+    int i, active = 0, envelope, start, end, target_end;
     int levels[DOCK_MAX_ITEMS], weight = 512;
     DockPlacement before[DOCK_MAX_ITEMS];
     if (!dock_settings_valid(s) || !animation || !current || !target || count < 1 || count > DOCK_MAX_ITEMS) return 0;
@@ -771,15 +766,16 @@ int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlace
         for (i = 0; i < count; ++i) levels[i] = ease(current[i].level, target[i].level);
     }
     memcpy(before, current, (size_t)count*sizeof(*current));
+    /* The span of the previous and target rows. */
+    start = before[0].x < target[0].x ? before[0].x : target[0].x;
+    end = before[count-1].x+before[count-1].size; target_end = target[count-1].x+target[count-1].size;
+    if (target_end > end) end = target_end;
     {
-        /* Rounded intermediate levels can make the row wider than the span
-           of the previous and target rows, which keep_row_inside cannot pack
-           without overlap. Shrink the icons furthest above their target
-           first; the target row fits, so this ends at or above it. */
-        int start = before[0].x < target[0].x ? before[0].x : target[0].x;
-        int end = before[count-1].x+before[count-1].size, target_end = target[count-1].x+target[count-1].size;
+        /* Rounded intermediate levels can make the row wider than that span,
+           which keep_row_inside cannot pack without overlap. Shrink the icons
+           furthest above their target first; the target row fits, so this
+           ends at or above it. */
         int64_t width = 0;
-        if (target_end > end) end = target_end;
         for (i = 0; i < count; ++i) width += level_size(s, levels[i]);
         while (width > end-start) {
             int over = -1;
@@ -808,7 +804,7 @@ int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlace
         next.y = target[i].y + target[i].size - next.size;
         current[i] = next;
     }
-    keep_row_inside(animation, current, before, target, count);
+    keep_row_inside(animation, current, count, start, end);
     /* The ease-out reaches the target before its last ticks. End it there,
        so a later retarget eases instead of jumping on a near-full weight. */
     if (envelope && !memcmp(current, target, (size_t)count*sizeof(*current)))
@@ -827,23 +823,26 @@ int dock_hit_test(const DockPlacement *p, int count, int x, int y)
     return -1;
 }
 
+int dock_image_opaque_at(const DockImage *im, int x, int y)
+{
+    return im && im->pixels && x >= 0 && y >= 0 && x < im->width && y < im->height &&
+        im->pixels[((size_t)y*im->width+x)*4+3];
+}
+
 int dock_hover_contains(const DockSettings *s, const DockPlacement *p, int count,
                         int width, int height, int x, int y)
 {
-    int64_t left, right;
-    int top, bottom, i;
-    if (!dock_settings_valid(s) || count < 0 || count > DOCK_MAX_ITEMS ||
-        (count && !p) || width < 1 || height < 1 ||
-        x < 0 || y < 0 || x >= width || y >= height) return 0;
-    left = count ? (int64_t)p[0].x-s->padding : s->padding;
-    right = count ? (int64_t)p[count-1].x+p[count-1].size+s->padding : width-s->padding;
-    dock_panel_cross_bounds(s,height,&top,&bottom);
+    DockRect r;
+    int i;
+    /* x lies inside [0,width), so the plate's clipping to it changes nothing. */
+    if (x < 0 || y < 0 || x >= width || y >= height ||
+        !dock_edge_panel_rect(s, DOCK_EDGE_BOTTOM, p, count, width, height, &r)) return 0;
     /* Once enlarged, retain one continuous hover band across the row. Fast
        lateral movement can reach a smaller neighbor before it has grown;
        making that empty area a leave event causes unwanted recentering. At
        rest the shelf still defines entry, excluding maximum-zoom headroom. */
-    for (i = 0; i < count; ++i) if (p[i].y < top) top = p[i].y;
-    if (x >= left && x < right && y >= top && y < bottom) return 1;
+    for (i = 0; i < count; ++i) if (p[i].y < r.top) r.top = p[i].y;
+    if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return 1;
     return dock_hit_test(p, count, x, y) >= 0;
 }
 
@@ -1182,6 +1181,12 @@ static void draw_divider(DockImage *canvas, const DockRect *panel,
     }
 }
 
+/* The image a placement draws, or NULL when its level has none. */
+static const DockImage *level_image(const DockCache *icon, int level)
+{
+    return icon && level >= 0 && level < DOCK_MAX_LEVELS && level < icon->levels ? &icon->image[level] : NULL;
+}
+
 /* Pixels [first, first+count) of the canvas from the backdrop, or the flat fill. */
 static void background_span(unsigned char *pixels, const unsigned char *backdrop,
                             const unsigned char *flat, size_t first, size_t count)
@@ -1205,7 +1210,7 @@ int dock_render_panel(const DockSettings *s, int edge, const DockPlacement *p, i
                       int width, int height, int center_panel, DockRect *out, int *out_radius)
 {
     DockRect rect;
-    int radius, top, bottom;
+    int radius;
     if (!dock_edge_panel_rect(s, (DockEdge)edge, p, count, width, height, &rect)) return 0;
     if (center_panel) {
         /* End slots have no artwork to extend that side of the panel.
@@ -1218,11 +1223,10 @@ int dock_render_panel(const DockSettings *s, int edge, const DockPlacement *p, i
             else rect.bottom = height-rect.top;
         }
     }
-    top = rect.top; bottom = rect.bottom;
-    if (rect.right <= rect.left || bottom <= top) top = bottom = 0;
-    radius = (edge == DOCK_EDGE_BOTTOM ? bottom-top : rect.right-rect.left)/4;
+    if (rect.right <= rect.left || rect.bottom <= rect.top) rect = (DockRect){0,0,0,0};
+    radius = (edge == DOCK_EDGE_BOTTOM ? rect.bottom-rect.top : rect.right-rect.left)/4;
     if (radius > (rect.right - rect.left) / 2) radius = (rect.right - rect.left) / 2;
-    if (radius > (bottom-top)/2) radius = (bottom-top)/2;
+    if (radius > (rect.bottom-rect.top)/2) radius = (rect.bottom-rect.top)/2;
     if (radius > DOCK_PANEL_MAX_RADIUS) radius = DOCK_PANEL_MAX_RADIUS;
     if (radius < 0) radius = 0;
     *out = rect; *out_radius = radius;
@@ -1284,7 +1288,6 @@ void dock_render_oriented_clip(DockImage *canvas, const DockImage *backdrop,
     back = captured ? backdrop->pixels : NULL;
     left = rect.left; right = rect.right;
     shelf_top = rect.top; shelf_bottom = rect.bottom;
-    if (right <= left || shelf_bottom <= shelf_top) shelf_top = shelf_bottom = 0;
     /* The plate rows draw their own background around the plate; every
        other row gets the backdrop (or flat fill) and no coverage here. */
     background_rows(pixels, coverage, back, flat_background, width,
@@ -1356,15 +1359,12 @@ void dock_render_oriented_clip(DockImage *canvas, const DockImage *backdrop,
     if (s->end_gap && count > 1)
         draw_divider(canvas,&rect,&p[count-2],&p[count-1],edge,s->gap+s->end_gap,&c);
     for (i = 0; i < count; ++i) {
-        int level = p[i].level;
-        if (icons[i] && level >= 0 && level < DOCK_MAX_LEVELS && level < icons[i]->levels)
-        {
-            if (icons[i]->runs[level])
-                blend_runs(canvas, &icons[i]->image[level], icons[i]->runs[level], p[i].x, p[i].y,
-                           coverage, pressed_item == i+1, &c);
-            else blend_mask(canvas, &icons[i]->image[level], p[i].x, p[i].y, coverage,
-                            pressed_item == i+1, &c);
-        }
+        const DockImage *image = level_image(icons[i], p[i].level);
+        if (!image) continue;
+        if (icons[i]->runs[p[i].level])
+            blend_runs(canvas, image, icons[i]->runs[p[i].level], p[i].x, p[i].y,
+                       coverage, pressed_item == i+1, &c);
+        else blend_mask(canvas, image, p[i].x, p[i].y, coverage, pressed_item == i+1, &c);
     }
     for (i = 0; i < overlay_count; ++i)
         if (overlays[i].image)

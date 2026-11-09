@@ -57,16 +57,17 @@ void dock_damage_merge(DockDamage *dst, const DockDamage *src, int width, int he
     for (i = 0; i < src->count && !dst->full; ++i) dock_damage_add(dst, src->rect[i], width, height);
 }
 
-void dock_convert565_damage(unsigned char *buffer, int stride,
+unsigned long dock_convert565_damage(unsigned char *buffer, int stride,
     const DockImage *frame, const unsigned char *coverage,
     const DockDamage *damage, unsigned char *scratch,
     DockConvertRGB565 encode, DockKeyRGB565 key,
     DockCoverageMask mask, void *context)
 {
     DockRect whole;
+    unsigned long pixels = 0;
     int i, n, y, width;
     if (!buffer || !frame || !frame->pixels || frame->width < 1 || frame->height < 1 ||
-        !damage || !scratch || !encode || !key) return;
+        !damage || !scratch || !encode || !key) return 0;
     width = frame->width;
     whole = (DockRect){0, 0, width, frame->height};
     n = damage->full ? 1 : damage->count;
@@ -85,8 +86,10 @@ void dock_convert565_damage(unsigned char *buffer, int stride,
             if (mask) mask(context, y, left, right, scratch);
             encode(out, frame->pixels+((size_t)y*width+left)*4, count);
             key(out, scratch, count);
+            pixels += count;
         }
     }
+    return pixels;
 }
 
 static int clamp_int(int64_t v)
@@ -105,6 +108,12 @@ static int same_settings(const DockSettings *a, const DockSettings *b)
     return a->base_size == b->base_size && a->max_size == b->max_size && a->levels == b->levels &&
         a->gap == b->gap && a->padding == b->padding && a->cache_limit == b->cache_limit &&
         a->end_gap == b->end_gap && a->edge_padding == b->edge_padding;
+}
+
+/* The image a placement draws, or NULL when its level has none. */
+static const DockImage *level_image(const DockCache *icon, int level)
+{
+    return icon && level >= 0 && level < DOCK_MAX_LEVELS && level < icon->levels ? &icon->image[level] : NULL;
 }
 
 /* Long-axis span [a,b) across the plate's cross extent. */
@@ -135,7 +144,8 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
     DockDamage *d;
     DockRect panel, full;
     const DockOverlay *overlays;
-    int radius, captured, width, height, bottom, overlay_count, i, n;
+    const unsigned char *back;
+    int radius, width, height, bottom, overlay_count, i, n;
     if (!r || !r->pixels) return;
     if (backdrop && backdrop->pixels && backdrop->width > 0 && backdrop->height > 0) {
         if (r->glass.image.width != backdrop->width || r->glass.image.height != backdrop->height) {
@@ -159,10 +169,10 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
             &panel, &radius)) { o->valid = 0; return; }
     width = canvas->width; height = canvas->height;
     bottom = r->edge == DOCK_EDGE_BOTTOM;
-    if (panel.right <= panel.left || panel.bottom <= panel.top) panel = (DockRect){0,0,0,0};
-    captured = backdrop && backdrop->pixels && backdrop->width == width && backdrop->height == height;
+    back = backdrop && backdrop->pixels && backdrop->width == width && backdrop->height == height ?
+        backdrop->pixels : NULL;
     if (!o->valid || o->canvas != canvas->pixels || o->width != width || o->height != height ||
-        o->backdrop != (captured ? backdrop->pixels : NULL) || o->captured != captured ||
+        o->backdrop != back ||
         o->coverage != r->coverage || o->pixels != (const void *)r->pixels ||
         o->edge != (int)r->edge || o->center_panel != r->center_panel || o->count != count ||
         !same_settings(&o->settings, s) || o->radius != radius ||
@@ -187,9 +197,7 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
             add_divider(d, bottom, &panel, &p[count-2], &p[count-1], width, height);
         }
         for (i = 0; i < count; ++i) {
-            int level = p[i].level;
-            const DockImage *image = icons[i] && level >= 0 && level < DOCK_MAX_LEVELS &&
-                level < icons[i]->levels ? &icons[i]->image[level] : NULL;
+            const DockImage *image = level_image(icons[i], p[i].level);
             if (memcmp(&o->placement[i], &p[i], sizeof(*p)) ||
                 o->image[i] != (image ? image->pixels : NULL) ||
                 o->pressed[i] != (r->pressed_item == i+1)) {
@@ -208,25 +216,20 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
         }
     }
     full = (DockRect){0, 0, width, height};
-    if (d->full)
+    n = d->full ? 1 : d->count;
+    for (i = 0; i < n; ++i)
         dock_render_oriented_clip(canvas, backdrop, icons, p, count, s, r->pixels->mix_half,
             &r->panel, r->coverage, r->pressed_item, r->edge, r->center_panel, glass,
-            overlays, overlay_count, &full);
-    else for (i = 0; i < d->count; ++i)
-        dock_render_oriented_clip(canvas, backdrop, icons, p, count, s, r->pixels->mix_half,
-            &r->panel, r->coverage, r->pressed_item, r->edge, r->center_panel, glass,
-            overlays, overlay_count, &d->rect[i]);
+            overlays, overlay_count, d->full ? &full : &d->rect[i]);
     /* Keep this frame's inputs for the next comparison. */
     o->valid = overlay_count <= DOCK_MAX_OVERLAYS;
     o->canvas = canvas->pixels; o->width = width; o->height = height;
-    o->backdrop = captured ? backdrop->pixels : NULL; o->captured = captured;
+    o->backdrop = back;
     o->coverage = r->coverage; o->pixels = r->pixels;
     o->edge = r->edge; o->center_panel = r->center_panel; o->count = count;
     o->settings = *s; o->panel = panel; o->radius = radius;
     for (i = 0; i < count; ++i) {
-        int level = p[i].level;
-        const DockImage *image = icons[i] && level >= 0 && level < DOCK_MAX_LEVELS &&
-            level < icons[i]->levels ? &icons[i]->image[level] : NULL;
+        const DockImage *image = level_image(icons[i], p[i].level);
         o->placement[i] = p[i];
         o->image[i] = image ? image->pixels : NULL;
         o->icon[i] = image ? image_rect(image, p[i].x, p[i].y) : (DockRect){0,0,0,0};

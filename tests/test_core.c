@@ -66,6 +66,19 @@ static void test_normalize(void)
     assert(!dock_cache_build(&cache, &source, &s));
 }
 
+static void test_image_opaque_at(void)
+{
+    unsigned char px[3*2*4] = {0};
+    DockImage im = {3, 2, px};
+    px[(1*3+2)*4+3] = 1; px[0*4+3] = 255; px[(0*3+1)*4+0] = 255; /* color only: transparent */
+    assert(dock_image_opaque_at(&im,0,0) && dock_image_opaque_at(&im,2,1));
+    assert(!dock_image_opaque_at(&im,1,0) && !dock_image_opaque_at(&im,1,1));
+    assert(!dock_image_opaque_at(&im,-1,0) && !dock_image_opaque_at(&im,0,-1));
+    assert(!dock_image_opaque_at(&im,3,0) && !dock_image_opaque_at(&im,0,2));
+    assert(!dock_image_opaque_at(&im,INT_MIN,INT_MAX) && !dock_image_opaque_at(NULL,0,0));
+    im.pixels = NULL; assert(!dock_image_opaque_at(&im,0,0));
+}
+
 static void test_reference_wave_and_hover(void)
 {
     DockSettings s = dock_settings_default();
@@ -1617,6 +1630,20 @@ static void test_mask(void *context, int y, int left, int right, unsigned char *
 /* Q4: two buffers with per-buffer pending damage, random skipped and failed
    presents and a switching mask. After every conversion the back buffer
    equals a full conversion of the current frame; coverage is never written. */
+/* Pixels dock_convert565_damage reports: rows times 8-aligned spans. */
+static unsigned long expected_conversion(const DockDamage *d, int width, int height)
+{
+    unsigned long pixels = 0;
+    int i;
+    if (d->full) return (unsigned long)width*height;
+    for (i = 0; i < d->count; ++i) {
+        const DockRect *r = &d->rect[i];
+        int right = r->right+7 < width ? (r->right+7)&~7 : width;
+        pixels += (unsigned long)(right-(r->left&~7))*(unsigned long)(r->bottom-r->top);
+    }
+    return pixels;
+}
+
 static void test_conversion_double_buffer(void)
 {
     enum { W = 70, H = 21, STRIDE = W*2+18, FRAMES = 6000 };
@@ -1656,13 +1683,13 @@ static void test_conversion_double_buffer(void)
         if (mask.band || masked[back]) dock_damage_set_full(&pending[back]);
         if (!pending[back].full) ++partial;
         memcpy(saved,coverage,sizeof(coverage));
-        dock_convert565_damage(buffer[back],STRIDE,&frame,coverage,&pending[back],scratch,
-            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask);
+        assert(dock_convert565_damage(buffer[back],STRIDE,&frame,coverage,&pending[back],scratch,
+            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask) == expected_conversion(&pending[back],W,H));
         dock_damage_clear(&pending[back]);
         masked[back] = mask.band;
         assert(!memcmp(saved,coverage,sizeof(coverage)));
-        dock_convert565_damage(reference,STRIDE,&frame,coverage,&whole,scratch,
-            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask);
+        assert(dock_convert565_damage(reference,STRIDE,&frame,coverage,&whole,scratch,
+            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask) == (unsigned long)W*H);
         for (y = 0; y < H; ++y) assert(!memcmp(buffer[back]+y*STRIDE,reference+y*STRIDE,W*2));
         ++conversions;
         if (fuzz_next(&seed,8)) front = back; /* else a failed present keeps the same back buffer */
@@ -1674,7 +1701,8 @@ static void test_conversion_double_buffer(void)
     dock_damage_clear(&d);
     dock_damage_add(&d,(DockRect){9,2,10,3},W,H);
     memset(reference,0x3c,sizeof(reference));
-    dock_convert565_damage(reference,STRIDE,&frame,NULL,&d,scratch,dock_rgba_to_rgb565_c,dock_rgb565_key_c,NULL,NULL);
+    assert(dock_convert565_damage(reference,STRIDE,&frame,NULL,&d,scratch,dock_rgba_to_rgb565_c,dock_rgb565_key_c,NULL,NULL) == 8);
+    assert(!dock_convert565_damage(reference,STRIDE,&frame,NULL,&d,NULL,dock_rgba_to_rgb565_c,dock_rgb565_key_c,NULL,NULL));
     for (i = 0; i < STRIDE*H; ++i) {
         int row = i/STRIDE, x = i%STRIDE/2;
         assert((reference[i] != 0x3c) <= (row == 2 && x >= 8 && x < 16));
@@ -1817,7 +1845,7 @@ static void test_damage_fuzz(void)
 int main(void)
 {
     DockSettings defaults = dock_settings_default();
-    test_normalize(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_animation_no_overlap(); test_layout(); test_blend();
+    test_normalize(); test_image_opaque_at(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_animation_no_overlap(); test_layout(); test_blend();
     test_mix(); test_pressed_artwork(); test_side_panel_coverage(); test_reorder(); test_renderer();
     test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build(); test_scaled_fill(); test_icon_runs();
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();

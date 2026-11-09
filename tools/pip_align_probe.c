@@ -1,6 +1,7 @@
 /* Physical PiP2 registration: exact native RGB565 copy, no tint or conversion.
    Only the private screen is drawn. PiP register access stays in amiga_pip.c. */
 #include "amiga_pip.h"
+#include "amiga_text.h"
 #include <exec/types.h>
 #include <devices/inputevent.h>
 #include <graphics/gfxbase.h>
@@ -34,15 +35,6 @@ static void stage(const char *message)
         Write(file,(APTR)message,(LONG)strlen(message));Write(file,(APTR)"\n",1);
         Close(file);
     }
-}
-
-static void text32(struct RastPort *rp,const char *text)
-{
-    /* Classic NDK Text() inline declares D0 as UWORD. ApolloOS reads ULONG;
-       undefined high bits turn strlen52 into0xffff0034 and scan vast memory.
-       Request a complete ULONG register argument for this public library LVO. */
-    (void)LP3(0x3c,LONG,PipText32,struct RastPort *,rp,a1,
-        CONST_STRPTR,(CONST_STRPTR)text,a0,ULONG,(ULONG)strlen(text),d0,,GfxBase);
 }
 
 static int wait_front(struct Screen *screen)
@@ -101,10 +93,10 @@ static void instructions(struct Window *window,int dx,int dy,int enabled)
     if(first) stage("instructions: fill complete");
     SetAPen(window->RPort,1);SetDrMd(window->RPort,JAM1);SetFont(window->RPort,control_font);
     if(first) stage("instructions: pens/mode/font complete; text begin");
-    for(i=0;i<3;++i) { Move(window->RPort,12,30+i*15);text32(window->RPort,lines[i]); }
+    for(i=0;i<3;++i) { Move(window->RPort,12,30+i*15);amiga_text_draw(window->RPort,lines[i],strlen(lines[i])); }
     if(first) stage("instructions: fixed text complete");
     snprintf(line,sizeof(line),"PiP correction x=%+d y=%+d | plane %s | range -128..128",dx,dy,enabled?"ON":"OFF");
-    Move(window->RPort,12,82);text32(window->RPort,line);
+    Move(window->RPort,12,82);amiga_text_draw(window->RPort,line,strlen(line));
     if(first) stage("instructions: status text complete");
     first=0;
 }

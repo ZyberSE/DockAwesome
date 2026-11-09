@@ -550,3 +550,19 @@ icon centre). Share of the full zoom per icon from the pointer:
 - [x] Build 215 installed in WBStartup (build 207 in
       WBStartup/Disabled/DockAwesome-build207.old). The 90% button and the
       tint guard came after it, from the Codex review.
+
+## /simplify across the codebase (2026-11-09)
+
+- [x] Makefile: pattern rules for host tests, sanitize and probes (183 to
+      139 lines); `make -n -B` gives the same commands.
+- [x] Core: dock_convert565_damage returns the pixels converted (replacing
+      the profile copy), dock_image_opaque_at shared by both input hit
+      tests, DOCK_DRAG_THRESHOLD, the plate rect from dock_edge_panel_rect,
+      the empty plate normalized once, a derivable renderer field removed.
+- [x] Amiga: one backend selection and snapshot fallback, full_frame,
+      buttons_engaged, zoom_levels, ticks_us, the v50 Intuition LVOs in
+      amiga_abi.h, popup shape via make_folder_shape, a shared coverage
+      blend, never-written profile counters and write-only fields removed.
+- [x] Host tests, sanitizer and the 68080 build pass with no warnings.
+- [ ] Not run on the Vampire yet: needs a real-machine check of PiP,
+      snapshot fallback, popups and drag before installing.

@@ -12,6 +12,17 @@ AmigaFontAA *amiga_font_aa_create(const struct TextFont *font);
 void amiga_font_aa_free(AmigaFontAA *font);
 void amiga_font_aa_draw(const AmigaFontAA *font, DockImage *target,
     const char *text, int left, int top, uint32_t color);
+/* Blends a color over an RGBA pixel by coverage alpha (1-255), keeping
+   the destination's own alpha under it. */
+static inline void amiga_blend_coverage(unsigned char *dst, unsigned int red,
+    unsigned int green, unsigned int blue, unsigned int alpha)
+{
+    unsigned int remaining = 255-alpha;
+    dst[0] = (red*alpha+dst[0]*remaining+127)/255;
+    dst[1] = (green*alpha+dst[1]*remaining+127)/255;
+    dst[2] = (blue*alpha+dst[2]*remaining+127)/255;
+    dst[3] = alpha+(dst[3]*remaining+127)/255;
+}
 /* Blends a ready grayscale template (width bytes per row) with the
    RastPort's foreground color. */
 void amiga_alpha_template_blit(struct Library *cyber, struct RastPort *target,

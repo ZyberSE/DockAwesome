@@ -73,6 +73,9 @@ void dock_animation_reset(DockAnimation *animation);
 int dock_animate_step(const DockSettings *s, DockAnimation *animation, DockPlacement *current,
                       const DockPlacement *target, int count);
 int dock_hit_test(const DockPlacement *p, int count, int x, int y);
+/* Nonzero when (x,y) lies inside the image on a pixel with nonzero alpha.
+   Pure and allocation-free, so input handlers may call it. */
+int dock_image_opaque_at(const DockImage *image, int x, int y);
 /* Hover follows the plate and enlarged icons. Extra canvas stays inactive. */
 int dock_hover_contains(const DockSettings *s, const DockPlacement *p, int count,
                         int width, int height, int x, int y);

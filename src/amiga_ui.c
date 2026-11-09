@@ -92,7 +92,7 @@ static const struct { const char *text; int style, gap; } about_lines[] = {
 };
 enum { ABOUT_LINES = sizeof(about_lines)/sizeof(about_lines[0]), ABOUT_MARGIN = 18 };
 enum {
-    FOLDER_COLS = 12, FOLDER_ROWS = 10, FOLDER_SCALE_ONE = 256,
+    FOLDER_COLS = 12, FOLDER_ROWS = 10,
 
     FOLDER_OPEN_MS = 130, FOLDER_CLOSE_MS = 130,
     FOLDER_TIP = 7, FOLDER_TIP_HALF = 9, FOLDER_BACKDROP_LAYERS = 16,
@@ -120,12 +120,12 @@ typedef struct {
     int body_left, body_width, body_height, tip;
     int pad, label_gap, action_wrap;
     int next_icon, artwork_ready, needs_repaint;
-    int motion, scale, pivot_x, pivot_y, motion_frames, handoff;
+    int motion, motion_frames, handoff;
     /* Reveal from the tip side: pixels composed or shown along the axis
        away from the dock, those already on screen, and the extent at the
        start of this motion. */
     int reveal_shown, reveal_presented, reveal_from;
-    ULONG motion_start, motion_ticks, motion_paint_ticks;
+    ULONG motion_start, motion_ticks;
     ULONG motion_prepare_sum, motion_present_sum; /* --profile: EClock ticks per stage */
     DockImage motion_backdrop;
     FolderBackdropLayer backdrop_layers[FOLDER_BACKDROP_LAYERS];
@@ -459,11 +459,6 @@ static void close_popup(DockUI *ui, int preserve)
     ui->popup_selected = ui->popup_pressed = -1;
 }
 
-void dock_ui_close_popup(DockUI *ui)
-{
-    close_popup(ui,0);
-}
-
 void dock_ui_close_dialog(DockUI *ui)
 {
     struct IntuiMessage *msg;
@@ -535,7 +530,7 @@ void dock_ui_destroy(DockUI *ui)
 {
     if (!ui) return;
     dock_ui_hide_label(ui);
-    dock_ui_close_popup(ui);
+    close_popup(ui,0);
     dock_ui_close_dialog(ui);
     if (ui->visual) FreeVisualInfo(ui->visual);
     if (ui->gadtools) CloseLibrary(ui->gadtools);
@@ -646,27 +641,6 @@ static struct Region *make_folder_shape(const FolderView *folder, int width, int
         }
     }
     return shape;
-}
-
-static struct Region *make_rounded_shape(int width, int height, int radius)
-{
-    struct Region *shape = NewRegion();
-    int row;
-    if (!shape) return NULL;
-    for (row = 0; row < radius; ++row) {
-        int inset = rounded_inset(radius,row);
-        struct Rectangle rect = {inset, row, width-1-inset, row};
-        if (!OrRectRegion(shape,&rect)) goto fail;
-        rect.MinY = rect.MaxY = height-1-row;
-        if (!OrRectRegion(shape,&rect)) goto fail;
-    }
-    {
-        struct Rectangle middle = {0, radius, width-1, height-1-radius};
-        if (OrRectRegion(shape,&middle)) return shape;
-    }
-fail:
-    DisposeRegion(shape);
-    return NULL;
 }
 
 static void prepare_popup_colors(DockUI *ui)
@@ -931,6 +905,14 @@ static void centered_folder_text(DockUI *ui, struct RastPort *rp, DockImage *tar
 
 /* The two parts of the arrow each cover one span per row. Coordinates are
    relative to the ring center in units of 1/64 of its radius. */
+static const BYTE arrow_tail[][2] = {
+    {4,-15}, {-8,-14}, {-17,-11}, {-24,-6}, {-29,2}, {-32,12},
+    {-33,22}, {-31,25}, {-28,24}, {-24,18}, {-19,13}, {-12,10}, {4,8}
+};
+static const BYTE arrow_head[][2] = {
+    {1,-28}, {4,-31}, {7,-30}, {33,-6}, {35,-3}, {33,1},
+    {7,24}, {4,25}, {1,23}
+};
 static void fill_arrow_part(struct RastPort *rp, int x, int y, int radius,
     const BYTE (*outline)[2], int count)
 {
@@ -954,20 +936,12 @@ static void fill_arrow_part(struct RastPort *rp, int x, int y, int radius,
 
 static void folder_open_glyph(DockUI *ui, struct RastPort *rp, int x, int y, int radius)
 {
-    static const BYTE tail[][2] = {
-        {4,-15}, {-8,-14}, {-17,-11}, {-24,-6}, {-29,2}, {-32,12},
-        {-33,22}, {-31,25}, {-28,24}, {-24,18}, {-19,13}, {-12,10}, {4,8}
-    };
-    static const BYTE head[][2] = {
-        {1,-28}, {4,-31}, {7,-30}, {33,-6}, {35,-3}, {33,1},
-        {7,24}, {4,25}, {1,23}
-    };
     int thickness = clamp((radius+6)/13,1,radius), inset;
     popup_color(ui,rp,FOLDER_MUTED);
     for (inset = 0; inset < thickness; ++inset)
         DrawEllipse(rp,x,y,radius-inset,radius-inset);
-    fill_arrow_part(rp,x,y,radius,tail,sizeof(tail)/sizeof(tail[0]));
-    fill_arrow_part(rp,x,y,radius,head,sizeof(head)/sizeof(head[0]));
+    fill_arrow_part(rp,x,y,radius,arrow_tail,sizeof(arrow_tail)/sizeof(arrow_tail[0]));
+    fill_arrow_part(rp,x,y,radius,arrow_head,sizeof(arrow_head)/sizeof(arrow_head[0]));
 }
 
 /* The span [*left,*right] where a sample row y crosses an outline given in
@@ -1006,14 +980,6 @@ static int isqrt(int value)
    head), then the samples only compare positions. */
 static void folder_open_glyph_aa(DockImage *target, int cx, int cy, int radius, uint32_t color)
 {
-    static const BYTE tail[][2] = {
-        {4,-15}, {-8,-14}, {-17,-11}, {-24,-6}, {-29,2}, {-32,12},
-        {-33,22}, {-31,25}, {-28,24}, {-24,18}, {-19,13}, {-12,10}, {4,8}
-    };
-    static const BYTE head[][2] = {
-        {1,-28}, {4,-31}, {7,-30}, {33,-6}, {35,-3}, {33,1},
-        {7,24}, {4,25}, {1,23}
-    };
     unsigned int red = (color>>16)&255, green = (color>>8)&255, blue = color&255;
     /* The ring: one native pixel plus half a pixel wide, so it keeps its
        weight once antialiased. Radii and positions in 1/16 px. */
@@ -1031,8 +997,8 @@ static void folder_open_glyph_aa(DockImage *target, int cx, int cy, int radius, 
             int tail_l = 0, tail_r = -1, head_l = 0, head_r = -1;
             if (dy*dy <= outer*outer) ring_out = isqrt(outer*outer-dy*dy);
             if (dy*dy < inner*inner) ring_in = isqrt(inner*inner-dy*dy);
-            if (!outline_span(tail,sizeof(tail)/sizeof(tail[0]),radius,dy,&tail_l,&tail_r)) tail_r = tail_l-1;
-            if (!outline_span(head,sizeof(head)/sizeof(head[0]),radius,dy,&head_l,&head_r)) head_r = head_l-1;
+            if (!outline_span(arrow_tail,sizeof(arrow_tail)/sizeof(arrow_tail[0]),radius,dy,&tail_l,&tail_r)) tail_r = tail_l-1;
+            if (!outline_span(arrow_head,sizeof(arrow_head)/sizeof(arrow_head[0]),radius,dy,&head_l,&head_r)) head_r = head_l-1;
             for (x = 0; x < size; ++x) for (sx = 0; sx < 4; ++sx) {
                 int dx = (x-radius-1)*16+2+4*sx-8, ax = dx < 0 ? -dx : dx;
                 if ((ax <= ring_out && ax >= ring_in) || (dx >= tail_l && dx <= tail_r) ||
@@ -1041,15 +1007,9 @@ static void folder_open_glyph_aa(DockImage *target, int cx, int cy, int radius, 
         }
         for (x = 0; x < size; ++x) {
             int px = cx-radius-1+x;
-            unsigned int alpha, remaining;
-            unsigned char *dst;
             if (!covered[x] || px < 0 || px >= target->width) continue;
-            alpha = (covered[x]*255+8)/16; remaining = 255-alpha;
-            dst = target->pixels+((size_t)py*target->width+px)*4;
-            dst[0] = (red*alpha+dst[0]*remaining+127)/255;
-            dst[1] = (green*alpha+dst[1]*remaining+127)/255;
-            dst[2] = (blue*alpha+dst[2]*remaining+127)/255;
-            dst[3] = alpha+(dst[3]*remaining+127)/255;
+            amiga_blend_coverage(target->pixels+((size_t)py*target->width+px)*4,
+                red,green,blue,(covered[x]*255+8)/16);
         }
     }
 }
@@ -1282,7 +1242,6 @@ static void clear_folder_motion(FolderView *f)
     f->motion = FOLDER_STILL;
     f->handoff = 0;
     f->handoff_bitmap = NULL;
-    f->scale = FOLDER_SCALE_ONE;
 }
 
 void dock_ui_finish_folder_motion(DockUI *ui)
@@ -1292,7 +1251,7 @@ void dock_ui_finish_folder_motion(DockUI *ui)
     if (f->motion == FOLDER_CLOSING) {
         /* End on the desktop pixels while the layer still owns them. */
         if (!f->handoff) amiga_display_present(ui->popup_display,ui->popup,&f->motion_backdrop);
-        dock_ui_close_popup(ui);
+        close_popup(ui,0);
     } else if (f->motion == FOLDER_OPENING) {
         f->motion = FOLDER_STILL;
         paint_folder(ui);
@@ -1389,7 +1348,6 @@ static void start_folder_clock(FolderView *f, int duration)
     f->motion_ticks = ReadEClock(&now)*duration/1000;
     f->motion_start = now.ev_lo;
     f->motion_frames = 0;
-    f->motion_paint_ticks = 0;
     f->motion_prepare_sum = f->motion_present_sum = 0;
 }
 
@@ -1420,7 +1378,7 @@ void dock_ui_dismiss_popup(DockUI *ui)
     FolderView *f = &ui->folder;
     if (f->motion == FOLDER_CLOSING) return;
     if (!ui->popup || !f->path[0] || !f->motion_backdrop.pixels || !ui->popup_display) {
-        dock_ui_close_popup(ui);
+        close_popup(ui,0);
         return;
     }
     /* Hide strips back toward the tip from wherever the box is: only the
@@ -1909,8 +1867,7 @@ static int open_popup_window(DockUI *ui, int left, int top, int width, int heigh
 {
     int profile = ui->folder.path[0] && ui->folder.anchor.profile;
     if (ui->window_shapes)
-        ui->popup_shape = ui->folder.path[0] ? make_folder_shape(&ui->folder,width,height) :
-            make_rounded_shape(width,height,POPUP_RADIUS);
+        ui->popup_shape = make_folder_shape(ui->folder.path[0] ? &ui->folder : NULL,width,height);
     prepare_popup_colors(ui);
     folder_stamp(profile,0);
     if (capture_backdrop) capture_popup_glass(ui,left,top,width,height,report_mouse ? 2 : 3);
@@ -1923,7 +1880,7 @@ static int open_popup_window(DockUI *ui, int left, int top, int width, int heigh
         ui->popup_shape ? WA_ShapeRegion : TAG_IGNORE, (ULONG)ui->popup_shape,
         WA_IDCMP, IDCMP_MOUSEBUTTONS|IDCMP_RAWKEY|IDCMP_REFRESHWINDOW|IDCMP_INACTIVEWINDOW|
             (report_mouse ? IDCMP_MOUSEMOVE : 0), TAG_DONE);
-    if (!ui->popup) { dock_ui_close_popup(ui); return 0; }
+    if (!ui->popup) { close_popup(ui,0); return 0; }
     if (ui->popup->LeftEdge != left || ui->popup->TopEdge != top) free_popup_glass(ui);
     ui->popup_selected = ui->popup_pressed = -1;
     return 1;
@@ -1938,7 +1895,7 @@ int dock_ui_open_popup(DockUI *ui, DockEdge edge, int anchor_x, int anchor_y,
     int i, width = 0, height, left, top, screen_top, covers_native_dock;
     enum { POINTER_GAP = 4 };
     if (!ui || ui->dialog) return 0;
-    dock_ui_close_popup(ui);
+    close_popup(ui,0);
     if (drawer) {
         ui->popup_items = drawer_items;
         ui->popup_rows = item_action == DOCK_UI_CLOSE_ITEM ? 2 : 1;
@@ -1995,7 +1952,6 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
     else if (anchor.edge == DOCK_EDGE_LEFT) max_width -= anchor.x+GAP;
     else max_width = anchor.x-GAP;
     next.anchor = anchor;
-    next.scale = FOLDER_SCALE_ONE;
     next.motion = entrance && ui->popup_rgb && tip_size ? FOLDER_OPENING : FOLDER_STILL;
     next.root_length = root_length;
     strcpy(next.path,path);
@@ -2050,8 +2006,6 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
         }
         width += tip_size;
     }
-    next.pivot_x = anchor.edge == DOCK_EDGE_BOTTOM ? next.tip : anchor.edge == DOCK_EDGE_LEFT ? 0 : width-1;
-    next.pivot_y = anchor.edge == DOCK_EDGE_BOTTOM ? height-1 : next.tip;
     if (ui->folder.path[0] && ui->popup->Width == width && ui->popup->Height == height &&
         ui->popup->LeftEdge == left && ui->popup->TopEdge == top) {
         next.artwork = ui->folder.artwork;
@@ -2073,7 +2027,7 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
             ui->carry_top = ui->popup->TopEdge;
             ui->folder.motion_backdrop = (DockImage){0};
         }
-        dock_ui_close_popup(ui);
+        close_popup(ui,0);
         ui->folder = next;
         opened = open_popup_window(ui,left,top,width,height,0,1);
         free(ui->backdrop_carry.pixels);
@@ -2170,6 +2124,11 @@ static void format_slider(char *text, int slider, int value)
     else sprintf(text,"%d.%02dx",value/DOCK_SCALE_ONE,value%DOCK_SCALE_ONE);
 }
 
+static int *slider_value(DockUI *ui, int slider)
+{
+    return slider == SIZE_SLIDER ? &ui->draft.size : &ui->draft.scale_percent;
+}
+
 static int position_index(int edge)
 {
     return edge == DOCK_EDGE_LEFT ? 0 : edge == DOCK_EDGE_RIGHT ? 2 : 1;
@@ -2189,7 +2148,7 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
 
     if (!ui || !initial || !ready(ui)) return 0;
     if (ui->dialog) { WindowToFront(ui->dialog); ActivateWindow(ui->dialog); return 1; }
-    dock_ui_close_popup(ui);
+    close_popup(ui,0);
     s = &ui->settings;
     ui->draft = *initial;
     ui->draft.size = clamp(initial->size,DOCK_MIN_ICON_SIZE,DOCK_MAX_ICON_SIZE);
@@ -2235,7 +2194,7 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
 
     g = CreateContext(&ui->gadgets);
     for (i = 0; i < SLIDER_COUNT; ++i) {
-        int value = i == SIZE_SLIDER ? ui->draft.size : ui->draft.scale_percent;
+        int value = *slider_value(ui,i);
         const struct TagItem slider_tags[] = {
             {GTSL_Min,slider_min[i]}, {GTSL_Max,s->limit[i]}, {GTSL_Level,value},
             {GT_Underscore,'_'}, {TAG_DONE,0}
@@ -2379,7 +2338,7 @@ int dock_ui_open_about(DockUI *ui)
     struct Gadget *previous;
     int i, width = 240, height = 2*ABOUT_MARGIN, button_width, button_height;
     if (!ui || ui->dialog || !ready(ui)) return 0;
-    dock_ui_close_popup(ui);
+    close_popup(ui,0);
     InitRastPort(&measure); SetFont(&measure,ui->draw->dri_Font);
     for (i = 0; i < ABOUT_LINES; ++i) {
         int line_width = about_width(ui,&measure,i)+2*ABOUT_MARGIN+16;
@@ -2558,7 +2517,7 @@ static void update_limits(DockUI *ui, int live)
     s->limit[SCALE_SLIDER] = scale_max;
     if (!live) return;
     for (slider = 0; slider < SLIDER_COUNT; ++slider) {
-        int value = slider == SIZE_SLIDER ? ui->draft.size : ui->draft.scale_percent;
+        int value = *slider_value(ui,slider);
         GT_SetGadgetAttrs(s->slider[slider],ui->dialog,NULL,
             GTSL_Max,s->limit[slider],GTSL_Level,value,TAG_DONE);
         format_slider(s->value[slider],slider,value);
@@ -2569,7 +2528,7 @@ static void update_limits(DockUI *ui, int live)
 static void update_slider(DockUI *ui, int slider, int value)
 {
     SettingsView *s = &ui->settings;
-    int *setting = slider == SIZE_SLIDER ? &ui->draft.size : &ui->draft.scale_percent;
+    int *setting = slider_value(ui,slider);
     value = clamp(value,slider_min[slider],s->limit[slider]);
     if (value == *setting) return;
     *setting = value;
@@ -2598,9 +2557,9 @@ static int settings_key(DockUI *ui, UWORD code)
         }
         case 's': case 'S': case 'a': case 'A': {
             int slider = code == 's' || code == 'S' ? SIZE_SLIDER : SCALE_SLIDER;
-            int value = slider == SIZE_SLIDER ? ui->draft.size : ui->draft.scale_percent;
+            int value = *slider_value(ui,slider);
             update_slider(ui,slider,value+(code == 's' || code == 'a' ? 1 : -1));
-            value = slider == SIZE_SLIDER ? ui->draft.size : ui->draft.scale_percent;
+            value = *slider_value(ui,slider);
             GT_SetGadgetAttrs(s->slider[slider],ui->dialog,NULL,GTSL_Level,value,TAG_DONE);
             break;
         }

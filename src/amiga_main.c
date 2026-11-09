@@ -89,7 +89,7 @@ typedef struct {
     int panel_radius;
 } InputSnapshot;
 typedef struct {
-    UWORD code, qualifier;
+    UWORD code;
     int x, y;
     ULONG generation;
     uint32_t token, pin_id, hit_id;
@@ -207,12 +207,11 @@ typedef struct {
     uint64_t program_poll_ticks, program_poll_peak;
     ULONG program_polls, program_changes, menu_suspends;
     ULONG program_checks, drawer_checks, document_checks, status_events;
-    ULONG source_polls, source_changes, front_requests, shape_updates, shape_skips, shape_rects, shape_rects_peak;
+    ULONG source_polls, source_changes, front_requests, shape_updates, shape_rects, shape_rects_peak;
     ULONG drop_messages, drop_arguments, drop_added, drop_reordered, drop_bad_paths;
     ULONG desktop_scans;
     ULONG drag_reveal_frames, drag_reveal_peak, popup_reveal_frames, dialog_reveal_frames;
-    uint64_t capture_ticks, decode_ticks, shape_ticks, shape_peak_ticks;
-    uint64_t shape_build_ticks, shape_build_peak, shape_change_ticks, shape_change_peak;
+    uint64_t capture_ticks, decode_ticks;
     uint64_t settle_ticks, settle_peak;
     ULONG settles, settle_ms[16];
     int settle_samples;
@@ -339,7 +338,7 @@ typedef struct App {
     LONG vblank_bit;
     ULONG vblank_field, vblank_check_field;
     uint64_t vblank_check_at, vblank_armed_at;
-    int vblank_open, vblank_armed, vblank_rate_ok, no_vsync;
+    int vblank_open, vblank_rate_ok, no_vsync;
     /* The close button that replaces the Folder Stack pin while it is
        open, built with the surface for its settings and edge. */
     DockCache stack_button;
@@ -485,10 +484,7 @@ static int input_hit_test(const App *app, int x, int y)
     for (i = row_count(app)-1; i >= 0; --i) {
         int item = row_item(app,i);
         const DockPlacement *p = &row[i];
-        const DockImage *im = &app->items[item].cache.image[p->level];
-        int ix = x-p->x, iy = y-p->y;
-        if (ix >= 0 && iy >= 0 && ix < im->width && iy < im->height &&
-            im->pixels[((size_t)iy*im->width+ix)*4+3]) return item;
+        if (dock_image_opaque_at(&app->items[item].cache.image[p->level],x-p->x,y-p->y)) return item;
     }
     return -1;
 }
@@ -496,12 +492,8 @@ static int input_hit_test(const App *app, int x, int y)
 static int snapshot_hit(const InputSnapshot *s, int x, int y)
 {
     int i;
-    for (i = s->count-1; i >= 0; --i) {
-        const DockImage *im = s->image[i];
-        int ix = x-s->placement[i].x, iy = y-s->placement[i].y;
-        if (ix >= 0 && iy >= 0 && ix < im->width && iy < im->height &&
-            im->pixels[((size_t)iy*im->width+ix)*4+3]) return i;
-    }
+    for (i = s->count-1; i >= 0; --i)
+        if (dock_image_opaque_at(s->image[i],x-s->placement[i].x,y-s->placement[i].y)) return i;
     return -1;
 }
 
@@ -540,6 +532,15 @@ static DockRect dialog_clip(const App *app)
 static int native_menu_held(const App *app)
 {
     return (PeekQualifier() & IEQUALIFIER_RBUTTON) && !app->input_context.right_held;
+}
+
+#define ANY_BUTTON (IEQUALIFIER_LEFTBUTTON|IEQUALIFIER_RBUTTON|IEQUALIFIER_MIDBUTTON)
+
+/* A button the dock tracks, or one of mask, is down. */
+static int buttons_engaged(const App *app, UWORD mask)
+{
+    return app->input_context.held || app->input_context.external_held ||
+        app->input_context.right_held || (PeekQualifier() & mask);
 }
 
 /* Cache lifetimes and slot order change only after the handler loses access.
@@ -665,12 +666,12 @@ static void dispatch_shell_close(ShellClose *close, const struct InputEvent *mar
     close->sent = 1;
 }
 
-static void input_push(InputContext *c, UWORD code, UWORD qualifier, int x, int y,
+static void input_push(InputContext *c, UWORD code, int x, int y,
                        uint32_t token, uint32_t pin_id, uint32_t hit_id,
                        ULONG generation, unsigned int flags)
 {
     InputButton *button = &c->buttons[c->head];
-    button->code = code; button->qualifier = qualifier;
+    button->code = code;
     button->x = x; button->y = y; button->generation = generation;
     button->token = token; button->pin_id = pin_id; button->hit_id = hit_id; button->flags = flags;
     __asm volatile ("" ::: "memory");
@@ -697,7 +698,8 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
         if (c->right_held && IntuitionBase->FirstScreen != c->menu_screen) c->menu_cancelled = 1;
         if (c->external_held) {
             int x = c->external_screen->MouseX, y = c->external_screen->MouseY;
-            if (x-c->external_x > 4 || c->external_x-x > 4 || y-c->external_y > 4 || c->external_y-y > 4)
+            if (x-c->external_x > DOCK_DRAG_THRESHOLD || c->external_x-x > DOCK_DRAG_THRESHOLD ||
+                y-c->external_y > DOCK_DRAG_THRESHOLD || c->external_y-y > DOCK_DRAG_THRESHOLD)
                 c->external_dragged = 1;
             if (IntuitionBase->FirstScreen != c->external_screen || right_press ||
                 (e->ie_Qualifier & IEQUALIFIER_RBUTTON)) {
@@ -712,8 +714,8 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
                 c->held_cancelled = 1;
             /* Observe the last processed pointer position on every callback.
                This retains away-and-back excursions even if the main task lags. */
-            if (x-c->held_down_x > 4 || c->held_down_x-x > 4 ||
-                y-c->held_down_y > 4 || c->held_down_y-y > 4) c->held_dragged = 1;
+            if (x-c->held_down_x > DOCK_DRAG_THRESHOLD || c->held_down_x-x > DOCK_DRAG_THRESHOLD ||
+                y-c->held_down_y > DOCK_DRAG_THRESHOLD || c->held_down_y-y > DOCK_DRAG_THRESHOLD) c->held_dragged = 1;
         }
         if (e->ie_Class == IECLASS_POINTERPOS || e->ie_Class == IECLASS_NEWPOINTERPOS) {
             moved = notify = 1;
@@ -785,7 +787,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
                 if (!clean || !same_screen || c->held_cancelled || (e->ie_Qualifier & IEQUALIFIER_RBUTTON))
                     flags |= DOCK_INPUT_CANCELLED;
                 /* The original DOWN reserved this slot, including through rebuilds. */
-                input_push(c, SELECTUP, e->ie_Qualifier, x, y, c->held_token,
+                input_push(c, SELECTUP, x, y, c->held_token,
                     c->held_pin_id, hit >= 0 ? s->pin_id[hit] : 0, c->held_generation, flags);
                 c->held = 0; ++c->ups; e->ie_Class = IECLASS_NULL; captured = 1;
             } else if (e->ie_Code == SELECTDOWN && c->held) {
@@ -803,7 +805,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
                     c->held_down_x = x; c->held_down_y = y;
                     c->held_pin_id = s->pin_id[hit]; c->held_token = c->next_token;
                     c->held_generation = s->generation; c->held_dragged = c->held_cancelled = 0;
-                    input_push(c, SELECTDOWN, e->ie_Qualifier, x, y, c->held_token,
+                    input_push(c, SELECTDOWN, x, y, c->held_token,
                         c->held_pin_id, c->held_pin_id, s->generation, DOCK_INPUT_VALID);
                     c->held = 1; ++c->downs; e->ie_Class = IECLASS_NULL; captured = 1;
                 }
@@ -857,7 +859,7 @@ static int dump_ppm(const char *prefix, const char *suffix, const DockImage *ima
     char path[CONFIG_CAP+32];
     unsigned char row[3*256];
     FILE *file;
-    int x, y, start, failed = 0;
+    int y, start, failed = 0;
     if (!image->pixels || image->width < 1 || image->height < 1) return 0;
     snprintf(path, sizeof(path), "%s-%s.ppm", prefix, suffix);
     file = fopen(path, "wb");
@@ -866,10 +868,7 @@ static int dump_ppm(const char *prefix, const char *suffix, const DockImage *ima
     for (y = 0; y < image->height && !failed; ++y) for (start = 0; start < image->width && !failed; start += 256) {
         int count = image->width-start;
         if (count > 256) count = 256;
-        for (x = 0; x < count; ++x) {
-            const unsigned char *p = image->pixels+((size_t)y*image->width+start+x)*4;
-            row[x*3] = p[0]; row[x*3+1] = p[1]; row[x*3+2] = p[2];
-        }
+        dock_rgba_to_rgb24_c(row, image->pixels+((size_t)y*image->width+start)*4, (unsigned long)count);
         if (fwrite(row, 3, count, file) != (size_t)count) failed = 1;
     }
     if (fclose(file)) failed = 1;
@@ -1438,10 +1437,8 @@ static void update_hover_label(App *app)
     DockRect anchor;
     if (hovered >= 0 && hovered < app->count && app->active &&
         IntuitionBase->FirstScreen == app->screen && (!app->pip_mode || app->pip_visible) &&
-        !app->gesture.active && !app->input_context.held && !app->input_context.external_held &&
-        !app->input_context.right_held && !amiga_drop_catcher_active(app->drop_catcher) &&
-        !dock_ui_busy(app->ui) &&
-        !(PeekQualifier() & (IEQUALIFIER_LEFTBUTTON|IEQUALIFIER_RBUTTON|IEQUALIFIER_MIDBUTTON)))
+        !app->gesture.active && !buttons_engaged(app,ANY_BUTTON) &&
+        !amiga_drop_catcher_active(app->drop_catcher) && !dock_ui_busy(app->ui))
         pin = app->items[hovered].pin_id;
     if (!pin) {
         if (app->label_pin_id) reset_hover_label(app);
@@ -1607,7 +1604,7 @@ static void animation_schedule(App *app)
     ULONG delay = dock_ui_folder_frame_delay(app->ui);
     if (!fast && !app->label_at) { animation_cancel(app); return; }
     if (fast && app->timer_pending && app->timer_label_only) animation_cancel(app);
-    if (!app->timer_open || app->timer_pending || app->vblank_armed || app->timer_failed) return;
+    if (!app->timer_open || app->timer_pending || app->vblank.armed || app->timer_failed) return;
     if (app->vblank_open) {
         /* The curves count 20 ms ticks: follow the display only while its
            fields measure 19-21 ms, so 60 Hz modes keep the timer. Checked
@@ -1627,7 +1624,6 @@ static void animation_schedule(App *app)
            below only delays the tick by one field. */
         app->vblank.armed = 1;
         app->vblank_field = app->vblank.fields;
-        app->vblank_armed = 1;
         app->vblank_armed_at = profile_clock();
         return;
     }
@@ -1647,7 +1643,7 @@ static void animation_schedule(App *app)
 
 static void animation_cancel(App *app)
 {
-    app->vblank.armed = 0; app->vblank_armed = 0;
+    app->vblank.armed = 0;
     if (!app->timer_pending) return;
     if (!CheckIO((struct IORequest *)app->timer_io)) AbortIO((struct IORequest *)app->timer_io);
     WaitIO((struct IORequest *)app->timer_io);
@@ -1659,11 +1655,11 @@ static int animation_step(App *app)
 {
     LONG error = 0;
     int closed;
-    if (app->vblank_armed && (app->vblank.fields != app->vblank_field ||
+    if (app->vblank.armed && (app->vblank.fields != app->vblank_field ||
             profile_clock()-app->vblank_armed_at > app->clock_hz*3/50)) {
         /* No field for three periods: the interrupt is off; use the timer. */
         if (app->vblank.fields == app->vblank_field) app->vblank_rate_ok = 0;
-        app->vblank.armed = 0; app->vblank_armed = 0;
+        app->vblank.armed = 0;
     } else {
         if (!app->timer_pending || !CheckIO((struct IORequest *)app->timer_io)) return 0;
         error = WaitIO((struct IORequest *)app->timer_io);
@@ -1762,7 +1758,6 @@ static void poll_workbench_list(ProgramPoll *poll, int kind, ULONG get_tag, ULON
            The window source can still report a Shell launch or closure. */
         if (success) for (i = 0; i < poll->count; ++i)
             if (poll->pins[i].kind == kind) poll->pins[i].running = 0;
-        if (!success) list = NULL;
     }
     if (!success || !list) {
         if (kind == PIN_PROGRAM) {
@@ -2239,8 +2234,7 @@ static int window_call(struct Window *window, int call)
         if (call == WINDOW_CALL_SCREEN) ScreenToFront(window->WScreen);
         else if (call == WINDOW_CALL_FRONT) WindowToFront(window);
         else if (call == WINDOW_CALL_ACTIVATE) ActivateWindow(window);
-        else LP3NR(0x3ae, DockWindowAction, struct Window *, window, a0,
-            ULONG, SEND_IDCMP_CLOSE, d0, struct TagItem *, NULL, a1, , IntuitionBase);
+        else amiga_window_action(window,SEND_IDCMP_CLOSE,NULL);
     }
     Permit();
     return live;
@@ -2493,8 +2487,7 @@ static void program_poll_open(App *app)
                 {TAG_USER+2,AFTER_OPENWINDOW|AFTER_CLOSEWINDOW},
                 {TAG_USER+4,(ULONG)FindTask(NULL)}, {TAG_USER+5,(ULONG)bit}, {TAG_DONE,0}
             };
-            app->status_notify = LP1(0x39c, APTR, StartDockStatusNotify,
-                struct TagItem *, tags, a0, , IntuitionBase);
+            app->status_notify = amiga_start_status_notify(tags);
             if (app->status_notify) app->status_notify_bit = bit;
             else FreeSignal(bit);
         }
@@ -2529,10 +2522,8 @@ static void program_poll_schedule(App *app)
     int i, query = 0, kinds = PIN_PROGRAM;
     if (!app->program_worker || app->program_poll_pending ||
         animation_needed(app) ||
-        app->gesture.active || app->input_context.held || app->input_context.external_held ||
-        app->input_context.right_held || dock_ui_busy(app->ui) ||
-        IntuitionBase->FirstScreen != app->screen ||
-        (PeekQualifier() & (IEQUALIFIER_LEFTBUTTON|IEQUALIFIER_RBUTTON|IEQUALIFIER_MIDBUTTON))) return;
+        app->gesture.active || buttons_engaged(app,ANY_BUTTON) || dock_ui_busy(app->ui) ||
+        IntuitionBase->FirstScreen != app->screen) return;
     now = profile_clock();
     /* Classic Intuition has no native notifications. A cheap window-list
        comparison replaces the per-second Workbench round trips there. */
@@ -2614,8 +2605,7 @@ static int program_poll_result(App *app, int *recreate)
         app->items[pin].running = running;
     }
     if (!*recreate && !dock_ui_busy(app->ui) && !app->gesture.active &&
-        !app->input_context.held && !app->input_context.external_held && !app->input_context.right_held &&
-        !(PeekQualifier() & (IEQUALIFIER_LEFTBUTTON|IEQUALIFIER_RBUTTON))) {
+        !buttons_engaged(app,IEQUALIFIER_LEFTBUTTON|IEQUALIFIER_RBUTTON)) {
         if (poll->valid & PIN_PROGRAM) for (i = app->count-1; i >= 0; --i) {
             if (app->items[i].temporary && !app->items[i].running) {
                 erase_item(app,i);
@@ -2665,7 +2655,7 @@ static void program_poll_close(App *app)
            process must not exit before then: waiting is safer than a crash.
            Back off after 5 s instead of spinning. */
         int attempt;
-        for (attempt = 0; !LP1(0x3a2, BOOL, EndDockStatusNotify, APTR, app->status_notify, a0, , IntuitionBase); ++attempt)
+        for (attempt = 0; !amiga_end_status_notify(app->status_notify); ++attempt)
             Delay(attempt < 250 ? 1 : 25);
         FreeSignal(app->status_notify_bit);
         app->status_notify = NULL;
@@ -2698,9 +2688,7 @@ static void live_schedule(App *app)
     int fast;
     if (!app->live_open || app->live_failed ||
         (!app->pip_mode && !app->program_worker)) return;
-    fast = app->pip_mode && (animation_needed(app) || app->input_context.held ||
-        app->input_context.external_held || app->input_context.right_held ||
-        (PeekQualifier() & (IEQUALIFIER_LEFTBUTTON|IEQUALIFIER_RBUTTON|IEQUALIFIER_MIDBUTTON)));
+    fast = app->pip_mode && (animation_needed(app) || buttons_engaged(app,ANY_BUTTON));
     if (app->live_pending && fast && !app->live_fast) live_cancel(app);
     if (app->live_pending) return;
     app->live_io->tr_node.io_Command = TR_ADDREQUEST;
@@ -2816,6 +2804,13 @@ static void ui_blocking(void *context, int blocking)
 
 /* The largest Size whose row fits the draft's edge and whose cache fits the
    memory budget, with the same rules apply_preferences uses to save. */
+/* One cache level per pixel from Size to the zoom size, within limits. */
+static int zoom_levels(int base_size, int max_size)
+{
+    int levels = max_size-base_size+1;
+    return levels < 2 ? 2 : levels > DOCK_MAX_LEVELS ? DOCK_MAX_LEVELS : levels;
+}
+
 static int ui_fit(void *context, const DockUIPrefs *draft)
 {
     const App *app = (const App *)context;
@@ -2828,9 +2823,7 @@ static int ui_fit(void *context, const DockUIPrefs *draft)
         s.base_size = size;
         s.max_size = dock_scaled_size(size,draft->scale_percent);
         if (!s.max_size || s.max_size > DOCK_MAX_ICON_SIZE) continue;
-        s.levels = s.max_size-size+1;
-        if (s.levels < 2) s.levels = 2;
-        if (s.levels > DOCK_MAX_LEVELS) s.levels = DOCK_MAX_LEVELS;
+        s.levels = zoom_levels(size,s.max_size);
         if (dock_items_fit(&s,count,available)) return size;
     }
     return DOCK_MIN_ICON_SIZE;
@@ -2996,20 +2989,20 @@ static int animation_open(App *app)
     return app->clock_hz != 0;
 }
 
+/* Microseconds per event for a tick total over n events; 0 when n is 0. */
+static unsigned long ticks_us(const App *app, uint64_t ticks, ULONG n)
+{
+    return n ? (unsigned long)(ticks*1000000/app->clock_hz/n) : 0;
+}
+
 static void profile_report(App *app)
 {
     uint64_t elapsed;
-    ULONG average_us, min_us, max_us, elapsed_ms, compose_us, present_us, conversion_us, upload_us;
+    ULONG elapsed_ms, any;
     if (!app->profile || !app->timer_open || !app->clock_hz) return;
     elapsed = profile_clock()-app->started;
     elapsed_ms = (ULONG)(elapsed*1000/app->clock_hz);
-    average_us = app->frames ? (ULONG)(app->stats.render_ticks*1000000/app->clock_hz/app->frames) : 0;
-    min_us = app->frames ? (ULONG)(app->stats.min_ticks*1000000/app->clock_hz) : 0;
-    max_us = app->frames ? (ULONG)(app->stats.max_ticks*1000000/app->clock_hz) : 0;
-    compose_us = app->frames ? (ULONG)((app->stats.render_ticks-app->stats.present_ticks)*1000000/app->clock_hz/app->frames) : 0;
-    present_us = app->frames ? (ULONG)(app->stats.present_ticks*1000000/app->clock_hz/app->frames) : 0;
-    conversion_us = app->frames ? (ULONG)(app->stats.conversion_ticks*1000000/app->clock_hz/app->frames) : 0;
-    upload_us = app->frames ? (ULONG)(app->stats.upload_ticks*1000000/app->clock_hz/app->frames) : 0;
+    any = app->frames ? 1 : 0;
     printf("DockAwesome profile: backend=%s depth=%d canvas=%dx%d icons=%d\n"
            "elapsed_ms=%lu wakeups=%lu redraws=%lu render_us_avg=%lu min=%lu max=%lu\n"
            "compose_us_avg=%lu present_us_avg=%lu conversion_us_avg=%lu upload_us_avg=%lu\n"
@@ -3017,9 +3010,12 @@ static void profile_report(App *app)
            app->renderer.pixels ? app->renderer.pixels->name : "none",
            amiga_display_depth(app->display), app->width, app->height, app->count,
            (unsigned long)elapsed_ms, (unsigned long)app->stats.wakes, (unsigned long)app->frames,
-           (unsigned long)average_us, (unsigned long)min_us, (unsigned long)max_us,
-           (unsigned long)compose_us, (unsigned long)present_us,
-           (unsigned long)conversion_us, (unsigned long)upload_us);
+           ticks_us(app,app->stats.render_ticks,app->frames),
+           ticks_us(app,app->stats.min_ticks,any), ticks_us(app,app->stats.max_ticks,any),
+           ticks_us(app,app->stats.render_ticks-app->stats.present_ticks,app->frames),
+           ticks_us(app,app->stats.present_ticks,app->frames),
+           ticks_us(app,app->stats.conversion_ticks,app->frames),
+           ticks_us(app,app->stats.upload_ticks,app->frames));
     fflush(stdout);
     {
         uint64_t canvas = (uint64_t)app->width*app->height;
@@ -3039,8 +3035,8 @@ static void profile_report(App *app)
             (unsigned long)app->stats.convert_mismatch);
     printf("Workbench programs: polls=%lu changes=%lu roundtrip_us_avg=%lu max=%lu native_menu_suspends=%lu\n",
         (unsigned long)app->stats.program_polls, (unsigned long)app->stats.program_changes,
-        (unsigned long)(app->stats.program_polls ? app->stats.program_poll_ticks*1000000/app->clock_hz/app->stats.program_polls : 0),
-        (unsigned long)(app->stats.program_poll_peak*1000000/app->clock_hz), (unsigned long)app->stats.menu_suspends);
+        ticks_us(app,app->stats.program_poll_ticks,app->stats.program_polls),
+        ticks_us(app,app->stats.program_poll_peak,1), (unsigned long)app->stats.menu_suspends);
     printf("Status queries: programs=%lu drawers=%lu documents=%lu window_events=%lu native_notify=%d\n",
         (unsigned long)app->stats.program_checks,(unsigned long)app->stats.drawer_checks,
         (unsigned long)app->stats.document_checks,(unsigned long)app->stats.status_events,!!app->status_notify);
@@ -3066,28 +3062,20 @@ static void profile_report(App *app)
             (unsigned long)app->stats.drag_reveal_frames,(unsigned long)app->stats.drag_reveal_peak);
         printf("PiP popup reveal: frames=%lu\n",(unsigned long)app->stats.popup_reveal_frames);
         printf("PiP dialog reveal: frames=%lu\n",(unsigned long)app->stats.dialog_reveal_frames);
-        printf("PiP2: polls=%lu source_changes=%lu front_requests=%lu capture_compare_us_avg=%lu decode_us_avg=%lu shape_us_total=%lu (settled100ms, motion20ms)\n",
+        printf("PiP2: polls=%lu source_changes=%lu front_requests=%lu capture_compare_us_avg=%lu decode_us_avg=%lu (settled100ms, motion20ms)\n",
             (unsigned long)app->stats.source_polls, (unsigned long)app->stats.source_changes,
             (unsigned long)app->stats.front_requests,
-            (unsigned long)(app->stats.source_polls ? app->stats.capture_ticks*1000000/app->clock_hz/app->stats.source_polls : 0),
-            (unsigned long)(app->stats.source_changes ? app->stats.decode_ticks*1000000/app->clock_hz/app->stats.source_changes : 0),
-            (unsigned long)(app->stats.shape_ticks*1000000/app->clock_hz));
+            ticks_us(app,app->stats.capture_ticks,app->stats.source_polls),
+            ticks_us(app,app->stats.decode_ticks,app->stats.source_changes));
         fflush(stdout);
         printf("PiP input: downs=%lu ups=%lu right_icons=%lu ambiguous_pass=%lu overflow_pass=%lu\n",
             (unsigned long)app->input_context.downs, (unsigned long)app->input_context.ups,
             (unsigned long)app->input_context.right_icons,
             (unsigned long)app->input_context.ambiguous, (unsigned long)app->input_context.overflow);
         fflush(stdout);
-        printf("PiP shape: updates=%lu skipped=%lu rects=%lu rects_peak=%lu update_us_peak=%lu\n",
-            (unsigned long)app->stats.shape_updates, (unsigned long)app->stats.shape_skips, (unsigned long)app->stats.shape_rects,
-            (unsigned long)app->stats.shape_rects_peak,
-            (unsigned long)(app->stats.shape_peak_ticks*1000000/app->clock_hz));
-        fflush(stdout);
-        printf("PiP shape stages: build_us_total=%lu build_us_peak=%lu change_us_total=%lu change_us_peak=%lu static_idle_shape=1 temporary_external_catcher=1\n",
-            (unsigned long)(app->stats.shape_build_ticks*1000000/app->clock_hz),
-            (unsigned long)(app->stats.shape_build_peak*1000000/app->clock_hz),
-            (unsigned long)(app->stats.shape_change_ticks*1000000/app->clock_hz),
-            (unsigned long)(app->stats.shape_change_peak*1000000/app->clock_hz));
+        printf("PiP shape: updates=%lu rects=%lu rects_peak=%lu\n",
+            (unsigned long)app->stats.shape_updates, (unsigned long)app->stats.shape_rects,
+            (unsigned long)app->stats.shape_rects_peak);
         fflush(stdout);
     }
 }
@@ -3156,20 +3144,6 @@ static void pip_mask(void *context, int y, int left, int right, unsigned char *s
     }
 }
 
-/* Pixels dock_convert565_damage converts: rows times 8-aligned spans. */
-static uint64_t conversion_pixels(const DockDamage *damage, int width, int height)
-{
-    uint64_t pixels = 0;
-    int i;
-    if (damage->full) return (uint64_t)width*height;
-    for (i = 0; i < damage->count; ++i) {
-        const DockRect *r = &damage->rect[i];
-        int right = r->right+7 < width ? (r->right+7)&~7 : width;
-        pixels += (uint64_t)(right-(r->left&~7))*(uint64_t)(r->bottom-r->top);
-    }
-    return pixels;
-}
-
 static void present_frame(void *context, const DockImage *frame)
 {
     App *app = context;
@@ -3177,6 +3151,7 @@ static void present_frame(void *context, const DockImage *frame)
         PipMask mask;
         DockDamage *pending;
         int back, masked, stride;
+        unsigned long pixels;
         unsigned char *buffer;
         uint64_t started = app->profile ? profile_clock() : 0, encoded, converted;
         if (pip_blocked_by_screen_or_menu(app)) return;
@@ -3198,12 +3173,12 @@ static void present_frame(void *context, const DockImage *frame)
         masked = app->drag_mask_live || mask.popup ||
             (mask.clip.right > mask.clip.left && mask.clip.bottom > mask.clip.top);
         if (masked || app->pip_masked[back]) dock_damage_set_full(pending);
+        pixels = dock_convert565_damage(buffer,stride,frame,app->coverage,pending,app->scratch,
+            app->renderer.pixels->encode565,app->renderer.pixels->key565,pip_mask,&mask);
         if (app->profile) {
             ++app->stats.conversion_frames;
-            app->stats.conversion_pixels += conversion_pixels(pending,frame->width,frame->height);
+            app->stats.conversion_pixels += pixels;
         }
-        dock_convert565_damage(buffer,stride,frame,app->coverage,pending,app->scratch,
-            app->renderer.pixels->encode565,app->renderer.pixels->key565,pip_mask,&mask);
         /* This buffer now holds the current frame, whether or not the
            present below succeeds. */
         dock_damage_clear(pending);
@@ -3350,15 +3325,17 @@ static const DockCache *stack_morph(App *app, const DockCache *icon, int level)
     const DockImage *a, *b;
     DockImage *out;
     int t = app->morph, i;
+    /* Without a blend, show whichever image is nearer. */
+    const DockCache *nearer = t >= 128 ? &app->stack_button : icon;
     if (t >= 256 || level < 0 || level >= icon->levels || level >= app->stack_button.levels)
-        return t >= 128 ? &app->stack_button : icon;
+        return nearer;
     a = &icon->image[level]; b = &app->stack_button.image[level];
     if (a->width != b->width || a->height != b->height ||
-        a->width > DOCK_MAX_ICON_SIZE || a->height > DOCK_MAX_ICON_SIZE) return t >= 128 ? &app->stack_button : icon;
+        a->width > DOCK_MAX_ICON_SIZE || a->height > DOCK_MAX_ICON_SIZE) return nearer;
     app->morph_flip ^= 1;
     if (!app->morph_pixels[app->morph_flip] &&
         !(app->morph_pixels[app->morph_flip] = malloc((size_t)DOCK_MAX_ICON_SIZE*DOCK_MAX_ICON_SIZE*4)))
-        return t >= 128 ? &app->stack_button : icon;
+        return nearer;
     memset(&app->morph_cache,0,sizeof(app->morph_cache));
     app->morph_cache.levels = level+1;
     out = &app->morph_cache.image[level];
@@ -3933,11 +3910,7 @@ static int apply_preferences(App *app, const DockUIPrefs *prefs)
         return 0;
     }
     changed_sizes = next.base_size != previous.base_size || next.max_size != previous.max_size;
-    if (changed_sizes) {
-        next.levels = next.max_size-next.base_size+1;
-        if (next.levels < 2) next.levels = 2;
-        if (next.levels > DOCK_MAX_LEVELS) next.levels = DOCK_MAX_LEVELS;
-    }
+    if (changed_sizes) next.levels = zoom_levels(next.base_size,next.max_size);
     available = viewport_limit(app,(DockEdge)prefs->edge);
     if (prefs->edge < DOCK_EDGE_BOTTOM || prefs->edge > DOCK_EDGE_RIGHT ||
         !dock_items_fit(&next,count,available)) {
@@ -4088,10 +4061,27 @@ static void select_backend(App *app)
 #endif
         { app->pip_mode = 0; app->snapshot = 1; }
     }
+}
+
+/* Pixel kernels for use_ammx, shared with the controls. */
+static void use_pixel_backend(App *app)
+{
     app->renderer.pixels = dock_backend_portable();
 #ifdef DOCK_AMMX
     if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
+    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
+        app->renderer.pixels->encode565);
+}
+
+/* After a closed PiP surface: open the snapshot backend instead. */
+static int fall_back_to_snapshot(App *app)
+{
+    app->pip_mode = 0; app->snapshot = 1;
+    app->use_ammx = app->explicit_ammx;
+    use_pixel_backend(app);
+    app->surface_error[0] = 0;
+    return open_surface(app);
 }
 
 static DockUIPrefs current_ui_prefs(const App *app);
@@ -4109,8 +4099,7 @@ static int acquire_workbench(App *app)
     if (!app->ui) { UnlockPubScreen(NULL,app->screen); app->screen = NULL; return 0; }
     dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
     dock_ui_set_fit_hook(app->ui,ui_fit,app);
-    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
-        app->renderer.pixels->encode565);
+    use_pixel_backend(app);
     app->workbench_closed = 0;
     prefs = current_ui_prefs(app);
     fit = ui_fit(app,&prefs);
@@ -4120,17 +4109,7 @@ static int acquire_workbench(App *app)
     }
     if (open_surface(app)) return 1;
     close_surface(app);
-    if (!app->pip_mode) return 0;
-    app->pip_mode = 0; app->snapshot = 1;
-    app->use_ammx = app->explicit_ammx;
-    app->renderer.pixels = dock_backend_portable();
-#ifdef DOCK_AMMX
-    if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
-#endif
-    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
-        app->renderer.pixels->encode565);
-    app->surface_error[0] = 0;
-    return open_surface(app);
+    return app->pip_mode && fall_back_to_snapshot(app);
 }
 
 /* Returns 1 when the dock reopened and needs its first frame. */
@@ -4159,6 +4138,17 @@ static int workbench_notify_poll(App *app)
     return reopened;
 }
 
+/* Retarget and draw everything; 0 when the dock has failed. */
+static int full_frame(App *app)
+{
+    update_target(app);
+    if (app->pip_mode) live_capture(app,1);
+    if (app->failed) return 0;
+    draw(app);
+    animation_schedule(app); live_schedule(app);
+    return 1;
+}
+
 static __attribute__((noinline)) void event_loop(App *app)
 {
     int running = 1;
@@ -4175,13 +4165,7 @@ static __attribute__((noinline)) void event_loop(App *app)
             /* Nothing is on screen: wait for Workbench to open again. */
             ULONG closed_signals = Wait(workbench|SIGBREAKF_CTRL_C);
             if (closed_signals & SIGBREAKF_CTRL_C) break;
-            if (workbench_notify_poll(app)) {
-                update_target(app);
-                if (app->pip_mode) live_capture(app,1);
-                if (app->failed) break;
-                draw(app);
-                animation_schedule(app); live_schedule(app);
-            }
+            if (workbench_notify_poll(app) && !full_frame(app)) break;
             continue;
         }
         ULONG signals = Wait(workbench | (1UL<<app->window->UserPort->mp_SigBit) |
@@ -4199,11 +4183,7 @@ static __attribute__((noinline)) void event_loop(App *app)
         if (signals & SIGBREAKF_CTRL_C) break;
         if ((signals & workbench) && (workbench_notify_poll(app) || app->workbench_closed)) {
             if (app->workbench_closed) continue;
-            update_target(app);
-            if (app->pip_mode) live_capture(app,1);
-            if (app->failed) break;
-            draw(app);
-            animation_schedule(app); live_schedule(app);
+            if (!full_frame(app)) break;
             continue;
         }
         if (app->status_notify && (signals & (1UL<<app->status_notify_bit)))
@@ -4478,8 +4458,8 @@ static void usage(void)
 int main(int argc, char **argv)
 {
     App *app = calloc(1, sizeof(*app));
-    int i, status = 20, initial_count, config_state, window_shapes;
-    int explicit_pip = 0, explicit_ammx;
+    int i, status = 20, initial_count, config_state;
+    int explicit_pip = 0;
     if (!app) return 20;
     app->settings = dock_settings_default(); app->input_bit = app->vblank_bit = -1;
     {
@@ -4571,8 +4551,7 @@ int main(int argc, char **argv)
     if (app->pip_dump[0] && !app->pip_mode) { puts("--pip-dump requires --pip."); free(app); return 20; }
     app->requested_backend = app->pip_mode ? BACKEND_PIP :
         app->snapshot ? BACKEND_SNAPSHOT : BACKEND_OPAQUE;
-    explicit_ammx = app->use_ammx;
-    app->explicit_ammx = explicit_ammx;
+    app->explicit_ammx = app->use_ammx;
     explicit_pip |= !!app->pip_dump[0];
 #ifndef DOCK_AMMX
     if (app->use_ammx) { puts("Use the DockAwesome080 build for --ammx."); free(app); return 20; }
@@ -4586,28 +4565,20 @@ int main(int argc, char **argv)
     if (!IntuitionBase || !GfxBase || !IconBase || !WorkbenchBase || !LayersBase || !UtilityBase) {
         message("Needs AmigaOS 3.x, graphics/intuition V39 and icon/workbench V44 or newer."); goto done;
     }
-    window_shapes = intuition_extension(858) && LayersBase->lib_Version >= 50;
-    app->window_shapes = window_shapes;
+    app->window_shapes = intuition_extension(858) && LayersBase->lib_Version >= 50;
     app->screen = LockPubScreen(NULL);
     if (!app->screen) { message("Cannot access the Workbench screen."); goto done; }
-    if (app->pip_mode) {
-#ifdef DOCK_AMMX
-        int supported = window_shapes && GetBitMapAttr(app->screen->RastPort.BitMap,BMA_DEPTH) == 16;
-#else
-        int supported = 0;
-#endif
-        if (!supported) {
-            if (explicit_pip) {
-                message("PiP needs DockAwesome080, Intuition and Layers V50, and a SAGA RGB565 screen.");
-                goto done;
-            }
-            app->pip_mode = 0; app->snapshot = 1;
-        } else app->use_ammx = 1;
+    /* --pip and --pip-dump always request PiP. */
+    select_backend(app);
+    if (explicit_pip && !app->pip_mode) {
+        message("PiP needs DockAwesome080, Intuition and Layers V50, and a SAGA RGB565 screen.");
+        goto done;
     }
-    app->ui = dock_ui_create(app->screen,window_shapes);
+    app->ui = dock_ui_create(app->screen,app->window_shapes);
     if (!app->ui) { message("Cannot set up the dock controls."); goto done; }
     dock_ui_set_blocking_hook(app->ui,ui_blocking,app);
     dock_ui_set_fit_hook(app->ui,ui_fit,app);
+    use_pixel_backend(app);
     {
         DockSettings configured = app->settings;
         int count = app->prefs.count+!!app->prefs.folder[0];
@@ -4643,27 +4614,12 @@ int main(int argc, char **argv)
         if (!strncmp(argv[i], "--", 2)) continue;
         pin_path(app, argv[i], 0);
     }
-    app->renderer.pixels = dock_backend_portable();
-#ifdef DOCK_AMMX
-    if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
-#endif
-    dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
-        app->renderer.pixels->encode565);
     app->drop_port = CreateMsgPort();
     if (!app->drop_port) { message("Cannot open the Workbench drop port."); goto done; }
     i = open_surface(app);
     if (!i && app->pip_mode && !explicit_pip) {
         close_surface(app);
-        app->pip_mode = 0; app->snapshot = 1;
-        app->use_ammx = explicit_ammx;
-        app->renderer.pixels = dock_backend_portable();
-#ifdef DOCK_AMMX
-        if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
-#endif
-        dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
-        app->renderer.pixels->encode565);
-        app->surface_error[0] = 0;
-        i = open_surface(app);
+        i = fall_back_to_snapshot(app);
     }
     /* A partly opened surface can hold the PiP lease: report after cleanup. */
     if (!i) {

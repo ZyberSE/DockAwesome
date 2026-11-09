@@ -42,9 +42,16 @@ struct AmigaFloat {
     int tight;             /* the overlay is the picture, off the band */
 };
 
-static int band_clash(const AmigaFloat *f, int top, int height)
+/* A picture of height h at y in tight mode: 1 clear of the band, 2 when
+   it reaches down onto the band (the overlay then ends at the band's top
+   and the rest is cut), -1 when its top lies on the band or there is no
+   room above it. */
+static int band_fit(const AmigaFloat *f, int y, int h)
 {
-    return f->band_bottom > f->band_top && top < f->band_bottom && top+height > f->band_top;
+    int top = dock_clamp(y,1,f->screen->Height-h);
+    if (top+h <= f->band_top || top >= f->band_bottom) return 1;
+    if (top >= f->band_top || f->band_top-h < 1) return -1;
+    return 2;
 }
 
 static void fill_key(AmigaFloat *f, unsigned char *buffer, Area a)
@@ -98,6 +105,8 @@ static void layout(const AmigaFloat *f, int *left, int *top, int *ox, int *oy)
 {
     *left = dock_clamp(f->x,0,f->screen->Width-f->cap_w);
     *top = dock_clamp(f->y,1,f->screen->Height-f->cap_h);
+    /* Reaching onto the band: the overlay ends at the band's top. */
+    if (f->tight && *top < f->band_top && *top+f->cap_h > f->band_top) *top = f->band_top-f->cap_h;
     *ox = f->x-*left; *oy = f->y-*top;
 }
 
@@ -145,12 +154,12 @@ void amiga_float_set_band(AmigaFloat *f, int top, int bottom, int width)
 
 int amiga_float_show(AmigaFloat *f, const DockImage *image, int x, int y)
 {
-    int row, col, left, top, ox, oy, tight;
+    int row, col, left, top, ox, oy, tight, fit = 1;
     uint16_t *pixels;
     if (!f || !image || !image->pixels || image->width < 1 || image->height < 1) return 0;
     tight = f->band_bottom > f->band_top &&
         ((image->width > f->min_w ? image->width : f->min_w)+31)/32*32+f->band_width > SHARE_WIDTH;
-    if (tight && band_clash(f,dock_clamp(y,1,f->screen->Height-image->height),image->height)) {
+    if (tight && (fit = band_fit(f,y,image->height)) < 0) {
         amiga_float_hide(f);
         return -1;
     }
@@ -175,25 +184,25 @@ int amiga_float_show(AmigaFloat *f, const DockImage *image, int x, int y)
     f->x = x; f->y = y;
     layout(f,&left,&top,&ox,&oy);
     f->shown = render(f,1,left,top,ox,oy);
-    return f->shown;
+    return f->shown ? fit : 0;
 }
 
 int amiga_float_move(AmigaFloat *f, int x, int y)
 {
-    int left, top, ox, oy;
+    int left, top, ox, oy, fit = 1;
     if (!f || !f->shown) return 0;
-    if (x == f->x && y == f->y) return 1;
-    if (f->tight && band_clash(f,dock_clamp(y,1,f->screen->Height-f->cap_h),f->cap_h)) {
+    if (f->tight && (fit = band_fit(f,y,f->height)) < 0) {
         amiga_float_hide(f);
         return -1;
     }
+    if (x == f->x && y == f->y) return fit;
     f->x = x; f->y = y;
     layout(f,&left,&top,&ox,&oy);
-    /* Away from the screen's edges the picture keeps its offset and only
-       the position registers change. */
-    if (ox == f->ox && oy == f->oy) return amiga_pip_move(f->pip,left,top);
+    /* Away from the screen's edges and the band the picture keeps its
+       offset and only the position registers change. */
+    if (ox == f->ox && oy == f->oy) return amiga_pip_move(f->pip,left,top) ? fit : 0;
     f->shown = render(f,1,left,top,ox,oy);
-    return f->shown;
+    return f->shown ? fit : 0;
 }
 
 int amiga_float_shown(const AmigaFloat *f)

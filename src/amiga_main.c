@@ -1679,17 +1679,18 @@ static int update_drag_preview(App *app)
     }
     if (app->float_layer && !shaped) {
         /* PiP1: no window, no save-under; a move writes two registers.
-           On a wide dock's rows PiP1 may not show (-1): the dock draws the
-           pin there itself, Remove armed or not (drag_on_band). The window
+           On a wide dock's rows PiP1 may not show: the dock draws the pin
+           there itself, Remove armed or not (drag_on_band), and PiP1 shows
+           only the part above them (2), or nothing (-1). The window
            preview is only for PiP1 taken by another program, and closes
            whenever PiP1 or the dock carries the pin. */
         int shown = app->drag_float, band = app->drag_on_band, changed = 0;
         if (icon) {
             if (shown && app->drag_float_token == gesture->token && app->drag_float_icon == icon &&
                 app->drag_float_remove == gesture->remove_armed) {
-                if (amiga_float_move(app->float_layer,x-app->drag_float_width/2,
-                        y-app->drag_float_icon_height/2) >= 0) return 0;
-                shown = -1;
+                shown = amiga_float_move(app->float_layer,x-app->drag_float_width/2,
+                    y-app->drag_float_icon_height/2);
+                if (shown == 0) shown = 1;
             } else shown = show_drag_float(app,icon,gesture->remove_armed,x,y);
             app->drag_float = shown > 0;
             app->drag_float_token = gesture->token;
@@ -1699,7 +1700,7 @@ static int update_drag_preview(App *app)
             changed = shown;
             app->drag_float = shown = 0;
         }
-        app->drag_on_band = icon && shown < 0;
+        app->drag_on_band = icon && (shown < 0 || shown == 2);
         changed |= band != app->drag_on_band;
         if (!icon || shown) {
             if (app->drag_preview) {

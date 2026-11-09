@@ -134,6 +134,7 @@ typedef struct {
     int backdrop_layer_count;
     struct BitMap *handoff_bitmap;
     DockImage motion_scene, motion_frame;
+    DockImage motion_out; /* the faded frame: the box over the backdrop */
     DockImage artwork;
     DockImage loaded[FOLDER_COLS*FOLDER_ROWS];
 } FolderView;
@@ -189,6 +190,7 @@ struct DockUI {
     DockConvertRGB24 encode;
     DockConvertRGB565 encode565;
     DockConvertRGB565 decode;
+    DockMixHalf mix_half; /* the renderer's 50% mix (AMMX on the 68080) */
     DockImage popup_glass;
     int glass_tint_shift; /* nonzero: popup_glass still holds the bare backdrop */
     FolderView folder;
@@ -472,6 +474,7 @@ static void close_popup(DockUI *ui, int preserve)
     free(ui->folder.motion_backdrop.pixels);
     free(ui->folder.motion_scene.pixels);
     free(ui->folder.motion_frame.pixels);
+    free(ui->folder.motion_out.pixels);
     ui->folder = (FolderView){0};
     ui->popup_selected = ui->popup_pressed = -1;
 }
@@ -1236,6 +1239,52 @@ static int present_folder_strip(DockUI *ui, const DockImage *source, int from, i
     return shown;
 }
 
+/* Compose the box as far as it is revealed ([0,shown) from the tip),
+   faded in over the backdrop, into motion_out, and set the window
+   rectangle to present: up to the larger of shown and what is on screen
+   (presented); past it the window already shows the backdrop. The box's
+   pixels are in motion_frame. The fade has quarter steps (alpha/256
+   rounded), each one or two 50% mixes: a general blend in C took 12 ms a
+   frame on the 68080 and left 4 frames for the motion. Returns 0 without
+   memory. */
+static int compose_folder_fade(FolderView *f, DockMixHalf mix, int width, int height,
+    int shown, int presented, unsigned int alpha, int *x, int *y, int *w, int *h)
+{
+    int bx, by, bw, bh, row, quarters = (int)(alpha+32)/64;
+    if (!f->motion_out.pixels) {
+        f->motion_out = (DockImage){width,height,malloc((size_t)width*height*4)};
+        if (!f->motion_out.pixels) { f->motion_out = (DockImage){0}; return 0; }
+    }
+    folder_reveal_rect(f,width,height,0,shown > presented ? shown : presented,x,y,w,h);
+    folder_reveal_rect(f,width,height,0,shown,&bx,&by,&bw,&bh);
+    for (row = *y; row < *y+*h; ++row) {
+        size_t offset = (size_t)row*width;
+        const uint32_t *under = (const uint32_t *)f->motion_backdrop.pixels+offset;
+        const uint32_t *over = (const uint32_t *)f->motion_frame.pixels+offset;
+        uint32_t *out = (uint32_t *)f->motion_out.pixels+offset;
+        memcpy(out+*x,under+*x,(size_t)*w*4);
+        if (row < by || row >= by+bh || !quarters) continue;
+        out += bx; over += bx; under += bx;
+        if (quarters >= 3) memcpy(out,over,(size_t)bw*4);
+        if (quarters < 4) mix((unsigned char *)out,(const unsigned char *)(quarters == 3 ? under : over),
+            (unsigned long)bw);
+        if (quarters == 1) mix((unsigned char *)out,(const unsigned char *)under,(unsigned long)bw);
+        if (quarters == 3) mix((unsigned char *)out,(const unsigned char *)over,(unsigned long)bw);
+    }
+    return 1;
+}
+
+static int present_folder_rect(DockUI *ui, const DockImage *image, int x, int y, int w, int h)
+{
+    struct Layer *layer = ui->popup->WLayer;
+    int ok;
+    if (w <= 0 || h <= 0) return 1;
+    if (!AttemptLockLayerRom(layer)) return 0;
+    ok = amiga_display_present_tile(ui->popup_display,ui->popup,image,x,y,w,h);
+    UnlockLayerRom(layer);
+    return ok;
+}
+
 static void paint_folder(DockUI *ui)
 {
     FolderView *f = &ui->folder;
@@ -1281,7 +1330,8 @@ static void clear_folder_motion(FolderView *f)
 {
     free(f->motion_scene.pixels);
     free(f->motion_frame.pixels);
-    f->motion_scene = f->motion_frame = (DockImage){0};
+    free(f->motion_out.pixels);
+    f->motion_scene = f->motion_frame = f->motion_out = (DockImage){0};
     f->motion = FOLDER_STILL;
     f->handoff = 0;
     f->handoff_bitmap = NULL;
@@ -1442,9 +1492,19 @@ void dock_ui_dismiss_popup(DockUI *ui)
     /* Hide strips back toward the tip from wherever the box is: only the
        backdrop is needed, so closing starts at once. An opening in
        progress closes from the part already shown. */
-    if (f->motion != FOLDER_OPENING)
+    if (f->motion != FOLDER_OPENING) {
         f->reveal_shown = folder_reveal_extent(f,ui->popup->Width,ui->popup->Height);
-    else f->reveal_shown = f->reveal_presented;
+        /* The box as shown, to fade out: read back from the screen. */
+        if (!f->motion_frame.pixels) {
+            DockImage *view = &f->motion_frame;
+            *view = (DockImage){ui->popup->Width,ui->popup->Height,
+                malloc((size_t)ui->popup->Width*ui->popup->Height*4)};
+            if (!view->pixels || !amiga_display_capture(ui->popup_display,view,
+                    ui->popup->LeftEdge,ui->popup->TopEdge)) {
+                free(view->pixels); *view = (DockImage){0};
+            }
+        }
+    } else f->reveal_shown = f->reveal_presented;
     f->reveal_from = f->reveal_presented = f->reveal_shown;
     f->motion = FOLDER_CLOSING;
     ui->popup_pressed = FOLDER_OUTSIDE;
@@ -1469,15 +1529,22 @@ static int advance_folder_motion(DockUI *ui)
         int target = closing ? f->reveal_from*(256-weight)/256 :
             f->reveal_from+(extent-f->reveal_from)*weight/256;
         ULONG composed;
+        int fade = 0, fx = 0, fy = 0, fw = 0, fh = 0;
         if (!closing && target > f->reveal_shown && f->motion_frame.pixels) {
             int x, y, w, h;
             folder_reveal_rect(f,ui->popup->Width,ui->popup->Height,f->reveal_shown,target,&x,&y,&w,&h);
             finish_folder_strip(f,x,y,w,h);
             f->reveal_shown = target;
         } else if (closing && target < f->reveal_shown) f->reveal_shown = target;
+        /* Fade with the reveal: in while opening, out while closing. */
+        if (f->motion_frame.pixels)
+            fade = compose_folder_fade(f,ui->mix_half ? ui->mix_half : dock_mix_half_c,
+                ui->popup->Width,ui->popup->Height,f->reveal_shown,
+                f->reveal_presented,(unsigned int)(closing ? 256-weight : weight),&fx,&fy,&fw,&fh);
         ReadEClock(&now); composed = now.ev_lo;
-        if (present_folder_strip(ui,closing ? &f->motion_backdrop : &f->motion_frame,
-                f->reveal_presented,f->reveal_shown))
+        if (fade ? present_folder_rect(ui,&f->motion_out,fx,fy,fw,fh) :
+                present_folder_strip(ui,closing ? &f->motion_backdrop : &f->motion_frame,
+                    f->reveal_presented,f->reveal_shown))
             f->reveal_presented = f->reveal_shown;
         ++f->motion_frames;
         ReadEClock(&now);
@@ -1664,8 +1731,9 @@ void dock_ui_set_blocking_hook(DockUI *ui, DockUIBlocking hook, void *context)
 }
 
 void dock_ui_set_converters(DockUI *ui, DockConvertRGB24 encode, DockConvertRGB565 decode,
-    DockConvertRGB565 encode565)
+    DockConvertRGB565 encode565, DockMixHalf mix_half)
 {
+    ui->mix_half = mix_half;
     ui->encode565 = encode565;
     ui->encode = encode;
     ui->decode = decode;
@@ -2226,6 +2294,7 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
         free_folder_icons(&ui->folder);
         free(ui->folder.motion_scene.pixels);
         free(ui->folder.motion_frame.pixels);
+        free(ui->folder.motion_out.pixels);
         ui->folder = next;
     } else {
         const DockImage *old = &ui->folder.motion_backdrop;

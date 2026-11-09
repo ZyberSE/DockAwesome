@@ -135,7 +135,7 @@ void use_pixel_backend(App *app)
     if (app->use_ammx) app->renderer.pixels = dock_backend_ammx();
 #endif
     dock_ui_set_converters(app->ui,app->renderer.pixels->rgba_to_rgb24,app->renderer.pixels->decode565,
-        app->renderer.pixels->encode565);
+        app->renderer.pixels->encode565,app->renderer.pixels->mix_half);
 }
 
 /* After a closed PiP surface: open the snapshot backend instead. */

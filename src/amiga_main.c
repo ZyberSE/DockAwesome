@@ -1605,6 +1605,33 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
     }
 }
 
+/* The dragged pin in PiP1: the icon, with the Remove pill under it once
+   armed. Returns 0 when PiP1 is not available. */
+static int show_drag_float(App *app, const DockImage *icon, int remove, int x, int y)
+{
+    DockImage pill = {0}, image;
+    int width, height, row, ok;
+    if (remove && !dock_ui_pill_image(app->ui,"Remove",&pill)) remove = 0;
+    width = remove && pill.width > icon->width ? pill.width : icon->width;
+    height = icon->height+(remove ? 4+pill.height : 0);
+    image = (DockImage){width,height,calloc((size_t)width*height,4)};
+    if (!image.pixels) { free(pill.pixels); return 0; }
+    for (row = 0; row < icon->height; ++row)
+        memcpy(image.pixels+((size_t)row*width+(width-icon->width)/2)*4,
+            icon->pixels+(size_t)row*icon->width*4,(size_t)icon->width*4);
+    for (row = 0; remove && row < pill.height; ++row)
+        memcpy(image.pixels+((size_t)(icon->height+4+row)*width+(width-pill.width)/2)*4,
+            pill.pixels+(size_t)row*pill.width*4,(size_t)pill.width*4);
+    dock_ui_hide_label(app->ui);
+    ok = amiga_float_show(app->float_layer,&image,x-width/2,y-icon->height/2);
+    free(image.pixels); free(pill.pixels);
+    if (ok) {
+        app->drag_float_remove = remove;
+        app->drag_float_width = width; app->drag_float_icon_height = icon->height;
+    }
+    return ok;
+}
+
 /* The native window that carries a dragged pin beyond the dock's surface.
    Shaped (ApolloOS) it opens when the pin would be removed. Without shapes
    it opens as soon as the icon reaches past the surface, in the size the
@@ -1629,6 +1656,23 @@ static int update_drag_preview(App *app)
             if (!gesture->remove_armed && left >= 0 && top >= 0 &&
                 left+icon->width <= visible && top+icon->height <= app->height) icon = NULL;
         }
+    }
+    if (app->float_layer && !shaped) {
+        /* PiP1: no window, no save-under; a move writes two registers. */
+        if (!icon) {
+            if (!app->drag_float) return 0;
+            amiga_float_hide(app->float_layer); app->drag_float = 0;
+            return 1;
+        }
+        if (app->drag_float && app->drag_float_token == gesture->token &&
+            app->drag_float_remove == gesture->remove_armed) {
+            amiga_float_move(app->float_layer,x-app->drag_float_width/2,y-app->drag_float_icon_height/2);
+            return 0;
+        }
+        app->drag_float = show_drag_float(app,icon,gesture->remove_armed,x,y);
+        app->drag_float_token = gesture->token;
+        if (app->drag_float) return 0;
+        /* PiP1 is taken: the window preview below. */
     }
     if (!icon) {
         app->preview_attempt = 0;

@@ -68,6 +68,13 @@ void dock_ui_finish_folder_motion(DockUI *ui);
 int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const char *text);
 void dock_ui_move_label(DockUI *ui, DockEdge edge, const DockRect *anchor);
 void dock_ui_hide_label(DockUI *ui);
+/* Labels show in this PiP1 layer (no window shapes), or in windows when
+   NULL. The UI does not own it. */
+struct AmigaFloat;
+void dock_ui_set_float(DockUI *ui, struct AmigaFloat *float_layer);
+/* A flat label pill with hard edges as RGBA (alpha 0 outside); the caller
+   frees out->pixels. */
+int dock_ui_pill_image(DockUI *ui, const char *text, DockImage *out);
 int dock_ui_dialog_bounds(const DockUI *ui, DockRect *bounds);
 int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial);
 int dock_ui_open_about(DockUI *ui);

@@ -14,6 +14,7 @@
 #include "amiga_pip.h"
 #include "amiga_drop_catcher.h"
 #include "amiga_drag_preview.h"
+#include "amiga_float.h"
 #include "amiga_text.h"
 #include "amiga_ui.h"
 #include "amiga_version.h"
@@ -342,6 +343,11 @@ typedef struct App {
     DockGesture gesture;
     int moving_item; /* One-based. */
     AmigaDragPreview *drag_preview;
+    struct AmigaFloat *float_layer; /* PiP1 for labels and drags: PiP without window shapes */
+    /* A dragged pin shown in float_layer: its gesture, Remove state, and the
+       image's width and icon height for moves. */
+    int drag_float, drag_float_remove, drag_float_width, drag_float_icon_height;
+    uint32_t drag_float_token;
     uint32_t preview_attempt;
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;
@@ -489,7 +495,9 @@ static inline int viewport_limit(const App *app, DockEdge edge)
 
 static inline DockUI *create_ui(const App *app)
 {
-    return dock_ui_create(app->screen,app->features.ui_shapes,app->features.ui_glass,app->features.aa_text);
+    DockUI *ui = dock_ui_create(app->screen,app->features.ui_shapes,app->features.ui_glass,app->features.aa_text);
+    dock_ui_set_float(ui,app->float_layer);
+    return ui;
 }
 
 void interaction_cancel_for(App *app, uint32_t token);

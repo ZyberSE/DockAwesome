@@ -10,6 +10,11 @@ enum { AMIGA_PIP_MAX_WIDTH = 2048, AMIGA_PIP_MAX_HEIGHT = 1200 };
    The right_padding columns may extend past the screen and must stay clear. */
 AmigaPip *amiga_pip_open(struct Screen *screen, int x, int y, int width, int height, int right_padding,
                        char *error, size_t error_capacity);
+/* unit 1 or 2: SAGA has two PiP overlays, each leased on its own. */
+AmigaPip *amiga_pip_open_unit(struct Screen *screen, int unit, int x, int y, int width, int height,
+                       int right_padding, char *error, size_t error_capacity);
+/* Place the overlay at a new screen position (whole overlay on screen). */
+int amiga_pip_move(AmigaPip *pip, int x, int y);
 void amiga_pip_close(AmigaPip *pip);
 void amiga_pip_suspend(AmigaPip *pip);
 /* Apply offsets from -128 to 128 pixels. Check alignment on the display. */

@@ -555,6 +555,20 @@ int amiga_display_present_damage(AmigaDisplay *d, struct Window *window, const D
     return 1;
 }
 
+int amiga_display_write_rgba(AmigaDisplay *d, struct RastPort *port, const DockImage *im)
+{
+    if (!d || !d->cyber || !port || !im || !im->pixels) return 0;
+    return WritePixelArray(im->pixels,0,0,im->width*4,port,0,0,im->width,im->height,RECTFMT_RGBA) ==
+        (ULONG)im->width*im->height;
+}
+
+int amiga_display_read_rgba(AmigaDisplay *d, struct RastPort *port, DockImage *im)
+{
+    if (!d || !d->cyber || !port || !im || !im->pixels) return 0;
+    return ReadPixelArray(im->pixels,0,0,im->width*4,port,0,0,im->width,im->height,RECTFMT_RGBA) ==
+        (ULONG)im->width*im->height;
+}
+
 int amiga_display_present(AmigaDisplay *d, struct Window *window, const DockImage *im)
 {
     return present_port(d,window ? window->RPort : NULL,im,NULL,NULL);

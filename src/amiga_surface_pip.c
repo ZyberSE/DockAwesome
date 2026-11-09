@@ -3,6 +3,7 @@
    ApolloOS, one pixel on AmigaOS 3.x), and the drop receiver. See
    docs/pip-backend.md. */
 #include "amiga_app.h"
+#include "amiga_float.h"
 
 /* The overlay's columns on the screen. A right dock's keyed transport
    padding lies past the screen edge. */
@@ -393,6 +394,9 @@ static int pip_open(App *app)
             WA_BackFill, (ULONG)LAYERS_NOBACKFILL,
             WA_IDCMP, IDCMP_FLAGS & ~IDCMP_REFRESHWINDOW, TAG_DONE);
         if (!app->window) return 0;
+        /* Labels and dragged pins float in PiP1 when it is free. */
+        app->float_layer = amiga_float_create(app->screen, app->pip_x_offset, app->pip_y_offset);
+        dock_ui_set_float(app->ui, app->float_layer);
         app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
         if (!app->appwindow) return 0;
         app->drop_catcher = amiga_drop_catcher_init(app->screen, app->window, NULL,
@@ -421,6 +425,8 @@ static int pip_open(App *app)
    their windows. */
 static void pip_close(App *app)
 {
+    dock_ui_set_float(app->ui, NULL);
+    amiga_float_destroy(app->float_layer); app->float_layer = NULL;
     amiga_pip_close(app->pip); app->pip = NULL;
     if (app->appwindow) { RemoveAppWindow(app->appwindow); app->appwindow = NULL; }
     if (app->window) { CloseWindow(app->window); app->window = NULL; }

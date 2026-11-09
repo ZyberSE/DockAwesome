@@ -38,6 +38,10 @@ int amiga_display_drag_mask565(AmigaDisplay *display, const unsigned char *refer
     unsigned char *mask, DockRect *marked, int x, int y, int left, int top, int right, int bottom,
     DockBytesEqual equal);
 int amiga_display_present(AmigaDisplay *display, struct Window *window, const DockImage *image);
+/* An RGBA image into an RTG RastPort (an off-screen bitmap) at 0,0, and
+   back out of it. Return 0 on failure. */
+int amiga_display_write_rgba(AmigaDisplay *display, struct RastPort *port, const DockImage *image);
+int amiga_display_read_rgba(AmigaDisplay *display, struct RastPort *port, DockImage *image);
 /* With no background, the caller initializes the returned back buffer. */
 struct RastPort *amiga_display_begin_frame(AmigaDisplay *display, const DockImage *background);
 int amiga_display_capture_frame(AmigaDisplay *display, DockImage *image);

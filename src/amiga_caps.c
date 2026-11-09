@@ -66,10 +66,12 @@ int amiga_caps_probe(DockCaps *caps, struct Screen *screen)
     *caps = (DockCaps){0};
     caps->cpu_080 = amiga_caps_cpu_080();
 #ifdef DOCK_AMMX
-    caps->ammx = caps->cpu_080;
+    /* This build runs only on a 68080, whether or not exec reports one:
+       AmigaOS 3.2 need not set AttnFlags bit 10. */
+    caps->ammx = 1;
 #endif
     /* A custom chip register: read it only on a 68080 (a Vampire). */
-    if (caps->cpu_080) {
+    if (caps->ammx || caps->cpu_080) {
         unsigned int core = *(volatile UWORD *)SAGA_CORE_REVISION;
         caps->saga_core = core;
         caps->saga_pip2 = core >= 11900 && core != 0xffff;

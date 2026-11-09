@@ -68,8 +68,8 @@ frame or per pixel; other code reads the stored caps and profile.
 | Field | Probe |
 | --- | --- |
 | `cpu_080` | exec `AttnFlags` bit 10 (`AFF_68080`) |
-| `ammx` | `cpu_080` in the AMMX build |
-| `saga_core`, `saga_pip2` | SAGA register `DFF3EA`, read only on a 68080; PiP2 needs 11900 or newer |
+| `ammx` | always in the AMMX build, which runs only on a 68080 |
+| `saga_core`, `saga_pip2` | SAGA register `DFF3EA`, read only in the AMMX build or on a reported 68080; PiP2 needs 11900 or newer |
 | `shaped_windows` | Intuition `lib_Version` 50 with the vector at 858, and Layers V50 |
 | `rgb_rastport` | graphics.library `lib_NegSize` at least `$40E` (AROS RastPort RGB tags) |
 | `alpha_text` | cybergraphics.library V51 with `BltTemplateAlpha` (`lib_NegSize` `$DE`) |

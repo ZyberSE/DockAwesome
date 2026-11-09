@@ -1460,9 +1460,11 @@ static void record_launch(App *app, uint32_t pin_id)
     app->launches[app->launch_count++].at = profile_clock();
 }
 
+/* Opens a pin through Workbench. A failure names the path and the reason
+   dos reports, so reports from other Workbench setups say what failed. */
 static int launch_pin(const char *path)
 {
-    LONG default_icon = FALSE;
+    LONG default_icon = FALSE, error = 0;
     struct TagItem get[] = {
         { ICONGETA_FailIfUnavailable, FALSE },
         { ICONGETA_IsDefaultIcon, (ULONG)&default_icon },
@@ -1482,10 +1484,18 @@ static int launch_pin(const char *path)
             { TAG_DONE, 0 }
         };
         opened = parent && OpenWorkbenchObjectA(icon->do_DefaultTool,args);
+        if (!opened) error = IoErr();
         if (parent) UnLock(parent);
         if (file) UnLock(file);
-    } else opened = OpenWorkbenchObjectA((STRPTR)path,NULL);
+    } else if (!(opened = OpenWorkbenchObjectA((STRPTR)path,NULL))) error = IoErr();
     if (icon) FreeDiskObject(icon);
+    if (!opened) {
+        char text[PATH_CAP+128], why[96];
+        why[0] = 0;
+        if (error) Fault(error,NULL,(STRPTR)why,sizeof(why));
+        snprintf(text,sizeof(text),"Workbench could not open\n%s%s%s",path,why[0] ? "\n" : "",why);
+        message(text);
+    }
     return opened;
 }
 
@@ -1574,7 +1584,6 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
                 record_launch(app,item->pin_id);
                 status_changed(app);
             }
-            else message("Workbench could not open this object.");
         }
         if (!app->timer_failed) {
             app->flash_pin_id = effect.pin_id;
@@ -1690,7 +1699,6 @@ static void shell_menu_action(App *app, int action)
         if (quit_shell_window(app)) status_changed(app);
         else message("Could not close the selected Shell.");
     } else if (launch_pin(app->items[index].path)) status_changed(app);
-    else message("Workbench could not open Shell.");
 }
 
 static int displayed_scale(const App *app)
@@ -1874,7 +1882,6 @@ static __attribute__((noinline)) void event_loop(App *app)
                 if (index >= 0 && app->items[index].stack) open_stack_view(app,index);
             } else if (action.type == DOCK_UI_OPEN_PATH) {
                 if (launch_pin(action.path)) status_changed(app);
-                else message("Workbench could not open this object.");
             }
             else if (action.type == DOCK_UI_KEEP_ITEM) keep_menu_item(app);
             else if (action.type >= DOCK_UI_NEW_SHELL && action.type <= DOCK_UI_QUIT_SHELL)
@@ -2148,13 +2155,6 @@ int main(int argc, char **argv)
             strcpy(app->config, argv[i]);
         }
         else if (!strcmp(argv[i], "--caps")) caps_only = 1;
-    }
-    /* The binary is built for the 68080: stop before any AMMX kernel runs.
-       --caps still reports what this machine offers. */
-    if (!caps_only && !amiga_caps_cpu_080()) {
-        early_message(argc, "DockAwesome needs a Vampire with a 68080 CPU.\n"
-            "exec reports no 68080 (AttnFlags bit 10). Run DockAwesome --caps for details.");
-        free(app); return 20;
     }
     dock_prefs_defaults(&app->prefs);
     config_state = read_config(app);

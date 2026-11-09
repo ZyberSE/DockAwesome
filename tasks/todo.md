@@ -600,5 +600,22 @@ Baseline, build 219 (simplify commit), Size 36, 12 pins, 800x96 PiP canvas:
 - [x] 8a. DockCaps probe (amiga_caps.c), pure dock_choose_profile with
       host tests, --caps. ApolloOS R9.5: cpu_080 yes (AttnFlags $a47f),
       core 12398, profile pip/ammx/glass. Sweep A/B within noise.
-- [ ] 8b. Surface backend interface; split amiga_main.c
-- [ ] 9. Install, clean RAM:, review and lessons
+- [x] 8b. SurfaceOps (pip, window) chosen once per surface; amiga_main.c
+      split into input handler, status, workbench and surface modules
+      (4787 -> 2359 lines). Hot functions instruction-identical or proven
+      equivalent; Vampire sweep: conversion 1.81 -> 1.73 ms, compose same;
+      --damage-check 0 in PiP and snapshot; popup, Folder Stack, R checked.
+- [x] 9. Build 225 installed in SYS:WBStartup (build 218 in
+      SYS:WBStartup/Disabled/DockAwesome-build218.old). RAM: test files
+      removed.
+
+Review (2026-11-09):
+- Measured on the Vampire against build 219:
+  PiP sweep 7.8-7.9 -> 7.4-7.5 ms (conversion 2.2 -> 1.73);
+  snapshot sweep 13.8 -> 5.9 ms; window moved behind the dock
+  24.6 -> 13.6 ms per change, 21 of 21 -> 1 of 22 frames full.
+- Not yet tested: a Workbench screen mode change (step 5 input fix and the
+  depth re-probe), opaque mode with an empty dock, an 8-bit screen.
+- Next measured costs: PiP compose 5.6 ms per sweep frame; a backdrop box
+  still remixes whole glass rows; GCC places draw/event_loop in
+  .text.unlikely (size-optimized), worth an A/B with __attribute__((hot)).

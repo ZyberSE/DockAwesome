@@ -21,6 +21,21 @@
 - Use the observed video for motion. Use physical PiP output for scanout.
   Screenshots and exported buffers can omit or miss display issues.
 
+- Drive the dock and Workbench windows with relative motion
+  (amiga_drag/amiga_click relative:true). Absolute warps did not move a
+  window and missed the dock's hover and drag paths.
+- Test the popup on the plate strip under the icons. A right-click on a pin
+  without menu actions opens nothing by design, and zoom moves the icons, so
+  a fixed point can hit a pin in one run and the plate in the next.
+- Measure backdrop changes by running the dock from an Execute script with
+  --profile, dragging a drawer window across the dock, then Break. Compare
+  render_us_avg and the Damage line against the same scenario on the old
+  build.
+- Parallel worktree agents can start from an older commit: tell each to reset
+  to the integration commit. Merge one branch at a time and run
+  --damage-check on the Vampire. Bisect a regression by building each branch
+  head on its own.
+
 ## Motion and appearance
 
 - Zoom inward from a fixed baseline. Keep plate thickness fixed and let its

@@ -706,7 +706,10 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
                 c->external_cancelled = 1; c->external_held = 0;
             }
         }
-        if (c->held) {
+        if (c->held && !c->held_screen) {
+            /* Its screen closed: the press stays cancelled until its UP. */
+            c->held_cancelled = 1;
+        } else if (c->held) {
             int x = c->held_screen->MouseX-c->held_left;
             int y = c->held_screen->MouseY-c->held_top;
             if (IntuitionBase->FirstScreen != c->held_screen || right_press ||
@@ -738,7 +741,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
                 c->close_held = 0; e->ie_Class = IECLASS_NULL; continue;
             }
             if (e->ie_Code == SELECTDOWN && clean && c->close_valid && !c->held &&
-                IntuitionBase->FirstScreen == c->dock_screen &&
+                c->dock_screen && IntuitionBase->FirstScreen == c->dock_screen &&
                 c->dock_screen->MouseX >= c->close_left && c->dock_screen->MouseX < c->close_right &&
                 c->dock_screen->MouseY >= c->close_top && c->dock_screen->MouseY < c->close_bottom) {
                 /* The close button owns this pair; the main task dismisses
@@ -747,7 +750,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
                 e->ie_Class = IECLASS_NULL; continue;
             }
             if (e->ie_Code == MENUDOWN && c->popup_open &&
-                IntuitionBase->FirstScreen == c->dock_screen) {
+                c->dock_screen && IntuitionBase->FirstScreen == c->dock_screen) {
                 /* The popup owns this pair even after dismissal closes its window. */
                 c->menu_screen = c->dock_screen;
                 c->right_held = c->popup_dismiss = 1;
@@ -777,9 +780,10 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
                 c->external_held = 0;
             }
             if (e->ie_Code == SELECTUP && c->held) {
-                int x = c->held_screen->MouseX-c->held_left;
-                int y = c->held_screen->MouseY-c->held_top;
-                int same_screen = IntuitionBase->FirstScreen == c->held_screen;
+                struct Screen *held_screen = c->held_screen;
+                int x = held_screen ? held_screen->MouseX-c->held_left : 0;
+                int y = held_screen ? held_screen->MouseY-c->held_top : 0;
+                int same_screen = held_screen && IntuitionBase->FirstScreen == held_screen;
                 int hit = clean && same_screen && s && s->screen == c->held_screen ? snapshot_hit(s, x, y) : -1;
                 unsigned int flags = (clean ? DOCK_INPUT_COORDS_VALID : 0) |
                     (same_screen ? DOCK_INPUT_SAME_SCREEN : 0) |
@@ -835,7 +839,7 @@ struct InputEvent *dock_input_observe(struct InputEvent *events, void *context)
     /* Pointer motion on another screen cannot change the dock. The live
        timer still notices when the dock screen returns to the front. */
     if (notify && (engaged || c->held || c->external_held || c->right_held || c->close_held ||
-        IntuitionBase->FirstScreen == c->dock_screen)) Signal(c->task, c->signal);
+        (c->dock_screen && IntuitionBase->FirstScreen == c->dock_screen))) Signal(c->task, c->signal);
     return events;
 }
 
@@ -2802,8 +2806,6 @@ static void ui_blocking(void *context, int blocking)
     amiga_pip_suspend(app->pip); app->pip_visible = 0; input_publish(app);
 }
 
-/* The largest Size whose row fits the draft's edge and whose cache fits the
-   memory budget, with the same rules apply_preferences uses to save. */
 /* One cache level per pixel from Size to the zoom size, within limits. */
 static int zoom_levels(int base_size, int max_size)
 {
@@ -2811,25 +2813,53 @@ static int zoom_levels(int base_size, int max_size)
     return levels < 2 ? 2 : levels > DOCK_MAX_LEVELS ? DOCK_MAX_LEVELS : levels;
 }
 
+static int displayed_scale(const App *app);
+
+/* The settings Save stores for a draft at this Size, and the scale it saves
+   (0 keeps the pixel zoom). Returns 0 when the zoom exceeds 192 px. */
+static int draft_settings(const App *app, const DockUIPrefs *draft, int size,
+                          DockSettings *out, int *scale)
+{
+    const DockSettings *previous = &app->settings;
+    DockSettings next = *previous;
+    int percent = draft->scale_percent;
+    next.base_size = size;
+    next.end_gap = draft->folder[0] ? STACK_DIVIDER_GAP : 0;
+    next.max_size = dock_scaled_size(size,percent);
+    if (!app->scale_percent && size == previous->base_size && percent == displayed_scale(app) &&
+        next.max_size != previous->max_size) {
+        /* Some large pixel sizes cannot be represented by a two-decimal factor. */
+        next.max_size = previous->max_size;
+        percent = 0;
+    }
+    if (next.max_size > DOCK_MAX_ICON_SIZE) return 0;
+    /* Unchanged sizes keep their levels, which may come from --levels. */
+    if (next.base_size != previous->base_size || next.max_size != previous->max_size)
+        next.levels = zoom_levels(next.base_size,next.max_size);
+    *out = next;
+    if (scale) *scale = percent;
+    return 1;
+}
+
+/* Whether the draft's row fits its edge and its cache fits the budget. */
+static int draft_fits(const App *app, const DockUIPrefs *draft, const DockSettings *s)
+{
+    int has_stack = stack_index(app) < app->count;
+    return draft->edge >= DOCK_EDGE_BOTTOM && draft->edge <= DOCK_EDGE_RIGHT &&
+        dock_items_fit(s,app->count+!!draft->folder[0]-has_stack,
+            viewport_limit(app,(DockEdge)draft->edge));
+}
+
+/* The largest Size that Save accepts for the draft's Scale, edge and stack. */
 static int ui_fit(void *context, const DockUIPrefs *draft)
 {
     const App *app = (const App *)context;
-    int has_stack = stack_index(app) < app->count;
-    int count = app->count+(!!draft->folder[0]-has_stack), size;
-    int available = viewport_limit(app,(DockEdge)draft->edge);
-    DockSettings s = app->settings;
-    s.end_gap = draft->folder[0] ? STACK_DIVIDER_GAP : 0;
-    for (size = DOCK_MAX_ICON_SIZE; size > DOCK_MIN_ICON_SIZE; --size) {
-        s.base_size = size;
-        s.max_size = dock_scaled_size(size,draft->scale_percent);
-        if (!s.max_size || s.max_size > DOCK_MAX_ICON_SIZE) continue;
-        s.levels = zoom_levels(size,s.max_size);
-        if (dock_items_fit(&s,count,available)) return size;
-    }
+    DockSettings s;
+    int size;
+    for (size = DOCK_MAX_ICON_SIZE; size > DOCK_MIN_ICON_SIZE; --size)
+        if (draft_settings(app,draft,size,&s,NULL) && draft_fits(app,draft,&s)) return size;
     return DOCK_MIN_ICON_SIZE;
 }
-
-static int displayed_scale(const App *app);
 
 /* The saved preferences as Settings shows them. */
 static DockUIPrefs current_ui_prefs(const App *app)
@@ -3474,13 +3504,34 @@ static void draw(App *app)
     }
 }
 
+/* Point the input handler at the dock's screen, or at none (NULL) before
+   that screen is unlocked. State tied to the previous screen ends here:
+   external press tracking and the close button stop, and a held left or
+   right press stays cancelled but still owns its release. */
+static void input_attach_screen(App *app, struct Screen *screen)
+{
+    InputContext *c = &app->input_context;
+    Disable();
+    if (!screen) c->active = NULL;
+    c->dock_screen = screen;
+    c->apollo_pointer = app->pip_mode;
+    c->close_valid = 0;
+    c->popup_open = 0;
+    if (c->held) c->held_cancelled = 1;
+    c->held_screen = NULL;
+    if (c->external_held) { c->external_held = 0; c->external_cancelled = 1; }
+    c->external_screen = NULL;
+    if (c->right_held) c->menu_cancelled = 1;
+    c->menu_screen = NULL;
+    Enable();
+}
+
 static int install_input(App *app)
 {
     app->input_bit = AllocSignal(-1);
     if (app->input_bit < 0) return 0;
     app->input_context.task = FindTask(NULL);
-    app->input_context.dock_screen = app->screen;
-    app->input_context.apollo_pointer = app->pip_mode;
+    input_attach_screen(app,app->screen);
     app->input_context.signal = 1UL << app->input_bit;
     app->input_port = CreateMsgPort();
     if (!app->input_port) return 0;
@@ -3886,37 +3937,25 @@ static int displayed_scale(const App *app)
 
 static int apply_preferences(App *app, const DockUIPrefs *prefs)
 {
-    DockSettings previous = app->settings, next = app->settings;
+    DockSettings previous = app->settings, next;
     DockEdge previous_edge = app->edge;
     DockCache *swap = NULL;
     Item stack = {0};
     char previous_folder[PATH_CAP];
-    int i, changed_sizes, ok, available, old_count = app->count;
+    int i, changed_sizes, ok, old_count = app->count;
     int slot = stack_index(app), has_stack = slot < old_count;
     int change_stack = strcmp(prefs->folder,app->prefs.folder) != 0 || (!!prefs->folder[0] != has_stack);
-    int count = old_count+(change_stack ? !!prefs->folder[0]-has_stack : 0);
-    int previous_scale = app->scale_percent, scale = prefs->scale_percent;
-    next.base_size = prefs->size;
-    next.end_gap = prefs->folder[0] ? STACK_DIVIDER_GAP : 0;
-    next.max_size = dock_scaled_size(next.base_size,scale);
-    if (!previous_scale && next.base_size == previous.base_size && scale == displayed_scale(app) &&
-        next.max_size != previous.max_size) {
-        /* Some large pixel sizes cannot be represented by a two-decimal factor. */
-        next.max_size = previous.max_size;
-        scale = 0;
-    }
-    if (next.max_size > DOCK_MAX_ICON_SIZE) {
+    int previous_scale = app->scale_percent, scale;
+    /* The same rules as the Settings Size slider (ui_fit). */
+    if (!draft_settings(app,prefs,prefs->size,&next,&scale)) {
         message("Zoom exceeds 192 px. Lower Size or Scale.");
         return 0;
     }
-    changed_sizes = next.base_size != previous.base_size || next.max_size != previous.max_size;
-    if (changed_sizes) next.levels = zoom_levels(next.base_size,next.max_size);
-    available = viewport_limit(app,(DockEdge)prefs->edge);
-    if (prefs->edge < DOCK_EDGE_BOTTOM || prefs->edge > DOCK_EDGE_RIGHT ||
-        !dock_items_fit(&next,count,available)) {
+    if (!draft_fits(app,prefs,&next)) {
         message("The icons do not fit the screen or cache. Lower Size or Scale.");
         return 0;
     }
+    changed_sizes = next.base_size != previous.base_size || next.max_size != previous.max_size;
     if (!change_stack && !changed_sizes && prefs->edge == (int)app->edge) {
         app->scale_percent = scale;
         ok = save_config(app);
@@ -4041,6 +4080,7 @@ static void workbench_notify_close(App *app)
    and pins stay; they do not depend on the screen. */
 static void release_workbench(App *app)
 {
+    input_attach_screen(app,NULL);
     interaction_cancel(app);
     close_surface(app);
     dock_ui_destroy(app->ui); app->ui = NULL;
@@ -4091,7 +4131,7 @@ static DockUIPrefs current_ui_prefs(const App *app);
 static int acquire_workbench(App *app)
 {
     DockUIPrefs prefs;
-    int fit;
+    int fit, ok;
     app->screen = LockPubScreen(NULL);
     if (!app->screen) return 0;
     select_backend(app);
@@ -4105,11 +4145,15 @@ static int acquire_workbench(App *app)
     fit = ui_fit(app,&prefs);
     if (fit < app->settings.base_size) {
         prefs.size = fit;
-        return apply_preferences(app,&prefs);
+        ok = apply_preferences(app,&prefs);
+    } else if (!(ok = open_surface(app))) {
+        close_surface(app);
+        ok = app->pip_mode && fall_back_to_snapshot(app);
     }
-    if (open_surface(app)) return 1;
-    close_surface(app);
-    return app->pip_mode && fall_back_to_snapshot(app);
+    /* Like install_input: attach once the backend is final. A failure
+       leaves the handler detached while the caller unlocks the screen. */
+    if (ok) input_attach_screen(app,app->screen);
+    return ok;
 }
 
 /* Returns 1 when the dock reopened and needs its first frame. */

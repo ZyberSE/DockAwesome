@@ -1623,8 +1623,10 @@ static int update_drag_preview(App *app)
     }
     if (app->preview_attempt == gesture->token) return 0;
     app->preview_attempt = gesture->token;
+    /* Shaped windows (ApolloOS) give the preview the icon's outline; without
+       them it saves what lies under it. */
     app->drag_preview = amiga_drag_preview_open(app->screen,&app->items[index].cache.image[0],
-        app->pip_mode,x,y);
+        app->pip_mode && app->caps.shaped_windows,x,y);
     return app->drag_preview != NULL;
 }
 

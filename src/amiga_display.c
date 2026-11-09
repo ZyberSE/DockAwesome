@@ -32,6 +32,11 @@ struct AmigaDisplay {
     struct BitMap *source_bitmap;
     struct RastPort frame;
     struct BitMap *frame_bitmap;
+    /* PiP on a 24- or 32-bit screen: the last capture in the screen's own
+       format, compared as is; only changed rows convert to RGB565. */
+    unsigned char *raw;
+    size_t raw_capacity;
+    int raw_valid, raw_bytes;
 };
 
 /* One palette lookup serves every display on the same palette. Building it
@@ -145,7 +150,7 @@ void amiga_display_close(AmigaDisplay *d)
     if (!d) return;
     if (d->temp_bitmap) { WaitBlit(); FreeBitMap(d->temp_bitmap); }
     if (d->frame_bitmap) { WaitBlit(); FreeBitMap(d->frame_bitmap); }
-    free_lookup(d); free(d->upload);
+    free_lookup(d); free(d->upload); free(d->raw);
     if (d->cyber) CloseLibrary(d->cyber);
     free(d);
 }
@@ -166,6 +171,7 @@ int amiga_display_resize(AmigaDisplay *d, int width, int height)
     }
     if (d->frame_bitmap) { WaitBlit(); FreeBitMap(d->frame_bitmap); d->frame_bitmap = NULL; }
     d->width = width; d->height = height; d->stride = width*3;
+    d->raw_valid = 0;
     return 1;
 }
 
@@ -234,6 +240,59 @@ static int read_rect565(AmigaDisplay *d, struct BitMap *bitmap, int x, int y, in
     return 1;
 }
 
+/* The capture of a 24- or 32-bit screen: compare rows in the screen's own
+   format against the raw copy, at rest only the check box, and convert just
+   the changed rows into the RGB565 cache. Returns as capture565 does. */
+static int capture_raw(AmigaDisplay *d, unsigned char *cache, const unsigned char *source,
+    ULONG stride, ULONG bytes, ULONG format, int visible_width, int force,
+    const DockRect *check, DockBytesEqual equal, DockRect *box)
+{
+    size_t raw_row = (size_t)d->width*bytes, visible_raw = (size_t)visible_width*bytes;
+    size_t row565 = (size_t)d->width*2, needed = raw_row*d->height;
+    int row, top = -1, bottom = 0, left = visible_width, right = 0;
+    if (needed > d->raw_capacity) {
+        unsigned char *raw = malloc(needed);
+        if (!raw) return -1;
+        free(d->raw); d->raw = raw; d->raw_capacity = needed; d->raw_valid = 0;
+    }
+    if (!d->raw_valid || d->raw_bytes != (int)bytes) force = 1;
+    if (check && (check->left < 0 || check->right > visible_width || check->top < 0 ||
+        check->bottom > d->height || check->left >= check->right || check->top >= check->bottom))
+        check = NULL;
+    if (box) *box = (DockRect){0,0,0,0};
+    if (!force && check) {
+        for (row = check->top; row < check->bottom; ++row)
+            if (!equal(d->raw+(size_t)row*raw_row+(size_t)check->left*bytes,
+                       source+(size_t)row*stride+(size_t)check->left*bytes,
+                       (unsigned long)(check->right-check->left)*bytes)) break;
+        if (row == check->bottom) return 0;
+    }
+    for (row = 0; row < d->height; ++row) {
+        unsigned char *copy = d->raw+(size_t)row*raw_row;
+        const unsigned char *line = source+(size_t)row*stride;
+        int l = 0, r = visible_width;
+        if (!force) {
+            size_t a = 0, b = visible_raw;
+            if (equal(copy,line,(unsigned long)visible_raw)) continue;
+            while (a < b && copy[a] == line[a]) ++a;
+            while (b > a && copy[b-1] == line[b-1]) --b;
+            l = (int)(a/bytes); r = (int)((b+bytes-1)/bytes);
+        }
+        memcpy(copy,line,visible_raw);
+        row_to_rgb565(cache+row*row565,line,visible_width,format);
+        if (visible_width < d->width) memset(cache+row*row565+(size_t)visible_width*2,0,row565-(size_t)visible_width*2);
+        if (top < 0) top = row;
+        bottom = row+1;
+        if (l < left) left = l;
+        if (r > right) right = r;
+    }
+    d->raw_valid = 1; d->raw_bytes = (int)bytes;
+    if (force) { if (box) *box = (DockRect){0,0,d->width,d->height}; return 1; }
+    if (top < 0) return 0;
+    if (box) *box = (DockRect){left,top,right,bottom};
+    return 1;
+}
+
 int amiga_display_capture565(AmigaDisplay *d, unsigned char *cache,
                             int x, int y, int force, const DockRect *check, DockBytesEqual equal,
                             DockRect *box)
@@ -261,16 +320,13 @@ int amiga_display_capture565(AmigaDisplay *d, unsigned char *cache,
     if (!equal) equal = dock_bytes_equal_c;
     row_bytes = (size_t)d->width*2;
     visible_bytes = (size_t)visible_width*2;
-    if (format == PIXFMT_RGB16) source = (const unsigned char *)base+(size_t)y*stride+x*2;
-    else {
-        /* Other formats compare as RGB565 rows in upload (it holds three
-           bytes a pixel), so the screen stays locked only for the copy. */
-        for (row = 0; row < d->height; ++row)
-            row_to_rgb565(d->upload+(size_t)row*row_bytes,
-                (const unsigned char *)base+(size_t)(y+row)*stride+(size_t)x*bytes,visible_width,format);
-        UnLockBitMap(lock); lock = NULL;
-        source = d->upload; stride = row_bytes;
+    if (format != PIXFMT_RGB16) {
+        int result = capture_raw(d,cache,(const unsigned char *)base+(size_t)y*stride+(size_t)x*bytes,
+            stride,bytes,format,visible_width,force,check,equal,box);
+        UnLockBitMap(lock);
+        return result;
     }
+    source = (const unsigned char *)base+(size_t)y*stride+x*2;
     right = visible_width; bottom = d->height;
     if (check && check->left >= 0 && check->right <= right &&
         check->top >= 0 && check->bottom <= bottom &&
@@ -295,7 +351,7 @@ int amiga_display_capture565(AmigaDisplay *d, unsigned char *cache,
         if (visible_bytes < row_bytes) memset(line+visible_bytes,0,row_bytes-visible_bytes);
     }
     if (box && force) *box = (DockRect){0,0,d->width,d->height};
-    if (lock) UnLockBitMap(lock);
+    UnLockBitMap(lock);
     return changed;
 }
 
@@ -306,6 +362,8 @@ int amiga_display_drag_reference565(AmigaDisplay *d, struct BitMap *backing,
     int row;
     if (!d || !d->cyber || d->depth < 15 ||
         !backing || visible_width < 1 || visible_width > d->width) return 0;
+    /* reference is the capture's RGB565 cache: the raw copy no longer matches. */
+    d->raw_valid = 0;
     if (GetCyberMapAttr(backing,CYBRMATTR_PIXFMT) != PIXFMT_RGB16) {
         if (!read_rect565(d,backing,0,0,visible_width,d->height,reference,(size_t)d->width*2)) return 0;
     } else {

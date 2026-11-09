@@ -341,16 +341,19 @@ typedef struct App {
     uint64_t vblank_check_at, vblank_armed_at;
     int vblank_open, vblank_rate_ok, no_vsync;
     /* The close button that replaces the Folder Stack pin while it is
-       open, built with the surface for its settings and edge. */
+       open, built with the surface for its settings and edge, and kept
+       while those stay as it was built for (button_settings, button_edge). */
     DockCache stack_button;
+    DockSettings button_settings;
+    DockEdge button_edge;
     int stack_button_shown;
     /* The pin morphs between the stack's icon (0) and the close button
-       (256) over eight animation ticks. Two frames alternate so the
-       renderer sees a new image each tick. */
+       (256) over eight animation ticks, in one buffer. The blend is redone
+       and the cache restamped only when its inputs (morph_key) change. */
     int morph;
     DockCache morph_cache;
-    unsigned char *morph_pixels[2];
-    int morph_flip;
+    unsigned char *morph_pixels;
+    struct { int morph, level; unsigned long icon, button; } morph_key;
     int stack_close_press;
 } App;
 
@@ -418,7 +421,6 @@ static Item *append_item(App *app, const char *path, int kind, DockCache *cache)
     item->cache = *cache;
     memset(cache,0,sizeof(*cache));
     ++app->count;
-    dock_renderer_invalidate(&app->renderer);
     return item;
 }
 
@@ -437,7 +439,6 @@ static void exchange_stack(App *app, int index, Item *replacement)
         ++app->count;
     }
     *replacement = previous;
-    dock_renderer_invalidate(&app->renderer);
 }
 
 static ULONG region_rect_count(const struct Region *region)
@@ -561,7 +562,6 @@ static void erase_item(App *app, int index)
     int tail = app->count-index-1;
     input_invalidate(app);
     item_free(item);
-    dock_renderer_invalidate(&app->renderer);
     memmove(item,item+1,(size_t)tail*sizeof(*item));
     memmove(placement,placement+1,(size_t)tail*sizeof(*placement));
     memset(&app->items[--app->count],0,sizeof(*item));
@@ -1034,7 +1034,6 @@ static int prepare_stack(App *app, const char *path, const DockSettings *setting
     if (!ok || !load_stack_icon(app,item->path,&icon)) return 0;
     ok = dock_cache_build(&item->cache,&icon,settings);
     free(icon.pixels);
-    dock_renderer_invalidate(&app->renderer);
     if (!ok) return 0;
     item->pin_id = new_pin_id(app);
     item->kind = PIN_DRAWER;
@@ -3277,7 +3276,9 @@ static int in_capsule(int x, int y, int ax, int ay, int bx, int by, int r)
    size with 4x4 samples per pixel and built into a cache like any icon, so
    it zooms and filters like the others. Built with the surface: a 256 px
    source took 2.3 s on the 68080 and stalled the first Folder Stack
-   opening. */
+   opening. Each surface opening reuses it while the icon sizes, cache
+   limit and edge it was built for are unchanged, and frees it without a
+   stack. */
 static void stack_button_build(App *app)
 {
     enum { SURFACE = 44, SURFACE_ALPHA = 176, RIM = 132, RIM_ALPHA = 220, MARK = 212 };
@@ -3286,9 +3287,12 @@ static void stack_button_build(App *app)
     /* The chevron for a bottom dock ("v"), as percentages of the size. */
     int ax = 36, ay = 44, bx = 50, by = 58, cx = 64, cy = 44, x, y, ok;
     DockImage source = {n,n,NULL};
+    const DockSettings *built = &app->button_settings, *now = &app->settings;
+    if (stack_index(app) >= app->count) { dock_cache_free(&app->stack_button); return; }
+    if (app->stack_button.levels && app->button_edge == app->edge &&
+        built->base_size == now->base_size && built->max_size == now->max_size &&
+        built->levels == now->levels && built->cache_limit == now->cache_limit) return;
     dock_cache_free(&app->stack_button);
-    dock_renderer_invalidate(&app->renderer);
-    if (stack_index(app) >= app->count) return;
     if (app->edge != DOCK_EDGE_BOTTOM) {
         /* ">" for a right dock, "<" for a left one: transpose, then mirror. */
         int t;
@@ -3326,6 +3330,7 @@ static void stack_button_build(App *app)
     ok = dock_cache_build_scaled(&app->stack_button,&source,&app->settings,230);
     free(source.pixels);
     if (!ok) dock_cache_free(&app->stack_button);
+    else { app->button_settings = app->settings; app->button_edge = app->edge; }
 }
 
 /* The stack pin's image between its icon and the close button: alpha
@@ -3342,14 +3347,21 @@ static const DockCache *stack_morph(App *app, const DockCache *icon, int level)
     a = &icon->image[level]; b = &app->stack_button.image[level];
     if (a->width != b->width || a->height != b->height ||
         a->width > DOCK_MAX_ICON_SIZE || a->height > DOCK_MAX_ICON_SIZE) return nearer;
-    app->morph_flip ^= 1;
-    if (!app->morph_pixels[app->morph_flip] &&
-        !(app->morph_pixels[app->morph_flip] = malloc((size_t)DOCK_MAX_ICON_SIZE*DOCK_MAX_ICON_SIZE*4)))
+    if (!app->morph_pixels &&
+        !(app->morph_pixels = malloc((size_t)DOCK_MAX_ICON_SIZE*DOCK_MAX_ICON_SIZE*4)))
         return nearer;
+    /* Redraws without a change (a hover label, a running dot) reuse the
+       blend, and its unchanged stamp leaves the slot undamaged. */
+    if (app->morph_cache.stamp && app->morph_key.morph == t && app->morph_key.level == level &&
+        app->morph_key.icon == icon->stamp && app->morph_key.button == app->stack_button.stamp)
+        return &app->morph_cache;
     memset(&app->morph_cache,0,sizeof(app->morph_cache));
     app->morph_cache.levels = level+1;
     out = &app->morph_cache.image[level];
-    *out = (DockImage){a->width,a->height,app->morph_pixels[app->morph_flip]};
+    *out = (DockImage){a->width,a->height,app->morph_pixels};
+    app->morph_key.morph = t; app->morph_key.level = level;
+    app->morph_key.icon = icon->stamp; app->morph_key.button = app->stack_button.stamp;
+    dock_cache_restamp(&app->morph_cache);
     for (i = 0; i < a->width*a->height; ++i) {
         const unsigned char *p = a->pixels+i*4, *q = b->pixels+i*4;
         unsigned char *o = out->pixels+i*4;
@@ -3582,7 +3594,6 @@ static __attribute__((noinline)) int accept_drops(App *app, int *recreate)
                 if (!added && index == target) continue;
                 input_invalidate(app);
                 dock_reorder(app->items,sizeof(Item),app->count,index,target);
-                dock_renderer_invalidate(&app->renderer);
                 if (!*recreate && rest_after_pin_change(app,before)) {
                     app->placement[index] = app->target[target];
                     dock_reorder(app->placement,sizeof(*app->placement),app->count,index,target);
@@ -3748,7 +3759,6 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
         if (effect.target_slot != index) {
             input_invalidate(app);
             dock_reorder(app->items, sizeof(Item), app->count, index, effect.target_slot);
-            dock_renderer_invalidate(&app->renderer);
             *save = 1;
         }
     }
@@ -3970,7 +3980,6 @@ static int apply_preferences(App *app, const DockUIPrefs *prefs)
         if (change_stack && i == slot) continue;
         DockCache old = app->items[i].cache; app->items[i].cache = swap[i]; swap[i] = old;
     }
-    dock_renderer_invalidate(&app->renderer);
     if (change_stack) {
         strcpy(previous_folder,app->prefs.folder);
         strcpy(app->prefs.folder,stack.path);
@@ -3990,7 +3999,6 @@ static int apply_preferences(App *app, const DockUIPrefs *prefs)
             if (change_stack && i == slot) continue;
             DockCache failed = app->items[i].cache; app->items[i].cache = swap[i]; swap[i] = failed;
         }
-        dock_renderer_invalidate(&app->renderer);
         app->settings = previous; app->edge = previous_edge;
         app->scale_percent = previous_scale;
         if (!open_surface(app))
@@ -4685,7 +4693,7 @@ done:
     }
     for (i = 0; i < app->count; ++i) item_free(&app->items[i]);
     dock_cache_free(&app->stack_button);
-    free(app->morph_pixels[0]); free(app->morph_pixels[1]);
+    free(app->morph_pixels);
     /* PiP, input, the drop receiver and the surface are released. */
     if (app->failed && app->surface_error[0]) message(app->surface_error);
     if (app->screen) UnlockPubScreen(NULL, app->screen);

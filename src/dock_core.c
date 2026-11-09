@@ -72,6 +72,27 @@ int dock_items_fit(const DockSettings *s, int count, int viewport_length)
         (!count || dock_cache_bytes(s) <= s->cache_limit/(size_t)count);
 }
 
+/* The Workbench worker task builds caches too. One addq cannot be split by
+   a task switch, so the counter never goes back: two overlapping builds may
+   share a stamp, but a build that reuses freed pixels starts after the
+   owner's stamp was taken and so takes a later one. */
+static unsigned long stamp_counter;
+
+void dock_cache_restamp(DockCache *cache)
+{
+    unsigned long stamp;
+    if (!cache) return;
+    do {
+#if defined(__GNUC__) && defined(__m68k__)
+        __asm__ volatile ("addq.l #1,%0" : "+m"(stamp_counter));
+        stamp = *(volatile unsigned long *)&stamp_counter;
+#else
+        stamp = ++stamp_counter;
+#endif
+    } while (!stamp);
+    cache->stamp = stamp;
+}
+
 void dock_cache_free(DockCache *cache)
 {
     int i;
@@ -453,6 +474,9 @@ static int cache_build(DockCache *out, const DockImage *source, const DockSettin
     }
     for (l = 0; l < out->levels; ++l)
         if (!(out->runs[l] = build_runs(&out->image[l]))) goto done;
+    /* After every allocation: a later build that reuses these addresses
+       takes a later stamp. */
+    dock_cache_restamp(out);
     ok = 1;
 done:
     taps_free(&xt); taps_free(&yt);

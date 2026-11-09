@@ -566,3 +566,27 @@ icon centre). Share of the full zoom per icon from the pointer:
 - [x] Host tests, sanitizer and the 68080 build pass with no warnings.
 - [ ] Not run on the Vampire yet: needs a real-machine check of PiP,
       snapshot fallback, popups and drag before installing.
+
+## Simplify follow-ups and platform architecture (2026-11-09)
+
+Plan: ~/.claude/plans/rosy-frolicking-lynx.md. Vampire stays the target;
+the architecture must allow other platforms later at no performance cost
+(per-frame or startup dispatch only, measured against the baseline).
+
+Baseline, build 219 (simplify commit), Size 36, 12 pins, 800x96 PiP canvas:
+- PiP sweep 8 px: render 7.8-7.9 ms (compose 5.6, conversion 2.2-2.3).
+- Snapshot sweep 8 px: render 13.8 ms (compose 4.6, conversion 8.3 at
+  100% of the canvas, portable kernels: AMMX is PiP-only today).
+- Window moved behind the PiP dock: 21 changes, all full frames,
+  render 24.6 ms (compose 16.3, conversion 8.3), decode 2.1, compare 1.3.
+- --damage-check: 0 compose and 0 convert mismatches.
+
+- [ ] 1. Backdrop change damages only the changed box (PiP hot path)
+- [ ] 2. Snapshot/opaque present only damage; AMMX kernels in every mode
+- [ ] 3. Cache stamps replace address-based invalidation; one morph buffer
+- [ ] 4. Folder Stack close button rebuilt only when its inputs change
+- [ ] 5. Bugs: stale dock_screen after Workbench reopen; slider vs Save rules
+- [ ] 6. Compositor in dock_compose.c; shared clamp helpers
+- [ ] 7. Hover label, Size slider, popup rows, drag mask, coverage copy
+- [ ] 8. PlatformCaps probe, pure profile choice, surface backend interface
+- [ ] 9. Install, clean RAM:, review and lessons

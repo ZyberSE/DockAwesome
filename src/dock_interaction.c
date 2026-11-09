@@ -28,6 +28,7 @@ DockGestureEffects dock_gesture_update(DockGesture *g, const DockGestureInput *i
         dock_gesture_reset(g);
         g->active = 1; g->token = in->token; g->pin_id = in->pin_id;
         g->target_slot = -1;
+        g->fixed = !!(in->flags & DOCK_INPUT_FIXED);
         g->down_x = g->x = in->x; g->down_y = g->y = in->y;
         effect.flags = DOCK_EFFECT_REDRAW | DOCK_EFFECT_FOCUS; effect.pin_id = g->pin_id;
         return effect;
@@ -44,7 +45,7 @@ DockGestureEffects dock_gesture_update(DockGesture *g, const DockGestureInput *i
     moved = in->x != g->x || in->y != g->y;
     g->x = in->x; g->y = in->y;
     dx = (int64_t)in->x-g->down_x; dy = (int64_t)in->y-g->down_y;
-    if (!g->dragged && (dx > DOCK_DRAG_THRESHOLD || dx < -DOCK_DRAG_THRESHOLD ||
+    if (!g->dragged && !g->fixed && (dx > DOCK_DRAG_THRESHOLD || dx < -DOCK_DRAG_THRESHOLD ||
         dy > DOCK_DRAG_THRESHOLD || dy < -DOCK_DRAG_THRESHOLD || (in->flags & DOCK_INPUT_DRAGGED))) {
         g->dragged = 1;
         effect.flags |= DOCK_EFFECT_REDRAW;

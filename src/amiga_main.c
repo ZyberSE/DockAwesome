@@ -1434,6 +1434,10 @@ static DockGestureInput gesture_point(App *app, int kind, uint32_t token,
     DockGestureInput in = {0};
     in.kind = kind; in.token = token; in.pin_id = pin_id; in.hit_id = hit_id;
     in.x = x; in.y = y; in.flags = flags; in.target_slot = -1;
+    if (kind == DOCK_GESTURE_DOWN) {
+        int index = pin_index(app,pin_id);
+        if (index >= 0 && app->items[index].stack) in.flags |= DOCK_INPUT_FIXED;
+    }
     if (kind != DOCK_GESTURE_DOWN && (flags & DOCK_INPUT_VALID) == DOCK_INPUT_VALID &&
         !(flags & DOCK_INPUT_CANCELLED)) {
         if (app->count > 1)

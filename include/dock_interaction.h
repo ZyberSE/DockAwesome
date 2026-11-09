@@ -10,6 +10,9 @@ enum {
     DOCK_INPUT_SAME_SCREEN = 2,
     DOCK_INPUT_CANCELLED = 4,
     DOCK_INPUT_DRAGGED = 8,
+    /* On DOWN: the pin stays put (a Folder Stack); the press can only
+       launch or end. */
+    DOCK_INPUT_FIXED = 16,
     DOCK_INPUT_VALID = DOCK_INPUT_COORDS_VALID | DOCK_INPUT_SAME_SCREEN
 };
 enum {
@@ -26,7 +29,7 @@ typedef struct {
 } DockGestureInput;
 typedef struct {
     uint32_t token, pin_id;
-    int active, dragged, cancelled, remove_armed, target_slot;
+    int active, dragged, cancelled, remove_armed, target_slot, fixed;
     int down_x, down_y, x, y;
 } DockGesture;
 typedef struct {

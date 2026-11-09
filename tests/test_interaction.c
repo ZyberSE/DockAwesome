@@ -27,6 +27,27 @@ static void test_click_and_pairing(void)
     assert(!dock_gesture_update(&g, &in).flags);
 }
 
+/* A fixed pin (Folder Stack) never drags: no reorder, no remove; a
+   release over it still opens it. */
+static void test_fixed_pin(void)
+{
+    DockGesture g = {0}; DockGestureInput in; DockGestureEffects e;
+    in = input(DOCK_GESTURE_DOWN, 4, 42, 42, 20, 30); in.flags |= DOCK_INPUT_FIXED;
+    dock_gesture_update(&g, &in);
+    in = input(DOCK_GESTURE_MOVE, 4, 0, 0, 90, -70); in.target_slot = 2; in.outside = 1;
+    in.flags |= DOCK_INPUT_DRAGGED;
+    dock_gesture_update(&g, &in);
+    assert(!g.dragged && !g.remove_armed && g.target_slot == -1);
+    in = input(DOCK_GESTURE_UP, 4, 0, 0, 20, -70); in.outside = 1;
+    e = dock_gesture_update(&g, &in);
+    assert(!(e.flags & (DOCK_EFFECT_REORDER|DOCK_EFFECT_REMOVE_PIN|DOCK_EFFECT_LAUNCH)) && !g.active);
+    in = input(DOCK_GESTURE_DOWN, 5, 42, 42, 20, 30); in.flags |= DOCK_INPUT_FIXED;
+    dock_gesture_update(&g, &in);
+    in = input(DOCK_GESTURE_MOVE, 5, 0, 42, 40, 30); dock_gesture_update(&g, &in);
+    in = input(DOCK_GESTURE_UP, 5, 0, 42, 40, 30); e = dock_gesture_update(&g, &in);
+    assert((e.flags & DOCK_EFFECT_LAUNCH) && e.pin_id == 42);
+}
+
 static void test_reorder_and_outside(void)
 {
     DockGesture g = {0}; DockGestureInput in; DockGestureEffects e;
@@ -195,7 +216,8 @@ static void test_plate_equivalence(void)
 
 int main(void)
 {
-    test_click_and_pairing(); test_reorder_and_outside();
+    test_click_and_pairing();
+    test_fixed_pin(); test_reorder_and_outside();
     test_cancellation_and_excursion(); test_global_cancel_and_invalid_down(); test_geometry();
     test_plate_equivalence();
     puts("interaction tests passed"); return 0;

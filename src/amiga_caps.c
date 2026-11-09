@@ -85,6 +85,12 @@ int amiga_caps_probe(DockCaps *caps, struct Screen *screen)
     caps->status_notify = intuition_extension(930);
     caps->apollo_console = apollo_console();
     caps->screen_notify = optional_library("screennotify.library",1,0);
+    /* Pins open through workbench.library, which needs Workbench itself;
+       a replacement desktop such as Scalos may not take those calls. */
+    Forbid();
+    caps->workbench_port = FindPort((STRPTR)"WORKBENCH") != NULL;
+    caps->scalos = FindPort((STRPTR)"SCALOS") != NULL;
+    Permit();
     amiga_caps_probe_screen(caps,screen);
     return 1;
 }
@@ -123,12 +129,23 @@ void amiga_caps_print(const DockCaps *caps, const DockProfile *profile, int requ
     printf("  %-22s %s\n","apollo_console",yes_no(caps->apollo_console));
     printf("  %-22s %s\n","screen_notify",yes_no(caps->screen_notify));
     printf("  %-22s %d\n","screen_depth",caps->screen_depth);
+    printf("  %-22s %s\n","workbench_port",yes_no(caps->workbench_port));
+    printf("  %-22s %s\n","scalos",yes_no(caps->scalos));
     printf("Libraries\n");
     print_library("exec.library",&SysBase->LibNode);
     print_library("intuition.library",&IntuitionBase->LibNode);
     print_library("graphics.library",&GfxBase->LibNode);
     print_library("layers.library",LayersBase);
     print_library("cybergraphics.library",cyber);
+    {
+        static const char *const desktop[] = { "workbench.library", "icon.library", "scalos.library" };
+        unsigned int i;
+        for (i = 0; i < sizeof(desktop)/sizeof(desktop[0]); ++i) {
+            struct Library *library = OpenLibrary((STRPTR)desktop[i],0);
+            print_library(desktop[i],library);
+            if (library) CloseLibrary(library);
+        }
+    }
     Forbid();
     input = (const struct Library *)FindName(&SysBase->DeviceList,(STRPTR)"input.device");
     console = (const struct Library *)FindName(&SysBase->DeviceList,(STRPTR)"console.device");

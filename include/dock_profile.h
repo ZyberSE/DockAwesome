@@ -18,6 +18,8 @@ typedef struct {
                            50.7, input 41.4, console 41.7) */
     int screen_notify;  /* screennotify.library: Workbench close and reopen */
     int screen_depth;   /* Workbench screen depth in bits */
+    int workbench_port; /* the WORKBENCH port: Workbench itself is running */
+    int scalos;         /* the SCALOS port: Scalos runs as the desktop */
 } DockCaps;
 
 enum { DOCK_BACKEND_OPAQUE, DOCK_BACKEND_SNAPSHOT, DOCK_BACKEND_PIP };

@@ -134,6 +134,12 @@
 - When moving code to another file, diff the m68k disassembly per function.
   GCC had inferred that a same-file callee was pure; across files it
   reloaded fields after the call until the declaration said so.
+- Diff `gcc -S` output, not objdump: Amiga objects hold several code hunks
+  with overlapping addresses, so objdump assigns code to the wrong symbol.
+  In the single file GCC put draw, the event loop and live_capture in
+  .text.unlikely (optimized for size); moved behind a function table they
+  compile for speed. Separate that from real changes with a diagnostic
+  build that adds `__attribute__((cold))` and `-fno-inline`.
 - Give delegated native fixes an independent review before deploying.
   Fixes for blocking and bounded waits can move the risk to exit time:
   never exit while the system can still signal the task or call our code.

@@ -1672,8 +1672,13 @@ static int update_drag_preview(App *app)
             int left = gesture->x-app->items[index].cache.image[level].width/2;
             int top = gesture->y-app->items[index].cache.image[level].height/2;
             icon = &app->items[index].cache.image[level];
-            inside = !gesture->remove_armed && left >= 0 && top >= 0 &&
-                left+icon->width <= visible && top+icon->height <= app->height;
+            /* The side on the screen's edge does not count: past it the
+               icon is off the screen, where no window can show it either
+               (a preview opened there stayed behind at the start). */
+            inside = !gesture->remove_armed && top >= 0 &&
+                (left >= 0 || app->edge == DOCK_EDGE_LEFT) &&
+                (left+icon->width <= visible || app->edge == DOCK_EDGE_RIGHT) &&
+                (top+icon->height <= app->height || app->edge == DOCK_EDGE_BOTTOM);
         }
     }
     if (app->float_layer && !shaped) {

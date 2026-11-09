@@ -61,6 +61,14 @@ static int optional_library(const char *name, ULONG version, UWORD negsize)
     return ok;
 }
 
+/* Directory Opus 4 also names its port DOPUS.1 but has no lister
+   commands; DOpus 5 keeps dopus5.library open while it runs. */
+struct MsgPort *amiga_caps_dopus_port(void)
+{
+    if (!FindName(&SysBase->LibList,(STRPTR)"dopus5.library")) return NULL;
+    return FindPort((STRPTR)"DOPUS.1");
+}
+
 int amiga_caps_probe(DockCaps *caps, struct Screen *screen)
 {
     *caps = (DockCaps){0};
@@ -90,7 +98,7 @@ int amiga_caps_probe(DockCaps *caps, struct Screen *screen)
     Forbid();
     caps->workbench_port = FindPort((STRPTR)"WORKBENCH") != NULL;
     caps->scalos = FindPort((STRPTR)"SCALOS") != NULL;
-    caps->dopus = FindPort((STRPTR)"DOPUS.1") != NULL;
+    caps->dopus = amiga_caps_dopus_port() != NULL;
     Permit();
     amiga_caps_probe_screen(caps,screen);
     return 1;
@@ -140,13 +148,23 @@ void amiga_caps_print(const DockCaps *caps, const DockProfile *profile, int requ
     print_library("layers.library",LayersBase);
     print_library("cybergraphics.library",cyber);
     {
-        static const char *const desktop[] = { "workbench.library", "icon.library", "scalos.library", "dopus5.library" };
+        static const char *const desktop[] = { "workbench.library", "icon.library", "scalos.library" };
+        const struct Library *dopus5;
+        int version = 0, revision = 0;
         unsigned int i;
         for (i = 0; i < sizeof(desktop)/sizeof(desktop[0]); ++i) {
             struct Library *library = OpenLibrary((STRPTR)desktop[i],0);
             print_library(desktop[i],library);
             if (library) CloseLibrary(library);
         }
+        /* Only a loaded copy: opening it would leave it in memory and make
+           the dopus probe see DOpus 5 where it does not run. */
+        Forbid();
+        dopus5 = (struct Library *)FindName(&SysBase->LibList,(STRPTR)"dopus5.library");
+        if (dopus5) { version = dopus5->lib_Version; revision = dopus5->lib_Revision; }
+        Permit();
+        if (dopus5) printf("  %-22s %d.%d\n","dopus5.library",version,revision);
+        else printf("  %-22s not loaded\n","dopus5.library");
     }
     Forbid();
     input = (const struct Library *)FindName(&SysBase->DeviceList,(STRPTR)"input.device");

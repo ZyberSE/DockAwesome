@@ -97,7 +97,7 @@ static int rexx_put(struct RexxMsg *msg)
 {
     struct MsgPort *port;
     Forbid();
-    if ((port = FindPort((STRPTR)"DOPUS.1"))) PutMsg(port,&msg->rm_Node);
+    if ((port = amiga_caps_dopus_port())) PutMsg(port,&msg->rm_Node);
     Permit();
     return port != NULL;
 }
@@ -391,7 +391,7 @@ int dopus_running(void)
 {
     int running;
     Forbid();
-    running = FindPort((STRPTR)"DOPUS.1") != NULL;
+    running = amiga_caps_dopus_port() != NULL;
     Permit();
     return running;
 }

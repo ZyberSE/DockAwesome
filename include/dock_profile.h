@@ -20,7 +20,7 @@ typedef struct {
     int screen_depth;   /* Workbench screen depth in bits */
     int workbench_port; /* the WORKBENCH port: Workbench itself is running */
     int scalos;         /* the SCALOS port: Scalos runs as the desktop */
-    int dopus;          /* the DOPUS.1 port: Directory Opus 5 runs */
+    int dopus;          /* Directory Opus 5 runs (DOPUS.1 and dopus5.library) */
 } DockCaps;
 
 enum { DOCK_BACKEND_OPAQUE, DOCK_BACKEND_SNAPSHOT, DOCK_BACKEND_PIP };

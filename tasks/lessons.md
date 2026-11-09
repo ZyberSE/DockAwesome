@@ -228,3 +228,7 @@
   restacked as it starts: a receiver that moves onto the dock at the press
   stalled input about a second and got no AppMessage. A drop target there
   must already be in place before the press (2026-11-09).
+- After uploading a build, quit every running dock and check Status shows
+  exactly one RAM:DockAwesome before asking anyone to look: a second PiP
+  dock finds the PiP2 lease taken and quits silently under Run >NIL:, so
+  the old build kept running and the user tested it (2026-11-09).

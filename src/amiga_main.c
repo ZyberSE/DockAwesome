@@ -211,7 +211,7 @@ typedef struct {
     ULONG drop_messages, drop_arguments, drop_added, drop_reordered, drop_bad_paths;
     ULONG desktop_scans;
     ULONG drag_reveal_frames, drag_reveal_peak, popup_reveal_frames, dialog_reveal_frames;
-    uint64_t capture_ticks, decode_ticks;
+    uint64_t capture_ticks, decode_ticks, source_pixels;
     uint64_t settle_ticks, settle_peak;
     ULONG settles, settle_ms[16];
     int settle_samples;
@@ -1348,7 +1348,7 @@ static int open_surface(App *app)
         }
         if (!amiga_pip_set_keying(app->pip, 1)) return 0;
         if (amiga_display_capture565(app->display, app->source565, app->left,
-                app->top, 1, NULL, app->renderer.pixels->bytes_equal) < 0) {
+                app->top, 1, NULL, app->renderer.pixels->bytes_equal, NULL) < 0) {
             strcpy(app->surface_error, "PiP needs a native big-endian RGB16 SAGA screen bitmap."); return 0;
         }
     } else if (app->snapshot && !amiga_display_capture(app->display, &app->backdrop, app->left, app->top)) return 0;
@@ -2885,9 +2885,9 @@ static int frame_check(const App *app, DockRect *out)
 
 static int live_capture(App *app, int full_compare)
 {
-    DockRect clip, plate;
+    DockRect clip, plate, box;
     const DockRect *check = NULL;
-    int result, moved, screen_left, screen_top, dialog_moved;
+    int result, moved, screen_left, screen_top, dialog_moved, force;
     uint64_t started;
     if (!app->pip_mode) return 0;
     if (pip_blocked_by_screen_or_menu(app)) return 0;
@@ -2930,9 +2930,9 @@ static int live_capture(App *app, int full_compare)
         else if (frame_check(app,&plate)) check = &plate;
     }
     started = app->profile ? profile_clock() : 0;
+    force = !app->source_valid || !app->pip_visible;
     result = amiga_display_capture565(app->display, app->source565,
-        app->left, app->top, !app->source_valid || !app->pip_visible,
-        check, app->renderer.pixels->bytes_equal);
+        app->left, app->top, force, check, app->renderer.pixels->bytes_equal, &box);
     ++app->stats.source_polls;
     if (app->profile) app->stats.capture_ticks += profile_clock()-started;
     if (result < 0) {
@@ -2942,10 +2942,17 @@ static int live_capture(App *app, int full_compare)
     }
     if (result) {
         uint64_t decode_started = app->profile ? profile_clock() : 0;
+        /* Only the changed box is decoded and redrawn; whole rows decode at once. */
+        size_t at = (size_t)box.top*app->width+box.left;
+        int rows = box.bottom-box.top, span = box.right-box.left;
         ++app->stats.source_changes;
-        app->renderer.pixels->decode565(app->backdrop.pixels, app->source565,
-            (unsigned long)app->width*app->height);
-        dock_renderer_backdrop_changed(&app->renderer);
+        app->stats.source_pixels += (uint64_t)rows*span;
+        if (span == app->width) { span *= rows; rows = 1; }
+        for (; rows > 0; --rows, at += app->width)
+            app->renderer.pixels->decode565(app->backdrop.pixels+at*4, app->source565+at*2,
+                (unsigned long)span);
+        if (force) dock_renderer_backdrop_changed(&app->renderer);
+        else dock_renderer_backdrop_damaged(&app->renderer, box);
         app->source_valid = 1;
         if (app->profile) app->stats.decode_ticks += profile_clock()-decode_started;
     }
@@ -3062,11 +3069,12 @@ static void profile_report(App *app)
             (unsigned long)app->stats.drag_reveal_frames,(unsigned long)app->stats.drag_reveal_peak);
         printf("PiP popup reveal: frames=%lu\n",(unsigned long)app->stats.popup_reveal_frames);
         printf("PiP dialog reveal: frames=%lu\n",(unsigned long)app->stats.dialog_reveal_frames);
-        printf("PiP2: polls=%lu source_changes=%lu front_requests=%lu capture_compare_us_avg=%lu decode_us_avg=%lu (settled100ms, motion20ms)\n",
+        printf("PiP2: polls=%lu source_changes=%lu front_requests=%lu capture_compare_us_avg=%lu decode_us_avg=%lu changed_px_avg=%lu (settled100ms, motion20ms)\n",
             (unsigned long)app->stats.source_polls, (unsigned long)app->stats.source_changes,
             (unsigned long)app->stats.front_requests,
             ticks_us(app,app->stats.capture_ticks,app->stats.source_polls),
-            ticks_us(app,app->stats.decode_ticks,app->stats.source_changes));
+            ticks_us(app,app->stats.decode_ticks,app->stats.source_changes),
+            app->stats.source_changes ? (unsigned long)(app->stats.source_pixels/app->stats.source_changes) : 0UL);
         fflush(stdout);
         printf("PiP input: downs=%lu ups=%lu right_icons=%lu ambiguous_pass=%lu overflow_pass=%lu\n",
             (unsigned long)app->input_context.downs, (unsigned long)app->input_context.ups,

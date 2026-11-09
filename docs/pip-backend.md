@@ -72,7 +72,9 @@ conversion into a buffer that holds a masked frame.
 
 Poll the background every 100 ms at rest and every 20 ms during motion or a
 held button. Animation captures reset the background deadline. Matching
-source bytes and geometry skip decode, draw, and upload. Reuse all buffers.
+source bytes and geometry skip decode, draw, and upload; otherwise only the
+box of changed source pixels is decoded, composed and converted. Reuse all
+buffers.
 
 An earlier five-pin surface used 70,656 source bytes at 384 × 92 px.
 Four measured transitions took 177 to 178 ms. The 34 frames averaged

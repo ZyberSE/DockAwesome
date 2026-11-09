@@ -66,10 +66,15 @@ blending. Tests compare cached and uncached rendering.
 
 The renderer keeps the plate interior (the plate color mixed 50% with the
 backdrop) row by row between frames. The main program calls
-`dock_renderer_backdrop_changed` whenever the backdrop changes (a PiP
-capture, a drag reference, or a snapshot); the next frame mixes the rows
-again. The backdrop is copied only outside the plate interior. On Vampire at
-Size 72 with 13 icons this took composition from 40.6 to 24.1 ms per frame.
+`dock_renderer_backdrop_changed` whenever the whole backdrop changes (a
+first or forced PiP capture, a drag reference, or a snapshot); the next
+frame mixes the rows again. The backdrop is copied only outside the plate
+interior. On Vampire at Size 72 with 13 icons this took composition from
+40.6 to 24.1 ms per frame. A live PiP capture finds the bounding box of the
+changed source pixels over the whole canvas (`dock_rgb565_refresh`), copies
+and decodes only that, and calls `dock_renderer_backdrop_damaged`: the next
+draw redraws the box on top of its own damage and mixes only the rows it
+spans.
 
 The renderer also keeps the inputs of its last draw and redraws only the
 damage: a list of up to 80 rectangles that never intersect (overlapping

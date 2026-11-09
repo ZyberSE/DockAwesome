@@ -36,6 +36,14 @@ unsigned long dock_convert565_damage(unsigned char *buffer, int stride,
     DockConvertRGB565 encode, DockKeyRGB565 key,
     DockCoverageMask mask, void *context);
 
+/* Brings cache (width x height RGB565, width*2 bytes per row) to what a
+   whole capture writes: columns [0,visible) from source, which has
+   source_stride bytes per row, and zero beyond. equal skips unchanged rows;
+   only each changed row's differing span is written. Returns the bounding
+   box of the changed pixels, empty ({0,0,0,0}) when nothing changed. */
+DockRect dock_rgb565_refresh(unsigned char *cache, const unsigned char *source,
+    size_t source_stride, int width, int visible, int height, DockBytesEqual equal);
+
 /* An image blended over the frame after the icons, with coverage: running
    dots and the dragged icon. */
 typedef struct { const DockImage *image; int x, y; } DockOverlay;
@@ -87,16 +95,23 @@ typedef struct {
     const DockOverlay *overlays;
     int overlay_count;
     /* Plate rows mixed with the backdrop. Call dock_renderer_backdrop_changed
-       whenever the backdrop pixels change; free with dock_renderer_release. */
+       or _damaged whenever the backdrop pixels change; free with
+       dock_renderer_release. */
     DockGlass glass;
     DockDamage damage;
+    /* Backdrop regions queued by dock_renderer_backdrop_damaged; the next
+       draw adds them to its damage. */
+    DockDamage backdrop_damage;
     DockRenderState previous;
 } DockRenderer;
 /* The next draw is full. Call it whenever an icon cache is freed, replaced
    or rebuilt, or the item order or count changes: a rebuilt cache can reuse
-   a freed address. The other two calls imply it. */
+   a freed address. backdrop_changed and release imply it. */
 void dock_renderer_invalidate(DockRenderer *renderer);
 void dock_renderer_backdrop_changed(DockRenderer *renderer);
+/* The backdrop changed only inside box (canvas coordinates): the next draw
+   redraws box on top of its own damage and remixes the plate rows it spans. */
+void dock_renderer_backdrop_damaged(DockRenderer *renderer, DockRect box);
 void dock_renderer_release(DockRenderer *renderer);
 const DockPixelBackend *dock_backend_portable(void);
 #ifdef DOCK_AMMX

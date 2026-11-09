@@ -1,4 +1,5 @@
 #include "amiga_display.h"
+#include "dock_renderer.h"
 #include <exec/types.h>
 #include <graphics/gfxbase.h>
 #include <graphics/rastport.h>
@@ -159,7 +160,8 @@ void amiga_display_set_converters(AmigaDisplay *d, DockConvertRGB24 encode, Dock
 int amiga_display_depth(const AmigaDisplay *d) { return d ? d->depth : 0; }
 
 int amiga_display_capture565(AmigaDisplay *d, unsigned char *cache,
-                            int x, int y, int force, const DockRect *check, DockBytesEqual equal)
+                            int x, int y, int force, const DockRect *check, DockBytesEqual equal,
+                            DockRect *box)
 {
     APTR lock, base = NULL;
     ULONG stride = 0, format = ~0UL, bytes = 0, width = 0, height = 0;
@@ -191,16 +193,24 @@ int amiga_display_capture565(AmigaDisplay *d, unsigned char *cache,
         check->left < check->right && check->top < check->bottom) {
         left = check->left; top = check->top; right = check->right; bottom = check->bottom;
     }
-    if (!changed) for (row = top; row < bottom; ++row)
+    if (box) *box = (DockRect){0,0,0,0};
+    /* Without a check the box scan below is the comparison. */
+    if (!changed && (!box || check)) for (row = top; row < bottom; ++row)
         if (!equal(cache+(size_t)row*row_bytes+left*2,
                    source+(size_t)row*stride+left*2,(unsigned long)(right-left)*2)) {
             changed = 1; break;
         }
-    if (changed) for (row = 0; row < d->height; ++row) {
+    if (box && !force && (changed || !check)) {
+        /* Find the change over the whole canvas, not only the check, so
+           every stale pixel is refreshed as by a whole copy. */
+        *box = dock_rgb565_refresh(cache,source,stride,d->width,visible_width,d->height,equal);
+        changed = box->left < box->right;
+    } else if (changed) for (row = 0; row < d->height; ++row) {
         unsigned char *line = cache+(size_t)row*row_bytes;
         memcpy(line,source+(size_t)row*stride,visible_bytes);
         if (visible_bytes < row_bytes) memset(line+visible_bytes,0,row_bytes-visible_bytes);
     }
+    if (box && force) *box = (DockRect){0,0,d->width,d->height};
     UnLockBitMap(lock);
     return changed;
 }
@@ -266,7 +276,7 @@ int amiga_display_capture(AmigaDisplay *d, DockImage *im, int x, int y)
 {
     int ix, iy;
     if (!d || !im || im->width != d->width || im->height != d->height) return 0;
-    if (d->depth == 16 && amiga_display_capture565(d,d->upload,x,y,1,NULL,NULL) == 1) {
+    if (d->depth == 16 && amiga_display_capture565(d,d->upload,x,y,1,NULL,NULL,NULL) == 1) {
         d->rgb565_to_rgba(im->pixels,d->upload,(unsigned long)d->width*d->height);
         return 1;
     }

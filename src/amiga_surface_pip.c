@@ -1,7 +1,15 @@
 /* The SAGA PiP2 surface backend: a keyed RGB565 overlay over live
-   Workbench scanout, an input-transparent shaped window, and the drop
-   receiver. See docs/pip-backend.md. */
+   Workbench scanout, an input-transparent receiver window (shaped on
+   ApolloOS, one pixel on AmigaOS 3.x), and the drop receiver. See
+   docs/pip-backend.md. */
 #include "amiga_app.h"
+
+/* The overlay's columns on the screen. A right dock's keyed transport
+   padding lies past the screen edge. */
+static int pip_visible_width(const App *app)
+{
+    return app->width-app->settings.edge_padding;
+}
 
 static ULONG region_rect_count(const struct Region *region)
 {
@@ -31,7 +39,7 @@ static int update_drag_mask(App *app, int sample)
     int right = x+DRAG_RADIUS+1, bottom = y+DRAG_RADIUS+1, row;
     if (left < 0) left = 0;
     if (top < 0) top = 0;
-    if (right > app->window->Width) right = app->window->Width;
+    if (right > pip_visible_width(app)) right = pip_visible_width(app);
     if (bottom > app->height) bottom = app->height;
     if (amiga_drop_catcher_active(app->drop_catcher) && app->input_context.external_held &&
         app->input_context.external_dragged && right > left && bottom > top) {
@@ -39,7 +47,7 @@ static int update_drag_mask(App *app, int sample)
         if (!sample) return 0;
         if (!app->drag_reference) {
             if (amiga_display_drag_reference565(app->display,
-                    amiga_drop_catcher_backing(app->drop_catcher),app->source565,app->window->Width)) {
+                    amiga_drop_catcher_backing(app->drop_catcher),app->source565,pip_visible_width(app))) {
                 app->drag_reference = 1;
                 app->renderer.pixels->decode565(app->backdrop.pixels,app->source565,
                     (unsigned long)app->width*app->height);
@@ -84,7 +92,7 @@ static int frame_check(const App *app, DockRect *out)
 {
     enum { MARGIN = 4 };
     int i, low, high, limit, bottom = app->edge == DOCK_EDGE_BOTTOM;
-    int visible = app->window->Width;
+    int visible = pip_visible_width(app);
     DockRect plate;
     if (app->moving_item || app->gesture.active || app->renderer.center_panel ||
         !dock_edge_panel_rect(&app->settings,app->edge,app->placement,app->count,
@@ -121,11 +129,15 @@ static int live_capture(App *app, int full_compare)
     if (amiga_drop_catcher_active(app->drop_catcher)) return 0;
     /* FirstWindow is creation order, so inspect the locked layer Z order.
        Retry asynchronous depth requests at most four times a second: another
-       window can move ahead between checks. */
-    {
+       window can move ahead between checks. A busy layer list (Intuition
+       holds it through a window drag on AmigaOS 3.x) skips only this check:
+       the capture below still follows the drag. */
+    if (!AttemptSemaphore(&app->screen->LayerInfo.Lock)) {
+        ++app->stats.layer_busy;
+        clip = app->dialog_clip;
+    } else {
         struct Layer *layer;
         int obscured = 0;
-        if (!AttemptSemaphore(&app->screen->LayerInfo.Lock)) return 0;
         clip = dialog_clip(app);
         for (layer = app->window->WLayer->front; layer; layer = layer->front)
             if (layer->Window && layer->Window != app->window &&
@@ -247,7 +259,7 @@ static void pip_show(App *app, const DockImage *frame)
     stride = amiga_pip_stride(app->pip);
     pending = &app->pip_pending[back];
     memset(&mask,0,sizeof(mask));
-    mask.app = app; mask.visible_width = app->window->Width; mask.count = app->profile;
+    mask.app = app; mask.visible_width = pip_visible_width(app); mask.count = app->profile;
     mask.popup = dock_ui_popup_bounds(app->ui,&mask.clip);
     if (mask.popup) {
         mask.clip.left -= app->left; mask.clip.right -= app->left;
@@ -368,6 +380,18 @@ static int pip_open(App *app)
         strcpy(app->surface_error, "PiP needs a native big-endian RGB16 SAGA screen bitmap."); return 0;
     }
     dock_renderer_backdrop_changed(&app->renderer);
+    if (!app->caps.shaped_windows) {
+        /* Classic Intuition has no window shapes. The receiver rests as one
+           undrawn pixel in the screen corner, outside the captured box, and
+           keeps the event loop's port. */
+        app->window = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)app->screen,
+            WA_Left, 0, WA_Top, 0, WA_Width, 1, WA_Height, 1,
+            WA_Borderless, TRUE, WA_Activate, FALSE, WA_RMBTrap, TRUE,
+            WA_SimpleRefresh, TRUE, WA_NoCareRefresh, TRUE,
+            WA_BackFill, (ULONG)LAYERS_NOBACKFILL,
+            WA_IDCMP, IDCMP_FLAGS & ~IDCMP_REFRESHWINDOW, TAG_DONE);
+        return app->window != NULL;
+    }
     app->window = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)app->screen,
         WA_Left, app->left, WA_Top, app->top, WA_Width, app->width-right_padding, WA_Height, app->height,
         WA_Borderless, TRUE, WA_Activate, FALSE, WA_ReportMouse, TRUE, WA_RMBTrap, TRUE,
@@ -382,7 +406,7 @@ static int pip_open(App *app)
     app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
     if (!app->appwindow) return 0;
     app->drop_catcher = amiga_drop_catcher_init(app->screen, app->window,
-        app->shape, app->window->Width, app->height);
+        app->shape, pip_visible_width(app), app->height);
     return app->drop_catcher != NULL;
 }
 

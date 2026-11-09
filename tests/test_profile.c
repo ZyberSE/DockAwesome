@@ -22,32 +22,33 @@ static const Machine machines[] = {
         DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 1, 1, 1},
     {"ApolloOS R9.5, Vampire V4, 24-bit screen",
         {1,1,12515,1,1,1,1,1,1,1,1,24,1,0,0},
-        DOCK_BACKEND_SNAPSHOT, DOCK_PROFILE_PIP_SCREEN, DOCK_PIXELS_AMMX, 1, 1, 1},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 1, 1, 1},
     {"ApolloOS R9.5, Vampire V4, 32-bit screen",
         {1,1,12515,1,1,1,1,1,1,1,1,32,1,0,0},
-        DOCK_BACKEND_SNAPSHOT, DOCK_PROFILE_PIP_SCREEN, DOCK_PIXELS_AMMX, 1, 1, 1},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 1, 1, 1},
     {"ApolloOS R9.5, Vampire V4, 8-bit screen",
         {1,1,12515,1,1,1,1,1,1,1,1,8,1,0,0},
         DOCK_BACKEND_SNAPSHOT, DOCK_PROFILE_PIP_SCREEN, DOCK_PIXELS_AMMX, 1, 0, 0},
     {"ApolloOS, Vampire with a core older than 11900",
         {1,1,11000,0,1,1,1,1,1,1,1,16,1,0,0},
         DOCK_BACKEND_SNAPSHOT, DOCK_PROFILE_PIP_NO_CORE, DOCK_PIXELS_AMMX, 1, 1, 1},
-    /* AmigaOS 3.2 has no V50 Intuition or Layers and no AROS RGB tags. */
+    /* AmigaOS 3.2 has no V50 Intuition or Layers and no AROS RGB tags.
+       PiP runs without window shapes there (no ApolloOS pointer events). */
     {"AmigaOS 3.2, Vampire V4, 16-bit SAGA",
         {1,1,12515,1,0,0,0,0,0,0,0,16,1,0,0},
-        DOCK_BACKEND_SNAPSHOT, DOCK_PROFILE_PIP_NO_SHAPES, DOCK_PIXELS_AMMX, 0, 0, 0},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 0, 0},
     {"AmigaOS 3.2, Vampire V4, screennotify installed",
         {1,1,12515,1,0,0,0,0,0,0,1,16,1,0,0},
-        DOCK_BACKEND_SNAPSHOT, DOCK_PROFILE_PIP_NO_SHAPES, DOCK_PIXELS_AMMX, 0, 0, 0},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 0, 0},
     /* AmiKit ships screennotify.library and runs Directory Opus instead of
        Workbench. P96's cybergraphics emulation is older than V51; even one
        with BltTemplateAlpha gives no AA text without the glass. */
     {"AmigaOS 3.9/AmiKit, Vampire V4, P96 16-bit",
         {1,1,12515,1,0,0,0,0,0,0,1,16,0,0,1},
-        DOCK_BACKEND_SNAPSHOT, DOCK_PROFILE_PIP_NO_SHAPES, DOCK_PIXELS_AMMX, 0, 0, 0},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 0, 0},
     {"AmigaOS 3.9/AmiKit, Vampire V4, P96 24-bit, CGX alpha",
         {1,1,12515,1,0,0,1,0,0,0,1,24,0,0,1},
-        DOCK_BACKEND_SNAPSHOT, DOCK_PROFILE_PIP_NO_SHAPES, DOCK_PIXELS_AMMX, 0, 0, 0},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 0, 0},
     /* The 68080 binary does not run here; the profile still answers. */
     {"AmigaOS 3.x, 68030 AGA, 8-bit",
         {0,0,0,0,0,0,0,0,0,0,0,8,1,0,0},
@@ -68,7 +69,7 @@ static void check_machine(const Machine *m)
                 p.error != (pip && explicit_pip ? m->pip_error : DOCK_PROFILE_OK) ||
                 p.pixels != m->pixels || p.ui_shapes != m->ui_shapes ||
                 p.ui_glass != m->ui_glass || p.aa_text != m->aa_text ||
-                p.apollo_pointer != (p.backend == DOCK_BACKEND_PIP)) {
+                p.apollo_pointer != (p.backend == DOCK_BACKEND_PIP && m->caps.shaped_windows)) {
                 fprintf(stderr,"%s, requested %s%s: backend %s error %d pixels %d shapes %d glass %d aa %d\n",
                     m->name,dock_backend_name(backends[i]),explicit_pip ? " (explicit)" : "",
                     dock_backend_name(p.backend),p.error,p.pixels,p.ui_shapes,p.ui_glass,p.aa_text);
@@ -84,10 +85,10 @@ static void test_machines(void)
     for (i = 0; i < sizeof(machines)/sizeof(machines[0]); ++i) check_machine(&machines[i]);
 }
 
-/* The decisions select_backend and dock_ui_create made before the profile:
-   PiP needed the AMMX build, window shapes and a 16-bit screen; popup_rgb
-   needed shapes, graphics RGB tags and more than 8 bits; text_alpha also
-   needed cybergraphics alpha. Every combination must match. */
+/* PiP needs the AMMX build and a 16-, 24- or 32-bit screen (window shapes
+   only for ApolloOS pointer events); popup_rgb needs shapes, graphics RGB
+   tags and more than 8 bits; text_alpha also needs cybergraphics alpha.
+   Every combination must match. */
 static void test_previous_rules(void)
 {
     unsigned int bits;
@@ -108,11 +109,12 @@ static void test_previous_rules(void)
             caps.window_action = caps.status_notify = !!(bits&16);
             caps.screen_notify = caps.apollo_console = !!(bits&32);
             caps.screen_depth = depths[d];
-            pip_ready = caps.ammx && caps.shaped_windows && caps.screen_depth == 16;
+            pip_ready = caps.ammx && (caps.screen_depth == 16 || caps.screen_depth == 24 ||
+                caps.screen_depth == 32);
             popup_rgb = caps.shaped_windows && caps.rgb_rastport && caps.screen_depth > 8;
             p = dock_choose_profile(&caps,DOCK_BACKEND_PIP,0);
             assert(p.backend == (pip_ready ? DOCK_BACKEND_PIP : DOCK_BACKEND_SNAPSHOT));
-            assert(p.apollo_pointer == pip_ready);
+            assert(p.apollo_pointer == (pip_ready && caps.shaped_windows));
             assert(p.ui_glass == popup_rgb);
             assert(p.aa_text == (popup_rgb && caps.alpha_text));
             assert(p.ui_shapes == caps.shaped_windows);

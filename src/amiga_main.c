@@ -1061,6 +1061,7 @@ static void profile_report(App *app)
             (unsigned long)app->stats.drag_reveal_frames,(unsigned long)app->stats.drag_reveal_peak);
         printf("PiP popup reveal: frames=%lu\n",(unsigned long)app->stats.popup_reveal_frames);
         printf("PiP dialog reveal: frames=%lu\n",(unsigned long)app->stats.dialog_reveal_frames);
+        printf("PiP2: layer_busy=%lu\n",(unsigned long)app->stats.layer_busy);
         printf("PiP2: polls=%lu source_changes=%lu front_requests=%lu capture_compare_us_avg=%lu decode_us_avg=%lu changed_px_avg=%lu (settled100ms, motion20ms)\n",
             (unsigned long)app->stats.source_polls, (unsigned long)app->stats.source_changes,
             (unsigned long)app->stats.front_requests,

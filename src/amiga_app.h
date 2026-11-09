@@ -207,7 +207,7 @@ typedef struct {
     uint64_t program_poll_ticks, program_poll_peak;
     ULONG program_polls, program_changes, menu_suspends;
     ULONG program_checks, drawer_checks, document_checks, status_events;
-    ULONG source_polls, source_changes, front_requests, shape_updates, shape_rects, shape_rects_peak;
+    ULONG source_polls, layer_busy, source_changes, front_requests, shape_updates, shape_rects, shape_rects_peak;
     ULONG drop_messages, drop_arguments, drop_added, drop_reordered, drop_bad_paths;
     ULONG desktop_scans;
     ULONG drag_reveal_frames, drag_reveal_peak, popup_reveal_frames, dialog_reveal_frames;

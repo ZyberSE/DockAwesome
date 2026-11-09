@@ -28,7 +28,7 @@ enum { DOCK_PIXELS_PORTABLE, DOCK_PIXELS_AMMX };
 /* Why an explicit PiP request cannot be met, the first missing need. */
 enum {
     DOCK_PROFILE_OK, DOCK_PROFILE_PIP_NO_AMMX, DOCK_PROFILE_PIP_NO_CORE,
-    DOCK_PROFILE_PIP_NO_SHAPES, DOCK_PROFILE_PIP_SCREEN
+    DOCK_PROFILE_PIP_SCREEN
 };
 
 typedef struct {

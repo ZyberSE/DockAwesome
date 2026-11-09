@@ -19,6 +19,8 @@ Pointer -> layout -> renderer -> frame -> native window or PiP2
 | `dock_interaction.c` | Button pairs, drag state, and pin actions |
 | `dock_renderer.c` | Pixel backend selection, damage tracking, and damaged PiP conversion |
 | `dock_prefs.c` | JSON preferences |
+| `dock_profile.c` | Backend and feature choice from probed capabilities |
+| `amiga_caps.c` | CPU, chipset and OS capability probes, `--caps` |
 | `amiga_main.c` | Workbench integration, item state, input, and timers |
 | `amiga_ui.c` | Menus, labels, Settings, About, and Folder Stack |
 | `about_font.c` | Prerendered Vera Sans glyphs for About (generated) |
@@ -29,6 +31,37 @@ Pointer -> layout -> renderer -> frame -> native window or PiP2
 50% blend. Icons with partial alpha share the C compositor. The renderer
 draws the overlays (running dots, the dragged icon) and the caller
 presents the frame; screen memory stays in the native display layer.
+
+## Platform capabilities
+
+`amiga_caps.c` probes the machine once at startup into a `DockCaps`
+table, and the screen depth again whenever Workbench reopens.
+`dock_choose_profile` (`dock_profile.c`, host-tested in
+`tests/test_profile.c`) turns the table and the requested mode into a
+`DockProfile`: the backend, the pixel kernels, the UI shapes, glass and
+antialiased text, and the input coordinate mode. Nothing is probed per
+frame or per pixel; other code reads the stored caps and profile.
+
+| Field | Probe |
+| --- | --- |
+| `cpu_080` | exec `AttnFlags` bit 10 (`AFF_68080`) |
+| `ammx` | `cpu_080` in the AMMX build |
+| `saga_core`, `saga_pip2` | SAGA register `DFF3EA`, read only on a 68080; PiP2 needs 11900 or newer |
+| `shaped_windows` | Intuition `lib_Version` 50 with the vector at 858, and Layers V50 |
+| `rgb_rastport` | graphics.library `lib_NegSize` at least `$40E` (AROS RastPort RGB tags) |
+| `alpha_text` | cybergraphics.library V51 with `BltTemplateAlpha` (`lib_NegSize` `$DE`) |
+| `window_action`, `status_notify` | Intuition V50 vectors 942 and 930 |
+| `apollo_console` | Intuition 50.7, input.device 41.4, console.device 41.7 |
+| `screen_notify` | `screennotify.library` opens |
+| `screen_depth` | `BMA_DEPTH` of the Workbench bitmap |
+
+PiP needs AMMX, PiP2, shaped windows and a 16-bit screen, else the dock
+uses snapshot (an explicit `--pip` stops with the missing need). The glass
+UI needs shaped windows, RGB tags and more than 8 bits, and antialiased
+text the glass and `alpha_text`. On ApolloOS R9.5 on a Vampire every probe
+succeeds and the choices match the earlier scattered checks. A new target
+adds probes and table rows, not checks in drawing code. `--caps` prints
+both tables.
 
 ## Layout and memory
 

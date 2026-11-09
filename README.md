@@ -12,7 +12,7 @@ A macOS-style dock for ApolloOS on the Vampire V4 (68080, AMMX and SAGA).
 ## Requirements
 
 - A Vampire V4 with a 68080 CPU. DockAwesome is built only for the 68080 and
-  uses AMMX. It does not run on other CPUs.
+  uses AMMX. On other CPUs it stops with a message before drawing anything.
 - ApolloOS R9.5, tested with core 12515 and a 1280 × 720 RGB565 SAGA Workbench.
 - Live transparency (PiP) needs a 16-bit SAGA screen. On other screens the
   dock uses a static or solid background. Screens above 8 bits need
@@ -103,6 +103,14 @@ compares every frame with a full redraw (see [Verification](docs/verification.md
 `--no-vsync` paces zoom animation with a 20 ms timer instead of the display.
 Use `--pip-x-offset` and `--pip-y-offset` to set alignment from -128 to 128.
 The verified offsets are +17 and -1.
+
+`DockAwesome --caps` prints what the dock found on this machine (68080,
+AMMX, SAGA core, the ApolloOS Intuition, Layers, graphics and
+cybergraphics features, `screennotify.library`, the screen depth), the
+library versions, and the background and UI it would choose, then exits.
+It also runs on a CPU the dock refuses. Add its output to bug reports,
+for example from AmigaOS 3.x or AmiKit. On ApolloOS R9.5 with a 16-bit
+SAGA screen every feature reads `yes`.
 
 ## Build and test
 

@@ -2139,7 +2139,7 @@ int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const 
         /* PiP1 without window shapes: rounded ends and glass, no window. */
         DockImage pill;
         if (label_pill(ui,&g,height,outer,1,ui->label_left,ui->label_top,&pill)) {
-            ui->label_float = amiga_float_show(ui->float_layer,&pill,ui->label_left,ui->label_top);
+            ui->label_float = amiga_float_show(ui->float_layer,&pill,ui->label_left,ui->label_top) > 0;
             ui->label_width = width; ui->label_height = height;
             free(pill.pixels);
         }
@@ -2170,7 +2170,7 @@ void dock_ui_move_label(DockUI *ui, DockEdge edge, const DockRect *anchor)
     struct Window *label = ui->label;
     if (ui->label_float) {
         if (!label_position(ui,edge,anchor,ui->label_width,ui->label_height,&left,&top) ||
-            !amiga_float_move(ui->float_layer,left,top)) { dock_ui_hide_label(ui); return; }
+            amiga_float_move(ui->float_layer,left,top) <= 0) { dock_ui_hide_label(ui); return; }
         ui->label_left = left; ui->label_top = top;
         return;
     }

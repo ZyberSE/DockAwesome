@@ -259,3 +259,7 @@
 ## Leave the user's dock running after a test (2026-11-10)
 - After a profiled test run I sent Break and asked the user to film the dock; it was not running ("Ser inte dockan").
 - Rule: every test that stops the dock ends with Run >NIL: of the normal command and a Status check, before any request to the user.
+
+## Two SAGA overlays must not share rows with a wide one (2026-11-10)
+- With the dock at the bottom (PiP2 992 px wide) on Coffin's 24-bit screen, a tooltip in PiP1 scrambled the whole dock; the PiP1 overlay was 96 rows tall and reached over the dock's rows. Beside a 96 px side dock the same overlay showed fine.
+- Rule: size an extra overlay to its picture and keep it off a wide overlay's rows; test layout changes (edge, size) on the hardware, not only on the edge that was verified.

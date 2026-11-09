@@ -1618,7 +1618,8 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
 }
 
 /* The dragged pin in PiP1: the icon, with the Remove pill under it once
-   armed. Returns 0 when PiP1 is not available. */
+   armed. Returns 1 when shown, 0 when PiP1 is not available, -1 when the
+   pin lies on a wide dock's display rows (amiga_float_show). */
 static int show_drag_float(App *app, const DockImage *icon, int remove, int x, int y)
 {
     DockImage pill = {0}, image;
@@ -1637,7 +1638,7 @@ static int show_drag_float(App *app, const DockImage *icon, int remove, int x, i
     dock_ui_hide_label(app->ui);
     ok = amiga_float_show(app->float_layer,&image,x-width/2,y-icon->height/2);
     free(image.pixels); free(pill.pixels);
-    if (ok) {
+    if (ok > 0) {
         app->drag_float_remove = remove;
         app->drag_float_width = width; app->drag_float_icon_height = icon->height;
     }
@@ -1683,13 +1684,24 @@ static int update_drag_preview(App *app)
         }
         if (shown && app->drag_float_token == gesture->token && app->drag_float_icon == icon &&
             app->drag_float_remove == gesture->remove_armed) {
-            amiga_float_move(app->float_layer,x-app->drag_float_width/2,y-app->drag_float_icon_height/2);
+            if (amiga_float_move(app->float_layer,x-app->drag_float_width/2,
+                    y-app->drag_float_icon_height/2) < 0) app->drag_float = 0;
             return 0;
         }
-        app->drag_float = show_drag_float(app,icon,gesture->remove_armed,x,y);
+        shown = show_drag_float(app,icon,gesture->remove_armed,x,y);
+        app->drag_float = shown > 0;
         app->drag_float_token = gesture->token;
         app->drag_float_icon = app->drag_float ? icon : NULL;
         if (app->drag_float) return 0;
+        /* On a wide dock's rows the dock draws the pin itself, unless it
+           would be removed: then the window preview below. */
+        if (shown < 0 && !gesture->remove_armed) {
+            if (app->drag_preview) {
+                amiga_drag_preview_close(app->drag_preview); app->drag_preview = NULL;
+                return 1;
+            }
+            return 0;
+        }
         /* PiP1 is taken: the window preview below. */
     }
     if (inside) icon = NULL;

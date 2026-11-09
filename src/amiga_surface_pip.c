@@ -420,6 +420,7 @@ static int pip_open(App *app)
            the largest icon with the Remove pill under it. */
         app->float_layer = amiga_float_create(app->screen, app->pip_x_offset, app->pip_y_offset,
             app->settings.max_size+64, app->settings.max_size+32);
+        amiga_float_set_band(app->float_layer, app->top, app->top+app->height, app->width);
         dock_ui_set_float(app->ui, app->float_layer);
         app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
         if (!app->appwindow) return 0;

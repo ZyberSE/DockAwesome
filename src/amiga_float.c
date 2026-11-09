@@ -1,10 +1,11 @@
 /* Floating pictures in SAGA's PiP1 overlay. See amiga_float.h.
 
-   Turning PiP1's DMA on or off (opening, closing, reconfiguring it) makes
-   the dock in PiP2 show a doubled image for a few frames on Coffin (core
-   11900+, 24-bit screen, filmed 2026-11-09). So PiP1 opens once, stays on
-   showing the colour key when nothing floats, and only its pointer and
-   position registers change afterwards. It reopens only to grow. */
+   PiP1 is on only while something floats: kept on (keyed clear) it stayed
+   over the dock's rows after a label, and with the dock 992 px wide at the
+   bottom of a 24-bit Coffin screen the whole dock came out scrambled
+   (filmed 2026-11-10). While shown, a new picture reuses the open overlay
+   when it fits (sized for the largest icon with the Remove pill), so a
+   drag changes only pointer and position registers. */
 #include "amiga_float.h"
 #include "amiga_pip.h"
 #include <intuition/screens.h>
@@ -45,6 +46,7 @@ static int reserve(AmigaFloat *f, int w, int h)
     int cap_w, cap_h, i;
     Area all;
     if (f->pip && w <= f->cap_w && h <= f->cap_h) return 1;
+    /* cap_w, cap_h: at least the size asked at create, or last opened. */
     cap_w = (w > f->cap_w ? w : f->cap_w);
     cap_w = (cap_w+31)&~31;
     cap_h = h > f->cap_h ? h : f->cap_h;
@@ -110,7 +112,7 @@ AmigaFloat *amiga_float_create(struct Screen *screen, int x_offset, int y_offset
     f = calloc(1,sizeof(*f));
     if (!f) return NULL;
     f->screen = screen; f->x_offset = x_offset; f->y_offset = y_offset;
-    if (width > 0 && height > 0) reserve(f,width,height);
+    if (width > 0 && height > 0) { f->cap_w = (width+31)&~31; f->cap_h = height; }
     return f;
 }
 
@@ -163,11 +165,10 @@ int amiga_float_shown(const AmigaFloat *f)
 
 void amiga_float_hide(AmigaFloat *f)
 {
-    int left, top, ox, oy;
-    if (!f || !f->shown) return;
+    if (!f || !f->pip) return;
     f->shown = 0;
-    layout(f,&left,&top,&ox,&oy);
-    if (!render(f,0,left,top,ox,oy)) amiga_pip_suspend(f->pip);
+    amiga_pip_close(f->pip);
+    f->pip = NULL;
 }
 
 void amiga_float_destroy(AmigaFloat *f)

@@ -6,9 +6,9 @@ typedef struct AmigaFloat AmigaFloat;
 
 /* One small picture over the screen in SAGA's PiP1 overlay, for what
    floats beside the dock without window shapes (a dragged pin, a label).
-   PiP1 is leased and on from the first show (or from create, given a
-   width and height to reserve) until destroy, showing the colour key when
-   nothing floats: switching it on or off disturbs PiP2 for a few frames.
+   PiP1 is leased and on only while something is shown; width and height
+   at create set the least size it opens with, so pictures up to that size
+   reuse it while shown.
    Pixels with alpha below one half show what lies under (the colour key);
    the others show their colour, so blend soft edges before showing. */
 AmigaFloat *amiga_float_create(struct Screen *screen, int x_offset, int y_offset, int width, int height);

@@ -385,19 +385,17 @@ static int pip_open(App *app)
     if (!app->caps.shaped_windows) {
         /* Classic Intuition has no window shapes. The receiver rests as one
            undrawn pixel in the screen corner, outside the captured box, and
-           moves onto the dock only while a Workbench icon drag may end there. */
+           keeps the event loop's port. */
         app->window = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)app->screen,
             WA_Left, 0, WA_Top, 0, WA_Width, 1, WA_Height, 1,
             WA_Borderless, TRUE, WA_Activate, FALSE, WA_RMBTrap, TRUE,
             WA_SimpleRefresh, TRUE, WA_NoCareRefresh, TRUE,
             WA_BackFill, (ULONG)LAYERS_NOBACKFILL,
             WA_IDCMP, IDCMP_FLAGS & ~IDCMP_REFRESHWINDOW, TAG_DONE);
-        if (!app->window) return 0;
-        app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
-        if (!app->appwindow) return 0;
-        app->drop_catcher = amiga_drop_catcher_init(app->screen, app->window, NULL,
-            app->left, app->top, pip_visible_width(app), app->height);
-        return app->drop_catcher != NULL;
+        /* No drop receiver: moving a window onto the dock when a
+           Workbench icon drag starts stalls input and cancels the drag on
+           AmigaOS 3.9 (Workbench holds the layers). */
+        return app->window != NULL;
     }
     app->window = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)app->screen,
         WA_Left, app->left, WA_Top, app->top, WA_Width, app->width-right_padding, WA_Height, app->height,
@@ -413,7 +411,7 @@ static int pip_open(App *app)
     app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
     if (!app->appwindow) return 0;
     app->drop_catcher = amiga_drop_catcher_init(app->screen, app->window,
-        app->shape, app->left, app->top, pip_visible_width(app), app->height);
+        app->shape, pip_visible_width(app), app->height);
     return app->drop_catcher != NULL;
 }
 

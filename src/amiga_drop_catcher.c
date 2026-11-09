@@ -33,8 +33,7 @@ struct AmigaDropCatcher {
     struct Region *normal, *catch_region;
     struct BitMap *backing;
     struct Hook backfill;
-    int left, top, width, height;
-    int shaped; /* catch by shape (ApolloOS) or by moving the window */
+    int width, height;
     uint32_t serial;
     uint64_t deadline, next_icons, icons_not_before;
     int have_serial, active, waiting, failed;
@@ -107,7 +106,7 @@ ULONG dock_backfill_paint(struct Hook *hook, struct RastPort *port,
 {
     AmigaDropCatcher *c = hook->h_Data;
     int x = msg->bounds.MinX, y = msg->bounds.MinY;
-    int sx = x-c->left, sy = y-c->top;
+    int sx = x-c->window->LeftEdge, sy = y-c->window->TopEdge;
     int w = msg->bounds.MaxX-x+1, h = msg->bounds.MaxY-y+1;
     if (!c->backing_valid || port->BitMap != c->screen->RastPort.BitMap ||
         sx < 0 || sy < 0 || sx+w > c->width || sy+h > c->height || w <= 0 || h <= 0) return 0;
@@ -173,33 +172,16 @@ static int workbench_client_start(const AmigaDropCatcher *c, int x, int y)
 
 static int inside(const AmigaDropCatcher *c, int x, int y)
 {
-    return x >= c->left && x < c->left + c->width &&
-           y >= c->top && y < c->top + c->height;
-}
-
-/* Cover the dock's box (catching) or not. Shapes report the region they
-   replace, which must be the expected one; ChangeWindowBox and
-   WindowToFront are carried out by Intuition shortly after. */
-static int set_catching(AmigaDropCatcher *c, int catching)
-{
-    if (c->shaped) {
-        struct Region *expected = catching ? c->normal : c->catch_region;
-        struct Region *previous = amiga_change_window_shape(c->window, catching ? c->catch_region : c->normal);
-        return previous == expected || (!catching && previous == c->normal);
-    }
-    if (catching) {
-        ChangeWindowBox(c->window, c->left, c->top, c->width, c->height);
-        WindowToFront(c->window);
-    } else ChangeWindowBox(c->window, 0, 0, 1, 1);
-    return 1;
+    return x >= c->window->LeftEdge && x < c->window->LeftEdge + c->width &&
+           y >= c->window->TopEdge && y < c->window->TopEdge + c->height;
 }
 
 AmigaDropCatcher *amiga_drop_catcher_init(struct Screen *screen,
-    struct Window *window, struct Region *normal_shape, int left, int top, int width, int height)
+    struct Window *window, struct Region *normal_shape, int width, int height)
 {
     AmigaDropCatcher *c;
     struct Rectangle rect;
-    if (!screen || !window || width < 1 || height < 1 ||
+    if (!screen || !window || !normal_shape || width < 1 || height < 1 ||
         width > 32767 || height > 32767) return NULL;
     c = calloc(1, sizeof(*c));
     if (!c) return NULL;
@@ -210,8 +192,7 @@ AmigaDropCatcher *amiga_drop_catcher_init(struct Screen *screen,
         free(c); return NULL;
     }
     c->screen = screen; c->window = window; c->normal = normal_shape;
-    c->shaped = normal_shape != NULL;
-    c->left = left; c->top = top; c->width = width; c->height = height;
+    c->width = width; c->height = height;
     c->backing = AllocBitMap(width,height,GetBitMapAttr(screen->RastPort.BitMap,BMA_DEPTH),
         BMF_MINPLANES,screen->RastPort.BitMap);
     if (!c->backing) { DisposeRegion(c->catch_region); free(c); return NULL; }
@@ -223,10 +204,12 @@ AmigaDropCatcher *amiga_drop_catcher_init(struct Screen *screen,
 
 unsigned int amiga_drop_catcher_cancel(AmigaDropCatcher *c)
 {
+    struct Region *previous;
     if (!c) return 0;
     c->waiting = 0;
     if (!c->active) return c->failed ? AMIGA_DROP_ERROR : 0;
-    if (!set_catching(c, 0)) {
+    previous = amiga_change_window_shape(c->window, c->normal);
+    if (previous != c->catch_region && previous != c->normal) {
         c->failed = 1;
         return AMIGA_DROP_ERROR;
     }
@@ -272,12 +255,14 @@ unsigned int amiga_drop_catcher_update(AmigaDropCatcher *c,
         }
         c->serial = external_serial; c->have_serial = 1;
         if (client) {
-            BltBitMap(c->screen->RastPort.BitMap,c->left,c->top,
+            struct Region *previous;
+            BltBitMap(c->screen->RastPort.BitMap,c->window->LeftEdge,c->window->TopEdge,
                 c->backing,0,0,c->width,c->height,0xc0,0xff,NULL);
             WaitBlit();
             c->backing_valid = 1;
+            previous = amiga_change_window_shape(c->window, c->catch_region);
             c->active = 1;
-            if (!set_catching(c, 1)) { c->failed = 1; return flags | AMIGA_DROP_ERROR; }
+            if (previous != c->normal) { c->failed = 1; return flags | AMIGA_DROP_ERROR; }
             flags |= AMIGA_DROP_STARTED;
         }
     }

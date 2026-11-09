@@ -774,6 +774,14 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
 - [x] Folder Stack grows from its tip and fades, both ways; quarter-step
       fade via the 50% mix; 5-6 frames in 130 ms at 50 Hz.
 
+### Coffin as daily dock (2026-11-10) — user approved
+- [x] Pins from Coffin's WBDock (SYS:WBStartup/WBDock), bottom edge, size 32.
+- [x] PiP1 floats only beside a narrow dock (scrambled the 992 px dock).
+- [x] Icon-less scripts run with Execute (ShapeShifter Launch, WOMyFiles).
+- [x] Quit for running apps on AmigaOS 3.x (posted IDCMP_CLOSEWINDOW).
+- [x] No drag preview past the screen-edge side of the dock.
+- [ ] Install for real on Coffin (WBStartup, WBDock to Disabled) when asked.
+
 ### Before merging pip-os3
 - [ ] ApolloOS regression after a reboot into ApolloOS: PiP sweep, drops
       with the shaped catcher, --damage-check, labels and drag on PiP2 with

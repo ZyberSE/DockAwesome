@@ -706,3 +706,36 @@ Vampire, ApolloOS R9.5, --self-launch, test tools in RAM: (2026-11-09):
 Not possible under DOpus: a list of running programs. Its launch list is
 private (LibData.launch_list) and neither ARexx nor dopus5.library exposes
 it, so program dots come from our own launches and the window pass.
+
+## PiP on AmigaOS 3.x on a Vampire (Coffin, AmiKit) (2026-11-09)
+
+Goal: the ApolloOS experience (live see-through dock, windows dragged
+under it) where the Vampire runs AmigaOS 3.9/3.2 with P96. The probe on
+branch pip-os3-probe (b535291) showed it works on Coffin r65 at 16 bits:
+SAGA PiP2 and its colour key work under P96, the dock shows, zoom works,
+and a window dragged under it updates without lag once a busy layer list
+no longer stops the capture.
+
+PiP2 itself is RGB565 only (SAGA formats: 8/15/16-bit, YUV), so the dock's
+own pixels are 16-bit; the desktop around and through it keeps its depth.
+
+Plan (branch pip-os3 from simplify-followups):
+- [ ] 1. Profile: PiP needs AMMX and core >= 11900 only. Window shapes and
+      the 16-bit screen stop being requirements; apollo_pointer only on
+      ApolloOS Intuition (shaped_windows). Update test_profile rows
+      (AmigaOS 3.2/3.9 and 24/32-bit screens now choose PiP).
+- [ ] 2. Receiver window without shapes: a 1x1 window (no backfill) while
+      no drag is on; visible width from the canvas, not the window.
+- [ ] 3. Live capture keeps going when the layer list is busy (only the
+      Z-order check needs it). Verify on ApolloOS before merging.
+- [ ] 4. Drops without shapes: on a Workbench icon press the receiver
+      grows to the dock box with ChangeWindowBox and paints the saved
+      backing (as the shaped catcher does); it shrinks back afterwards.
+      Measure whether the box change lands before Workbench's drag loop.
+- [ ] 5. 24- and 32-bit screens: capture converts RGB24/BGR24/ARGB32/
+      BGRA32/RGBA32 rows to RGB565 for the same compare and decode path
+      (the overlay is RGB565 anyway). Measure the capture cost against
+      the 16-bit 4.0 ms.
+- [ ] 6. Verify: Coffin 16 and 24 bit (show at start, zoom, drag under,
+      click, right-click menu, drop an icon, Folder Stack, Settings);
+      ApolloOS unchanged (PiP sweep, drops, --damage-check); --caps rows.

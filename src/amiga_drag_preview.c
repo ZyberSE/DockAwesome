@@ -1,4 +1,5 @@
 #include "amiga_drag_preview.h"
+#include "dock_compose.h"
 #include "amiga_display.h"
 #include "amiga_text.h"
 #include <graphics/gfxbase.h>
@@ -23,15 +24,10 @@ struct AmigaDragPreview {
 
 static const char label[] = "Remove";
 
-static int clamp(int value, int high)
-{
-    return value < 0 ? 0 : value > high ? high : value;
-}
-
 static void position(const AmigaDragPreview *p, int x, int y, int *left, int *top)
 {
-    *left = clamp(x-p->width/2, p->screen->Width-p->width);
-    *top = clamp(y-p->icon_height/2, p->screen->Height-p->height);
+    *left = dock_clamp(x-p->width/2, 0, p->screen->Width-p->width);
+    *top = dock_clamp(y-p->icon_height/2, 0, p->screen->Height-p->height);
 }
 
 static int add_rect(struct Region *shape, int left, int top, int right, int bottom)

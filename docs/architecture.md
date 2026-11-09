@@ -14,7 +14,8 @@ Pointer -> layout -> renderer -> frame -> native window or PiP2
 
 | Module | Role |
 | --- | --- |
-| `dock_core.c` | Icon caches, layout, animation, blending, and pixel conversion |
+| `dock_core.c` | Settings, icon caches, layout, animation, and pixel conversion kernels |
+| `dock_compose.c` | Compositor: plate, glass rows, divider, and icon and overlay blending |
 | `dock_geometry.c` | Bottom, left, and right geometry and hit testing |
 | `dock_interaction.c` | Button pairs, drag state, and pin actions |
 | `dock_renderer.c` | Pixel backend selection, damage tracking, and damaged PiP conversion |
@@ -24,6 +25,13 @@ Pointer -> layout -> renderer -> frame -> native window or PiP2
 | `about_font.c` | Prerendered Vera Sans glyphs for About (generated) |
 | `amiga_display.c` | Native capture and uploads for indexed and RTG screens |
 | `amiga_pip.c` | PiP2 buffers, alignment, presentation, and lease |
+
+`dock_core.h` declares the caches, layout, settings, clamp helpers and
+kernels; `dock_compose.h` declares the compositor (`dock_render_oriented_clip`,
+`DockGlass`, `DockPanelShape`, `DockOverlay`, `dock_blend`). The private
+`src/dock_pixel.h` holds the word load and store, run flag and level
+lookup that the core, compositor and renderer share as static inline
+helpers, so each pixel loop keeps them in its own translation unit.
 
 `DockPixelBackend` selects C or AMMX kernels. Both use the same rounded
 50% blend. Icons with partial alpha share the C compositor. The renderer

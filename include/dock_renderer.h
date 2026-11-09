@@ -1,7 +1,6 @@
 #ifndef DOCK_RENDERER_H
 #define DOCK_RENDERER_H
-#include "dock_core.h"
-#include "dock_geometry.h"
+#include "dock_compose.h"
 /* Pixel backend owns no OS resources. Add kernels without touching layout or
    Workbench. AMMX selection is explicit: never execute a probe instruction. */
 typedef struct { const char *name; DockMixHalf mix_half; DockConvertRGB24 rgba_to_rgb24;
@@ -48,25 +47,7 @@ unsigned long dock_convert565_damage(unsigned char *buffer, int stride,
 DockRect dock_rgb565_refresh(unsigned char *cache, const unsigned char *source,
     size_t source_stride, int width, int visible, int height, DockBytesEqual equal);
 
-/* An image blended over the frame after the icons, with coverage: running
-   dots and the dragged icon. */
-typedef struct { const DockImage *image; int x, y; } DockOverlay;
 #define DOCK_MAX_OVERLAYS (DOCK_MAX_ITEMS+1)
-
-/* The plate as drawn: dock_edge_panel_rect with the center_panel mirror,
-   and its corner radius. An empty plate is {0,0,0,0} with radius 0.
-   Returns 0 when nothing is drawn. */
-int dock_render_panel(const DockSettings *s, int edge, const DockPlacement *p, int count,
-                      int width, int height, int center_panel, DockRect *rect, int *radius);
-/* dock_render_oriented_mask plus overlays, writing canvas and coverage only
-   inside clip, with the bytes a full render gives there. Glass rows are
-   still mixed whole (into the glass cache only). */
-void dock_render_oriented_clip(DockImage *canvas, const DockImage *backdrop,
-                 const DockCache *const *icons, const DockPlacement *p, int count,
-                 const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
-                 unsigned char *coverage, int pressed_item, int edge, int center_panel,
-                 DockGlass *glass, const DockOverlay *overlays, int overlay_count,
-                 const DockRect *clip);
 
 /* The inputs of the last draw, compared field by field to find damage. */
 typedef struct {

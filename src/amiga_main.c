@@ -1294,7 +1294,7 @@ static void draw(App *app)
     for (i = 0; i < count; ++i)
         if (icons[i] && app->items[row_item(app,i)].running)
             overlays[overlay_count++] = running_dot(app,&placement[i]);
-    if (dragged >= 0 && (!app->gesture.remove_armed || app->drag_on_band)) {
+    if (dragged >= 0 && !app->gesture.remove_armed) {
         int level = app->moving_item ? app->held_icon.level : app->placement[dragged].level;
         const DockImage *icon = &app->items[dragged].cache.image[level];
         overlays[overlay_count++] = (DockOverlay){icon, app->gesture.x-icon->width/2,
@@ -1621,8 +1621,7 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
 }
 
 /* The dragged pin in PiP1: the icon, with the Remove pill under it once
-   armed. Returns 1 when shown, 0 when PiP1 is not available, -1 when the
-   pin lies on a wide dock's display rows (amiga_float_show). */
+   armed. Returns 0 when PiP1 is not available. */
 static int show_drag_float(App *app, const DockImage *icon, int remove, int x, int y)
 {
     DockImage pill = {0}, image;
@@ -1641,7 +1640,7 @@ static int show_drag_float(App *app, const DockImage *icon, int remove, int x, i
     dock_ui_hide_label(app->ui);
     ok = amiga_float_show(app->float_layer,&image,x-width/2,y-icon->height/2);
     free(image.pixels); free(pill.pixels);
-    if (ok > 0) {
+    if (ok) {
         app->drag_float_remove = remove;
         app->drag_float_width = width; app->drag_float_icon_height = icon->height;
     }
@@ -1678,38 +1677,22 @@ static int update_drag_preview(App *app)
         }
     }
     if (app->float_layer && !shaped) {
-        /* PiP1: no window, no save-under; a move writes two registers.
-           On a wide dock's rows PiP1 may not show: the dock draws the pin
-           there itself, Remove armed or not (drag_on_band), and PiP1 shows
-           only the part above them (2), or nothing (-1). The window
-           preview is only for PiP1 taken by another program, and closes
-           whenever PiP1 or the dock carries the pin. */
-        int shown = app->drag_float, band = app->drag_on_band, changed = 0;
-        if (icon) {
-            if (shown && app->drag_float_token == gesture->token && app->drag_float_icon == icon &&
-                app->drag_float_remove == gesture->remove_armed) {
-                shown = amiga_float_move(app->float_layer,x-app->drag_float_width/2,
-                    y-app->drag_float_icon_height/2);
-                if (shown == 0) shown = 1;
-            } else shown = show_drag_float(app,icon,gesture->remove_armed,x,y);
-            app->drag_float = shown > 0;
-            app->drag_float_token = gesture->token;
-            app->drag_float_icon = app->drag_float ? icon : NULL;
-        } else {
-            if (shown) amiga_float_hide(app->float_layer);
-            changed = shown;
-            app->drag_float = shown = 0;
+        /* PiP1: no window, no save-under; a move writes two registers. */
+        int shown = app->drag_float;
+        if (!icon) {
+            if (!shown) return 0;
+            amiga_float_hide(app->float_layer); app->drag_float = 0;
+            return 1;
         }
-        app->drag_on_band = icon && (shown < 0 || shown == 2);
-        changed |= band != app->drag_on_band;
-        if (!icon || shown) {
-            if (app->drag_preview) {
-                amiga_drag_preview_close(app->drag_preview); app->drag_preview = NULL;
-                changed = 1;
-            }
-            app->preview_attempt = 0;
-            return changed;
+        if (shown && app->drag_float_token == gesture->token && app->drag_float_icon == icon &&
+            app->drag_float_remove == gesture->remove_armed) {
+            amiga_float_move(app->float_layer,x-app->drag_float_width/2,y-app->drag_float_icon_height/2);
+            return 0;
         }
+        app->drag_float = show_drag_float(app,icon,gesture->remove_armed,x,y);
+        app->drag_float_token = gesture->token;
+        app->drag_float_icon = app->drag_float ? icon : NULL;
+        if (app->drag_float) return 0;
         /* PiP1 is taken: the window preview below. */
     }
     if (inside) icon = NULL;

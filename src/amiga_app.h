@@ -349,7 +349,6 @@ typedef struct App {
     int drag_float, drag_float_remove, drag_float_width, drag_float_icon_height;
     uint32_t drag_float_token;
     const DockImage *drag_float_icon; /* the cache image shown, to see a level change */
-    int drag_on_band; /* the dragged pin lies on a wide dock's rows: the dock draws it */
     uint32_t preview_attempt;
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;

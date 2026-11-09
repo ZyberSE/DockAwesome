@@ -262,4 +262,5 @@
 
 ## Two SAGA overlays must not share rows with a wide one (2026-11-10)
 - With the dock at the bottom (PiP2 992 px wide) on Coffin's 24-bit screen, a tooltip in PiP1 scrambled the whole dock; the PiP1 overlay was 96 rows tall and reached over the dock's rows. Beside a 96 px side dock the same overlay showed fine.
-- Rule: size an extra overlay to its picture and keep it off a wide overlay's rows; test layout changes (edge, size) on the hardware, not only on the edge that was verified.
+- Keeping PiP1 off the dock's rows (even 4 rows clear) did not help: every PiP1 label or drag still scrambled the 992 px dock. Measured fine: 128 + 96 px.
+- Rule: use a second overlay only where its combination was seen working (PiP1 beside a narrow dock); test layout changes (edge, size) on the hardware, not only on the edge that was verified; after two failed hardware guesses, fall back to the known-good path instead of a third.

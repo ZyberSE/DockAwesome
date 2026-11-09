@@ -368,6 +368,10 @@ static int pip_poll(App *app, int due, int redraw)
     return redraw;
 }
 
+/* PiP1 and PiP2 widths that showed together on Coffin: 128 + 96 fine,
+   128 + 992 scrambled the dock. */
+enum { PIP_SHARE_WIDTH = 256 };
+
 static int pip_open(App *app)
 {
     /* The keyed tail of a right dock lies past the native window. */
@@ -417,10 +421,14 @@ static int pip_open(App *app)
             WA_IDCMP, IDCMP_FLAGS & ~IDCMP_REFRESHWINDOW, TAG_DONE);
         if (!app->window) return 0;
         /* Labels and dragged pins float in PiP1 when it is free; reserve
-           the largest icon with the Remove pill under it. */
-        app->float_layer = amiga_float_create(app->screen, app->pip_x_offset, app->pip_y_offset,
-            app->settings.max_size+64, app->settings.max_size+32);
-        amiga_float_set_band(app->float_layer, app->top, app->top+app->height, app->width);
+           the largest icon with the Remove pill under it. Only beside a
+           narrow dock: on Coffin's 24-bit screen PiP1 (128 px) beside the
+           96 px side dock showed fine, but with the 992 px bottom dock
+           every PiP1 label or drag scrambled the dock, even kept off its
+           rows. Without PiP1, labels and the drag preview use windows. */
+        if (app->width+((app->settings.max_size+64+31)&~31) <= PIP_SHARE_WIDTH)
+            app->float_layer = amiga_float_create(app->screen, app->pip_x_offset, app->pip_y_offset,
+                app->settings.max_size+64, app->settings.max_size+32);
         dock_ui_set_float(app->ui, app->float_layer);
         app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
         if (!app->appwindow) return 0;

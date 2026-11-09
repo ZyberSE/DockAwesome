@@ -82,6 +82,9 @@ typedef struct {
     uint32_t pin_id[DOCK_MAX_ITEMS];
     DockRect panel;
     int panel_radius;
+    /* The window modes' dock layer, which other windows can cover; NULL
+       for PiP, which is always in front. */
+    struct Layer *layer;
 } InputSnapshot;
 typedef struct {
     UWORD code;
@@ -132,7 +135,7 @@ typedef struct {
     uint32_t menu_pin_id;
     int menu_x, menu_y;
     struct Screen *menu_screen;
-    volatile ULONG downs, ups, right_icons, ambiguous, overflow;
+    volatile ULONG downs, ups, right_icons, ambiguous, overflow, right_seen, right_ambiguous;
     ShellClose *volatile shell_close;
 } InputContext;
 struct App;

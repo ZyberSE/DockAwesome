@@ -21,6 +21,7 @@ static int window_open(App *app)
 
 static void window_close(App *app)
 {
+    Disable(); app->input_context.active = NULL; Enable();
     if (app->appwindow) { RemoveAppWindow(app->appwindow); app->appwindow = NULL; }
     if (app->window) { CloseWindow(app->window); app->window = NULL; }
 }
@@ -65,7 +66,7 @@ static void window_present(App *app, const DockImage *frame)
             Move(app->window->RPort, (app->width-length)/2, app->height-25);
             amiga_text_draw(app->window->RPort,label,strlen(label));
         }
-    }
+    }    input_publish(app);
 }
 
 const SurfaceOps amiga_surface_window = {

@@ -1034,6 +1034,11 @@ static void profile_report(App *app)
     printf("Status queries: programs=%lu drawers=%lu documents=%lu window_events=%lu native_notify=%d\n",
         (unsigned long)app->stats.program_checks,(unsigned long)app->stats.drawer_checks,
         (unsigned long)app->stats.document_checks,(unsigned long)app->stats.status_events,!!app->status_notify);
+    printf("Input: downs=%lu ups=%lu right_seen=%lu right_icons=%lu right_ambiguous=%lu ambiguous_pass=%lu overflow_pass=%lu\n",
+        (unsigned long)app->input_context.downs, (unsigned long)app->input_context.ups,
+        (unsigned long)app->input_context.right_seen, (unsigned long)app->input_context.right_icons,
+        (unsigned long)app->input_context.right_ambiguous,
+        (unsigned long)app->input_context.ambiguous, (unsigned long)app->input_context.overflow);
     printf("Workbench drops: messages=%lu arguments=%lu added=%lu reordered=%lu bad_paths=%lu\n",
         (unsigned long)app->stats.drop_messages, (unsigned long)app->stats.drop_arguments,
         (unsigned long)app->stats.drop_added, (unsigned long)app->stats.drop_reordered,
@@ -1062,11 +1067,6 @@ static void profile_report(App *app)
             ticks_us(app,app->stats.capture_ticks,app->stats.source_polls),
             ticks_us(app,app->stats.decode_ticks,app->stats.source_changes),
             app->stats.source_changes ? (unsigned long)(app->stats.source_pixels/app->stats.source_changes) : 0UL);
-        fflush(stdout);
-        printf("PiP input: downs=%lu ups=%lu right_icons=%lu ambiguous_pass=%lu overflow_pass=%lu\n",
-            (unsigned long)app->input_context.downs, (unsigned long)app->input_context.ups,
-            (unsigned long)app->input_context.right_icons,
-            (unsigned long)app->input_context.ambiguous, (unsigned long)app->input_context.overflow);
         fflush(stdout);
         printf("PiP shape: updates=%lu rects=%lu rects_peak=%lu\n",
             (unsigned long)app->stats.shape_updates, (unsigned long)app->stats.shape_rects,
@@ -1656,7 +1656,9 @@ static void open_menu(App *app, int x, int y, uint32_t pin_id)
             else if (item_window_action(app,item,WINDOW_CHECK))
                 action = item->kind == PIN_DOCUMENT ? DOCK_UI_CLOSE_ITEM : DOCK_UI_QUIT_ITEM;
         }
-        if (!action && !can_keep && !stack) return;
+        /* A pin with nothing to offer here (no WindowAction on AmigaOS 3.x)
+           shows the dock's own menu rather than ignoring the click. */
+        if (!action && !can_keep && !stack) pin_id = 0;
     }
     reset_hover_label(app);
     interaction_cancel(app);

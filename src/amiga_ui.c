@@ -168,6 +168,9 @@ struct DockUI {
     struct Window *popup, *dialog;
     struct Window *label;
     struct Region *popup_shape;
+    /* The popup is drawn rounded (with the Folder Stack's tip): by its
+       shape, or over its captured glass where windows cannot be shaped. */
+    int popup_round;
     struct Region *label_shape;
     int label_left, label_top;
     /* Kept across labels: the backdrop display and pixels, grown as needed,
@@ -203,7 +206,7 @@ struct DockUI {
     DockUIPrefs draft;
     SettingsView settings;
     int font_height, font_width, popup_row, popup_selected, popup_pressed;
-    int window_shapes, popup_rgb, showing_about;
+    int window_shapes, popup_rgb, rgb_pens, showing_about;
     UWORD popup_pen[MENU_COLORS];
 };
 
@@ -461,6 +464,7 @@ static void close_popup(DockUI *ui, int preserve)
         DisposeRegion(ui->popup_shape);
         ui->popup_shape = NULL;
     }
+    ui->popup_round = 0;
     free_popup_glass(ui);
     free_folder_icons(&ui->folder);
     free(ui->folder.entries);
@@ -489,7 +493,7 @@ void dock_ui_close_dialog(DockUI *ui)
     ui->showing_about = 0;
 }
 
-DockUI *dock_ui_create(struct Screen *screen, int window_shapes, int glass, int alpha_text)
+DockUI *dock_ui_create(struct Screen *screen, int window_shapes, int glass, int rgb_pens, int alpha_text)
 {
     DockUI *ui;
     struct Library *DiskfontBase;
@@ -500,6 +504,7 @@ DockUI *dock_ui_create(struct Screen *screen, int window_shapes, int glass, int 
     ui->screen = screen;
     ui->window_shapes = window_shapes;
     ui->popup_rgb = glass;
+    ui->rgb_pens = glass && rgb_pens;
     ui->draw = GetScreenDrawInfo(screen);
     if (!ui->draw || !ui->draw->dri_Font) {
         if (ui->draw) FreeScreenDrawInfo(screen,ui->draw);
@@ -627,8 +632,8 @@ static void popup_inner_span(const FolderView *folder, int width, int height, in
 void dock_ui_popup_span(const DockUI *ui, int row, int *left, int *right)
 {
     int width = ui->popup->Width, height = ui->popup->Height;
-    if (!ui->popup_shape) { *left = 0; *right = width; return; }
-    popup_span(ui->folder.path[0] && ui->window_shapes ? &ui->folder : NULL,
+    if (!ui->popup_round) { *left = 0; *right = width; return; }
+    popup_span(ui->folder.path[0] ? &ui->folder : NULL,
         width,height,POPUP_RADIUS,row,left,right);
 }
 
@@ -681,7 +686,7 @@ static void prepare_popup_colors(DockUI *ui)
 
 static void popup_color(const DockUI *ui, struct RastPort *rp, int role)
 {
-    if (ui->popup_rgb) {
+    if (ui->rgb_pens) {
         const struct TagItem tags[] = {{RPTAG_PenMode, FALSE},
             {RPTAG_FgColor, menu_colors[role]}, {TAG_DONE, 0}};
         SetRPAttrsA(rp,tags);
@@ -759,8 +764,8 @@ static void apply_backdrop_carry(const DockUI *ui, DockImage *glass, int left, i
 static void tint_popup_glass(DockUI *ui)
 {
     DockImage *glass = &ui->popup_glass;
-    const FolderView *folder = ui->popup_shape && ui->folder.path[0] ? &ui->folder : NULL;
-    int radius = ui->popup_shape ? POPUP_RADIUS : 0, tint_shift = ui->glass_tint_shift;
+    const FolderView *folder = ui->popup_round && ui->folder.path[0] ? &ui->folder : NULL;
+    int radius = ui->popup_round ? POPUP_RADIUS : 0, tint_shift = ui->glass_tint_shift;
     int width = glass->width, height = glass->height, y;
     const uint32_t rim = (menu_colors[MENU_RIM]<<8)|255;
     uint32_t mask, tint;
@@ -785,7 +790,7 @@ static void tint_popup_glass(DockUI *ui)
 static void capture_popup_glass(DockUI *ui, int left, int top, int width, int height, int tint_shift)
 {
     DockImage *glass = &ui->popup_glass;
-    const FolderView *folder = ui->popup_shape && ui->folder.path[0] ? &ui->folder : NULL;
+    const FolderView *folder = ui->popup_round && ui->folder.path[0] ? &ui->folder : NULL;
     int profile = folder && ui->folder.anchor.profile;
     ui->popup_display = capture_glass(ui,glass,left,top,width,height);
     if (!ui->popup_display) return;
@@ -822,7 +827,7 @@ static void paint_popup_surface(DockUI *ui, const DockImage *surface)
         popup_color(ui,rp,MENU_RIM);
         RectFill(rp,0,0,width-1,height-1);
         popup_color(ui,rp,MENU_SURFACE);
-        fill_rounded(rp,1,1,width-2,height-2,ui->popup_shape ? POPUP_RADIUS-1 : 0);
+        fill_rounded(rp,1,1,width-2,height-2,ui->popup_round ? POPUP_RADIUS-1 : 0);
     }
 }
 
@@ -1352,8 +1357,6 @@ static int prepare_folder_scene(DockUI *ui)
     size_t bytes = (size_t)background->width*background->height*4;
     if (!background->pixels) return 0;
     if (f->motion_scene.pixels) return 1;
-    buffer = amiga_display_begin_frame(ui->popup_display,NULL);
-    if (!buffer) return 0;
     f->motion_scene = (DockImage){background->width,background->height,malloc(bytes)};
     f->motion_frame = (DockImage){background->width,background->height,malloc(bytes)};
     if (!f->motion_scene.pixels || !f->motion_frame.pixels) {
@@ -1361,11 +1364,28 @@ static int prepare_folder_scene(DockUI *ui)
         return 0;
     }
     /* Native text and glyphs are opaque. A reserved color marks untouched
-       pixels, even when the actual backdrop matches a glyph's color. */
+       pixels, even when the actual backdrop matches a glyph's color. With
+       pens only, the color is written as an image (into motion_frame,
+       filled before its first use below). */
     folder_stamp(f->anchor.profile,0);
+    if (ui->rgb_pens) {
+        buffer = amiga_display_begin_frame(ui->popup_display,NULL);
+        if (buffer) {
+            SetDrMd(buffer,JAM1);
+            SetRPAttrsA(buffer,key_color);
+            RectFill(buffer,0,0,background->width-1,background->height-1);
+        }
+    } else {
+        uint32_t *key = (uint32_t *)f->motion_frame.pixels;
+        size_t i, count = (size_t)background->width*background->height;
+        for (i = 0; i < count; ++i) key[i] = UINT32_C(0xff00ffff);
+        buffer = amiga_display_begin_frame(ui->popup_display,&f->motion_frame);
+    }
+    if (!buffer) {
+        clear_folder_motion(f);
+        return 0;
+    }
     SetDrMd(buffer,JAM1);
-    SetRPAttrsA(buffer,key_color);
-    RectFill(buffer,0,0,background->width-1,background->height-1);
     paint_folder_content(ui,buffer,FOLDER_PAINT_GLYPHS|
         (ui->folder_aa ? 0 : FOLDER_PAINT_LABELS),NULL);
     folder_stamp(f->anchor.profile,0);
@@ -2056,6 +2076,7 @@ static int open_popup_window(DockUI *ui, int left, int top, int width, int heigh
     int profile = ui->folder.path[0] && ui->folder.anchor.profile;
     if (ui->window_shapes)
         ui->popup_shape = make_folder_shape(ui->folder.path[0] ? &ui->folder : NULL,width,height);
+    ui->popup_round = ui->popup_shape || ui->popup_rgb;
     prepare_popup_colors(ui);
     folder_stamp(profile,0);
     if (capture_backdrop) capture_popup_glass(ui,left,top,width,height,report_mouse ? 2 : 3);
@@ -2129,7 +2150,8 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
     struct RastPort measure;
     int font_height = folder_font(ui)->tf_YSize;
     int width, height, left, top, max_width, max_height, rows, control = font_height+10;
-    int tip_size = ui->window_shapes ? FOLDER_TIP : 0;
+    /* Without window shapes the tip is drawn over the captured glass. */
+    int tip_size = ui->window_shapes || ui->popup_rgb ? FOLDER_TIP : 0;
     int icon = anchor.icon_size, text_width, extra_bottom;
     int screen_top = ui->screen->BarHeight+2;
     enum { GAP = 10 };

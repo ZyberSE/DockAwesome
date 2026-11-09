@@ -251,3 +251,7 @@
 - A per-sample log on Coffin showed the pointer at its new place while the screen still held the drag image at the old one; it caught up a sample later. Shifting the reveal to the pointer therefore made it worse, and holes in PiP2 always lag the image.
 - Rule: over the dock, paint the drag image's sampled pixels into the PiP buffer instead of revealing the screen; log per-sample data before choosing between such fixes.
 - Check the test itself before reading its numbers: my press missed the moved icon and started a lasso, and I read the lasso's pixel count as a regression. Take a screenshot during each scripted drag.
+
+## Probe a capability by using it (2026-11-10)
+- On Coffin, rgb_rastport (graphics LVO table size) and alpha_text (cybergraphics opens as V51) both said yes, but RGB pens drew palette orange and BltTemplateAlpha drew nothing: an orange Folder Stack frame and an invisible menu text.
+- Rule: a capability that draws is probed by drawing one pixel into a bitmap like the screen's and reading it back.

@@ -10,7 +10,7 @@ typedef struct {
     int saga_core;      /* SAGA core revision, 0 when not read (no 68080) */
     int saga_pip2;      /* core 11900 or newer: PiP2 registers */
     int shaped_windows; /* Intuition V50 shape API and Layers V50 */
-    int rgb_rastport;   /* graphics.library takes RGB RastPort tags (AROS) */
+    int rgb_rastport;   /* RGB RastPort tags draw RGB (AROS; probed by drawing) */
     int alpha_text;     /* cybergraphics.library V51 BltTemplateAlpha */
     int window_action;  /* Intuition V50 WindowAction (quit and close items) */
     int status_notify;  /* Intuition V50 window open/close notification */
@@ -36,6 +36,7 @@ typedef struct {
     int pixels;         /* DOCK_PIXELS_* for every backend */
     int ui_shapes;      /* shaped labels, menus and Folder Stack */
     int ui_glass;       /* RGB glass for menus, labels and Folder Stack */
+    int ui_rgb_pens;    /* native drawing in RGB, not palette pens */
     int aa_text;        /* antialiased menu and label text */
     int apollo_pointer; /* input handler reads ApolloOS relative pointer events */
     int error;          /* DOCK_PROFILE_*, set only for an explicit PiP request */

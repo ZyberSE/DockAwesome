@@ -36,19 +36,26 @@ static const Machine machines[] = {
        PiP runs without window shapes there (no ApolloOS pointer events). */
     {"AmigaOS 3.2, Vampire V4, 16-bit SAGA",
         {1,1,12515,1,0,0,0,0,0,0,0,16,1,0,0},
-        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 0, 0},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 1, 0},
     {"AmigaOS 3.2, Vampire V4, screennotify installed",
         {1,1,12515,1,0,0,0,0,0,0,1,16,1,0,0},
-        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 0, 0},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 1, 0},
     /* AmiKit ships screennotify.library and runs Directory Opus instead of
-       Workbench. P96's cybergraphics emulation is older than V51; even one
-       with BltTemplateAlpha gives no AA text without the glass. */
+       Workbench. The glass is RGBA images on any RTG screen; AA text needs
+       BltTemplateAlpha. */
     {"AmigaOS 3.9/AmiKit, Vampire V4, P96 16-bit",
         {1,1,12515,1,0,0,0,0,0,0,1,16,0,0,1},
-        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 0, 0},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 1, 0},
     {"AmigaOS 3.9/AmiKit, Vampire V4, P96 24-bit, CGX alpha",
         {1,1,12515,1,0,0,1,0,0,0,1,24,0,0,1},
-        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 0, 0},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 1, 1},
+    /* Coffin r65 (AmigaOS 3.9) on the Vampire, probed by drawing on
+       2026-11-10: no RGB RastPort tags (pens), no alpha template text, no
+       window shapes. The glass and its rounded edges are drawn over the
+       captured screen. */
+    {"AmigaOS 3.9 Coffin r65, Vampire V4, 24-bit SAGA",
+        {1,1,12398,1,0,0,0,0,0,0,1,24,1,0,0},
+        DOCK_BACKEND_PIP, DOCK_PROFILE_OK, DOCK_PIXELS_AMMX, 0, 1, 0},
     /* The 68080 binary does not run here; the profile still answers. */
     {"AmigaOS 3.x, 68030 AGA, 8-bit",
         {0,0,0,0,0,0,0,0,0,0,0,8,1,0,0},
@@ -111,11 +118,12 @@ static void test_previous_rules(void)
             caps.screen_depth = depths[d];
             pip_ready = caps.ammx && (caps.screen_depth == 16 || caps.screen_depth == 24 ||
                 caps.screen_depth == 32);
-            popup_rgb = caps.shaped_windows && caps.rgb_rastport && caps.screen_depth > 8;
+            popup_rgb = caps.screen_depth > 8;
             p = dock_choose_profile(&caps,DOCK_BACKEND_PIP,0);
             assert(p.backend == (pip_ready ? DOCK_BACKEND_PIP : DOCK_BACKEND_SNAPSHOT));
             assert(p.apollo_pointer == (pip_ready && caps.shaped_windows));
             assert(p.ui_glass == popup_rgb);
+            assert(p.ui_rgb_pens == (popup_rgb && caps.rgb_rastport));
             assert(p.aa_text == (popup_rgb && caps.alpha_text));
             assert(p.ui_shapes == caps.shaped_windows);
             p = dock_choose_profile(&caps,DOCK_BACKEND_PIP,1);

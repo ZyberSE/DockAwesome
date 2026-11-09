@@ -496,7 +496,8 @@ static inline int viewport_limit(const App *app, DockEdge edge)
 
 static inline DockUI *create_ui(const App *app)
 {
-    DockUI *ui = dock_ui_create(app->screen,app->features.ui_shapes,app->features.ui_glass,app->features.aa_text);
+    DockUI *ui = dock_ui_create(app->screen,app->features.ui_shapes,app->features.ui_glass,
+        app->features.ui_rgb_pens,app->features.aa_text);
     dock_ui_set_float(ui,app->float_layer);
     return ui;
 }

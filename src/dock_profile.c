@@ -27,9 +27,12 @@ DockProfile dock_choose_profile(const DockCaps *caps, int requested_backend, int
     }
     p.pixels = caps->ammx ? DOCK_PIXELS_AMMX : DOCK_PIXELS_PORTABLE;
     p.ui_shapes = !!caps->shaped_windows;
-    /* The glass draws RGB through the AROS RastPort tags into shaped
-       windows; indexed screens keep the pen-drawn UI. */
-    p.ui_glass = caps->shaped_windows && caps->rgb_rastport && caps->screen_depth > 8;
+    /* The glass is RGBA images written to RTG screens; without window
+       shapes its rounded edges are drawn over the captured screen. Native
+       text and glyphs draw in RGB through the AROS RastPort tags, else
+       with the nearest palette pens. Indexed screens keep the pen-drawn UI. */
+    p.ui_glass = caps->screen_depth > 8;
+    p.ui_rgb_pens = p.ui_glass && caps->rgb_rastport;
     p.aa_text = p.ui_glass && caps->alpha_text;
     /* ApolloOS Intuition (V50, with shapes) reports relative left-button
        events its own way; classic Intuition does not. */

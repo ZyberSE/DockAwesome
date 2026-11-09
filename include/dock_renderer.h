@@ -19,6 +19,10 @@ void dock_damage_set_full(DockDamage *d);
    intersect; overflow sets full. */
 void dock_damage_add(DockDamage *d, DockRect r, int width, int height);
 void dock_damage_merge(DockDamage *dst, const DockDamage *src, int width, int height);
+/* The rectangles to upload for damage into out: its own when there are
+   at most max, else their bounding box; the whole canvas when full.
+   Returns their count, 0 when nothing changed. */
+int dock_damage_upload_rects(const DockDamage *d, int width, int height, int max, DockRect *out);
 
 /* Converts the damaged regions of frame (RGBA) to keyed big-endian RGB565
    in buffer, or the whole frame when damage is full. Each row span widens

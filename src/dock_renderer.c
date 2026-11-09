@@ -57,6 +57,26 @@ void dock_damage_merge(DockDamage *dst, const DockDamage *src, int width, int he
     for (i = 0; i < src->count && !dst->full; ++i) dock_damage_add(dst, src->rect[i], width, height);
 }
 
+int dock_damage_upload_rects(const DockDamage *d, int width, int height, int max, DockRect *out)
+{
+    int i;
+    if (!d || !out || max < 1 || width < 1 || height < 1) return 0;
+    if (d->full) { out[0] = (DockRect){0, 0, width, height}; return 1; }
+    if (d->count <= max) {
+        for (i = 0; i < d->count; ++i) out[i] = d->rect[i];
+        return d->count;
+    }
+    out[0] = d->rect[0];
+    for (i = 1; i < d->count; ++i) {
+        const DockRect *r = &d->rect[i];
+        if (r->left < out[0].left) out[0].left = r->left;
+        if (r->top < out[0].top) out[0].top = r->top;
+        if (r->right > out[0].right) out[0].right = r->right;
+        if (r->bottom > out[0].bottom) out[0].bottom = r->bottom;
+    }
+    return 1;
+}
+
 unsigned long dock_convert565_damage(unsigned char *buffer, int stride,
     const DockImage *frame, const unsigned char *coverage,
     const DockDamage *damage, unsigned char *scratch,

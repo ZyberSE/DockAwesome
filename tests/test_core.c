@@ -1498,6 +1498,29 @@ static int damage_covers(const DockDamage *d, int x, int y)
     return 0;
 }
 
+/* Uploads keep up to max damage rects, else their bounding box. */
+static void test_damage_upload_rects(void)
+{
+    enum { W = 64, H = 48 };
+    DockDamage d;
+    DockRect out[3];
+    int i;
+    dock_damage_clear(&d);
+    assert(dock_damage_upload_rects(&d,W,H,3,out) == 0);
+    dock_damage_add(&d,(DockRect){1,2,3,4},W,H);
+    dock_damage_add(&d,(DockRect){10,20,15,30},W,H);
+    assert(dock_damage_upload_rects(&d,W,H,3,out) == 2);
+    assert(out[0].left == 1 && out[0].top == 2 && out[0].right == 3 && out[0].bottom == 4);
+    assert(out[1].left == 10 && out[1].top == 20 && out[1].right == 15 && out[1].bottom == 30);
+    for (i = 0; i < 2; ++i) dock_damage_add(&d,(DockRect){40+i*4,5,42+i*4,40},W,H);
+    assert(d.count == 4 && dock_damage_upload_rects(&d,W,H,3,out) == 1);
+    assert(out[0].left == 1 && out[0].top == 2 && out[0].right == 46 && out[0].bottom == 40);
+    dock_damage_set_full(&d);
+    assert(dock_damage_upload_rects(&d,W,H,3,out) == 1);
+    assert(out[0].left == 0 && out[0].top == 0 && out[0].right == W && out[0].bottom == H);
+    assert(dock_damage_upload_rects(NULL,W,H,3,out) == 0 && dock_damage_upload_rects(&d,W,H,0,out) == 0);
+}
+
 static void test_damage_add(void)
 {
     enum { W = 64, H = 48 };
@@ -1851,7 +1874,7 @@ int main(void)
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();
     test_animation_and_pointer_anchor(); test_reference_timing_and_panel(); test_rounded_panel();
     test_convert(); test_native565(); test_key565(); test_overlay_coverage();
-    test_render_goldens(0); test_render_goldens(1); test_damage_add(); test_damage_divider(); test_damage_fuzz(); test_conversion_double_buffer();
+    test_render_goldens(0); test_render_goldens(1); test_damage_add(); test_damage_upload_rects(); test_damage_divider(); test_damage_fuzz(); test_conversion_double_buffer();
     printf("All core tests passed: normalization, alpha, layout bounds, clipping, 65536 blends, reorder, renderer.\n");
     printf("Default cache: %lu bytes/icon; 20 icons: %lu bytes.\n",
         (unsigned long)dock_cache_bytes(&defaults),

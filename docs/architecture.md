@@ -123,7 +123,10 @@ UI, PiP, and screen lock before Workbench resets and reopens afterwards.
 
 Snapshot mode captures the desktop before opening the dock. Press R to
 refresh the image. Opaque mode draws a solid background. Both use a native
-window and its clipping rules.
+window and its clipping rules. On RTG screens each frame uploads only the
+renderer's damage (up to eight rectangles, else their bounding box); a
+Simple Refresh repair, a draw that drew nothing, and indexed screens upload
+the whole canvas. Every mode uses the AMMX kernels.
 
 PiP uses a small RGB565 overlay and an empty idle AppWindow shape. Pixels
 outside the artwork and plate use SAGA's source key. The native display code

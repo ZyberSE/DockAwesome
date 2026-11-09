@@ -49,7 +49,7 @@ and the build date. You can also run `DockAwesome --version` or
 | --- | --- |
 | `--snapshot` (default) | Static capture. Press R to refresh it. |
 | `--opaque` | Solid fill |
-| `--pip` | Live transparency on SAGA PiP2. This mode enables AMMX. |
+| `--pip` | Live transparency on SAGA PiP2. |
 
 PiP needs Apollo core 11900 or newer, ApolloOS Intuition and Layers V50,
 and a native RGB565 screen. Reserve PiP2 for the dock while it runs. A saved

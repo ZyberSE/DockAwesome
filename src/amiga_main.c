@@ -287,7 +287,8 @@ typedef struct App {
     struct Library *screen_notify;
     struct MsgPort *workbench_port;
     APTR workbench_client;
-    int workbench_closed, window_shapes, explicit_ammx;
+    int workbench_closed, window_shapes;
+    int present_whole; /* The next native present uploads the whole canvas. */
     int held_drops; /* Leading queued drops already in screen coordinates. */
     struct AppWindow *appwindow;
     struct IOStdReq *input_io;
@@ -3216,16 +3217,25 @@ static void present_frame(void *context, const DockImage *frame)
         }
         return;
     }
-    if (app->profile) {
-        AmigaDisplayTiming timing;
-        uint64_t started = profile_clock();
-        amiga_display_present_profiled(app->display, app->window, frame, profile_clock, &timing);
-        app->stats.present_ticks += profile_clock()-started;
-        app->stats.conversion_ticks += timing.conversion_ticks;
-        app->stats.upload_ticks += timing.upload_ticks;
-        ++app->stats.conversion_frames;
-        app->stats.conversion_pixels += (uint64_t)frame->width*frame->height;
-    } else amiga_display_present(app->display, app->window, frame);
+    {
+        /* The canvas always holds the whole frame, so uploading only what
+           this draw wrote keeps the window current. A Simple Refresh repair
+           needs every pixel, and so does a draw that drew nothing (its
+           renderer state is invalid). */
+        const DockDamage *damage = app->present_whole || !app->renderer.previous.valid ?
+            NULL : &app->renderer.damage;
+        app->present_whole = 0;
+        if (app->profile) {
+            AmigaDisplayTiming timing;
+            uint64_t started = profile_clock();
+            amiga_display_present_damage(app->display, app->window, frame, damage, profile_clock, &timing);
+            app->stats.present_ticks += profile_clock()-started;
+            app->stats.conversion_ticks += timing.conversion_ticks;
+            app->stats.upload_ticks += timing.upload_ticks;
+            ++app->stats.conversion_frames;
+            app->stats.conversion_pixels += timing.pixels;
+        } else amiga_display_present_damage(app->display, app->window, frame, damage, NULL, NULL);
+    }
 }
 
 static DockOverlay running_dot(const App *app, const DockPlacement *icon)
@@ -4051,16 +4061,17 @@ static void release_workbench(App *app)
 
 static void select_backend(App *app)
 {
+    int pip_ready = 0;
     app->pip_mode = app->requested_backend == BACKEND_PIP;
     app->snapshot = app->requested_backend == BACKEND_SNAPSHOT;
-    app->use_ammx = app->explicit_ammx;
-    if (app->pip_mode) {
 #ifdef DOCK_AMMX
-        if (app->window_shapes && GetBitMapAttr(app->screen->RastPort.BitMap,BMA_DEPTH) == 16) app->use_ammx = 1;
-        else
+    /* The build requires a 68080 (-m68080), so its AMMX kernels serve
+       every backend, not only PiP. */
+    app->use_ammx = 1;
+    pip_ready = app->pip_mode && app->window_shapes &&
+        GetBitMapAttr(app->screen->RastPort.BitMap,BMA_DEPTH) == 16;
 #endif
-        { app->pip_mode = 0; app->snapshot = 1; }
-    }
+    if (app->pip_mode && !pip_ready) { app->pip_mode = 0; app->snapshot = 1; }
 }
 
 /* Pixel kernels for use_ammx, shared with the controls. */
@@ -4078,7 +4089,6 @@ static void use_pixel_backend(App *app)
 static int fall_back_to_snapshot(App *app)
 {
     app->pip_mode = 0; app->snapshot = 1;
-    app->use_ammx = app->explicit_ammx;
     use_pixel_backend(app);
     app->surface_error[0] = 0;
     return open_surface(app);
@@ -4256,6 +4266,7 @@ static __attribute__((noinline)) void event_loop(App *app)
             if (cls == IDCMP_REFRESHWINDOW) {
                 if (!app->pip_mode) {
                     BeginRefresh(app->window);
+                    app->present_whole = 1;
                     draw(app);
                     EndRefresh(app->window, TRUE);
                 }
@@ -4444,7 +4455,7 @@ static void usage(void)
          "Drag to reorder. Drag out or press Delete to remove a pin.\n"
          "R refreshes the background. Esc or Ctrl-C quits.\n"
          "Default preferences: " DEFAULT_CONFIG "\n"
-         "--ammx requires Vampire 68080 and the AMMX build.\n"
+         "--ammx is kept for compatibility: the 68080 build always uses AMMX.\n"
          "--pip needs SAGA RGB565, Apollo core 11900+, and Intuition/Layers V50.\n"
          "Saved PiP settings use snapshot mode when PiP is unavailable.\n"
          "--pip-x-offset and --pip-y-offset set alignment from -128 to 128.\n"
@@ -4551,7 +4562,6 @@ int main(int argc, char **argv)
     if (app->pip_dump[0] && !app->pip_mode) { puts("--pip-dump requires --pip."); free(app); return 20; }
     app->requested_backend = app->pip_mode ? BACKEND_PIP :
         app->snapshot ? BACKEND_SNAPSHOT : BACKEND_OPAQUE;
-    app->explicit_ammx = app->use_ammx;
     explicit_pip |= !!app->pip_dump[0];
 #ifndef DOCK_AMMX
     if (app->use_ammx) { puts("Use the DockAwesome080 build for --ammx."); free(app); return 20; }

@@ -65,7 +65,7 @@ extern void dock_call_console_input(InputHandlerCode code, struct InputEvent *ev
 #define WA_ShapeRegion (WA_Dummy + 65)
 #endif
 enum { PIN_PROGRAM = 1, PIN_DRAWER = 2, PIN_SHELL = 4, PIN_DOCUMENT = 8 };
-enum { RUNNING_WORKBENCH = 1, RUNNING_WINDOW = 2 };
+enum { RUNNING_WORKBENCH = 1, RUNNING_WINDOW = 2, RUNNING_SELF = 4 };
 typedef struct {
     char path[PATH_CAP], title_path[PATH_CAP]; DockCache cache;
     uint32_t pin_id;
@@ -297,6 +297,9 @@ typedef struct App {
     ProfileStats stats; /* --profile counters, reported at exit. */
     DockLaunch launches[LAUNCH_SLOTS]; /* Recent dock launches, newest last. */
     int launch_count;
+    struct MsgPort *launch_port;       /* WBStartup replies of our own launches */
+    struct DockLaunched *launched;     /* programs we started, until they reply */
+    int self_launch;                   /* --self-launch: never ask Workbench */
     char surface_error[256];
 
     char config[CONFIG_CAP], shell_launcher_path[PATH_CAP];
@@ -534,6 +537,13 @@ ShellTarget shell_menu_target(const App *app);
 int show_shell_window(const App *app, const ShellTarget *selected);
 int quit_shell_window(App *app);
 InputHandlerCode apollo_console_close_handler(const App *app);
+
+/* amiga_launch.c: Workbench-style launches when Workbench is not running. */
+int launch_open(App *app);
+int launch_object(App *app, const char *path, LONG *error);
+int launch_active(const App *app, const char *path);
+int launch_reap(App *app);
+void launch_close(App *app);
 
 /* amiga_workbench.c: the screennotify.library Workbench client. */
 void workbench_notify_open(App *app);

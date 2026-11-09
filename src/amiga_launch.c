@@ -1,0 +1,228 @@
+/* Workbench-style launches for desktops that are not Workbench.
+   workbench.library's OpenWorkbenchObjectA needs the Workbench process;
+   Directory Opus 5 on 68k (AmiKit) replaces Workbench without patching it.
+   This starts tools and projects the way Workbench does: LoadSeg, a new
+   process with the icon's stack, and a WBStartup message whose reply says
+   the program has ended. The program's code stays loaded until then. */
+#include "amiga_app.h"
+
+enum { NAME_CAP = 108, MIN_STACK = 4096 };
+
+struct DockLaunched {
+    struct WBStartup startup; /* first: the reply is this message */
+    struct WBArg args[2];
+    char names[2][NAME_CAP];
+    char path[PATH_CAP];      /* what the dock was asked to open */
+    struct DockLaunched *next;
+};
+
+/* The file `name` names, from `dir` unless it names a volume. */
+static BPTR lock_in(BPTR dir, const char *name)
+{
+    BPTR old = CurrentDir(dir), lock = Lock((STRPTR)name,ACCESS_READ);
+    CurrentDir(old);
+    return lock;
+}
+
+/* A default tool by bare name, searched as Workbench would: next to the
+   project, then Workbench's search path (Directory Opus answers this on
+   68k too), then the usual system drawers. */
+static BPTR find_tool(BPTR project_dir, const char *tool)
+{
+    static const char *const fallback[] = { "C:", "SYS:Utilities", "SYS:Tools", "SYS:System" };
+    BPTR found = 0, path = 0;
+    struct TagItem get[] = {{WBCTRLA_DuplicateSearchPath,(ULONG)&path},{TAG_DONE,0}};
+    unsigned int i;
+    if (strchr(tool,':') || strchr(tool,'/') || (found = lock_in(project_dir,tool)))
+        return found ? found : lock_in(project_dir,tool);
+    if (WorkbenchControlA(NULL,get) && path) {
+        BPTR node;
+        struct TagItem release[] = {{WBCTRLA_FreeSearchPath,(ULONG)path},{TAG_DONE,0}};
+        /* A BCPL path list: {next, lock} per entry. */
+        for (node = path; node && !found; node = ((BPTR *)BADDR(node))[0])
+            found = lock_in(((BPTR *)BADDR(node))[1],tool);
+        WorkbenchControlA(NULL,release);
+        if (found) return found;
+    }
+    for (i = 0; i < sizeof(fallback)/sizeof(fallback[0]) && !found; ++i) {
+        BPTR dir = Lock((STRPTR)fallback[i],ACCESS_READ);
+        if (dir) { found = lock_in(dir,tool); UnLock(dir); }
+    }
+    return found;
+}
+
+/* Shows or clears the running dot that our own launches give `path`. */
+static int mark_items(App *app, const char *path, int running)
+{
+    int i, changed = 0;
+    for (i = 0; i < app->count; ++i) {
+        Item *item = &app->items[i];
+        int self = !!(item->running & RUNNING_SELF);
+        if (Stricmp((STRPTR)item->path,(STRPTR)path) || self == running) continue;
+        item->running ^= RUNNING_SELF;
+        changed = 1;
+    }
+    return changed;
+}
+
+/* Fills args[n] with the parent of `file` and its name; takes `file`. */
+static int set_arg(struct DockLaunched *launch, int n, BPTR file)
+{
+    struct FileInfoBlock *fib = AllocDosObject(DOS_FIB,NULL);
+    BPTR parent = ParentDir(file);
+    int ok = fib && parent && Examine(file,fib);
+    if (ok) {
+        strncpy(launch->names[n],(const char *)fib->fib_FileName,NAME_CAP-1);
+        launch->args[n].wa_Lock = parent;
+        launch->args[n].wa_Name = (STRPTR)launch->names[n];
+    } else if (parent) UnLock(parent);
+    if (fib) FreeDosObject(DOS_FIB,fib);
+    UnLock(file);
+    return ok;
+}
+
+static void launch_free(struct DockLaunched *launch)
+{
+    int i;
+    if (launch->startup.sm_Segment) UnLoadSeg(launch->startup.sm_Segment);
+    for (i = 0; i < 2; ++i) if (launch->args[i].wa_Lock) UnLock(launch->args[i].wa_Lock);
+    FreeVec(launch);
+}
+
+static LONG icon_stack(const struct DiskObject *icon)
+{
+    return icon ? icon->do_StackSize : 0;
+}
+
+int launch_object(App *app, const char *path, LONG *error)
+{
+    struct DockLaunched *launch;
+    struct DiskObject *icon, *tool_icon = NULL;
+    LONG stack, priority = 0;
+    BPTR tool_dir, old_dir, file, current, home;
+    struct Process *process;
+    const char *pri;
+    *error = 0;
+    if (!app->launch_port) { *error = ERROR_NO_FREE_STORE; return 0; }
+    if (!(launch = AllocVec(sizeof(*launch),MEMF_PUBLIC|MEMF_CLEAR))) { *error = ERROR_NO_FREE_STORE; return 0; }
+    strncpy(launch->path,path,PATH_CAP-1);
+    {
+        struct TagItem get[] = {{ICONGETA_FailIfUnavailable,FALSE},{TAG_DONE,0}};
+        icon = GetIconTagList((STRPTR)path,get);
+    }
+    if (!icon || (icon->do_Type != WBTOOL && icon->do_Type != WBPROJECT)) {
+        *error = ERROR_OBJECT_WRONG_TYPE;
+        goto fail;
+    }
+    if (!(file = Lock((STRPTR)path,ACCESS_READ))) { *error = IoErr(); goto fail; }
+    if (icon->do_Type == WBPROJECT) {
+        BPTR project_dir = ParentDir(file), tool;
+        if (!icon->do_DefaultTool || !icon->do_DefaultTool[0]) {
+            *error = ERROR_OBJECT_NOT_FOUND;
+            UnLock(file); if (project_dir) UnLock(project_dir);
+            goto fail;
+        }
+        tool = find_tool(project_dir,(const char *)icon->do_DefaultTool);
+        if (project_dir) UnLock(project_dir);
+        if (!tool) { *error = ERROR_OBJECT_NOT_FOUND; UnLock(file); goto fail; }
+        if (!set_arg(launch,1,file)) { *error = IoErr(); UnLock(tool); goto fail; }
+        file = tool;
+    }
+    if (!set_arg(launch,0,file)) { *error = IoErr(); goto fail; }
+    launch->startup.sm_NumArgs = icon->do_Type == WBPROJECT ? 2 : 1;
+    tool_dir = launch->args[0].wa_Lock;
+    old_dir = CurrentDir(tool_dir);
+    tool_icon = icon->do_Type == WBTOOL ? icon : GetDiskObject((STRPTR)launch->names[0]);
+    launch->startup.sm_Segment = LoadSeg((STRPTR)launch->names[0]);
+    if (!launch->startup.sm_Segment) *error = IoErr();
+    CurrentDir(old_dir);
+    if (!launch->startup.sm_Segment) goto fail;
+    /* Workbench takes the larger of the tool's and the project's stack. */
+    stack = icon_stack(tool_icon);
+    if (icon_stack(icon) > stack) stack = icon_stack(icon);
+    if (stack < MIN_STACK) stack = MIN_STACK;
+    stack = (stack+3)&~3L;
+    if (tool_icon && (pri = (const char *)FindToolType((CONST_STRPTR *)tool_icon->do_ToolTypes,(CONST_STRPTR)"TOOLPRI"))) {
+        LONG value;
+        if (StrToLong((STRPTR)pri,&value) > 0) priority = dock_clamp(value,-128,127);
+    }
+    /* The new process owns both locks and frees them when it ends. */
+    current = DupLock(tool_dir);
+    home = DupLock(tool_dir);
+    process = current && home ? CreateNewProcTags(NP_Seglist,(ULONG)launch->startup.sm_Segment,
+        NP_FreeSeglist,FALSE, NP_StackSize,stack, NP_Priority,priority,
+        NP_Name,(ULONG)launch->names[0], NP_CurrentDir,(ULONG)current,
+        NP_HomeDir,(ULONG)home, NP_WindowPtr,0, NP_ConsoleTask,0,
+        TAG_DONE) : NULL;
+    if (!process) {
+        *error = IoErr() ? IoErr() : ERROR_NO_FREE_STORE;
+        if (current) UnLock(current);
+        if (home) UnLock(home);
+        goto fail;
+    }
+    launch->startup.sm_Message.mn_Node.ln_Type = NT_MESSAGE;
+    launch->startup.sm_Message.mn_Node.ln_Name = NULL; /* not a RexxMsg */
+    launch->startup.sm_Message.mn_ReplyPort = app->launch_port;
+    launch->startup.sm_Message.mn_Length = sizeof(launch->startup);
+    launch->startup.sm_Process = &process->pr_MsgPort;
+    launch->startup.sm_ArgList = launch->args;
+    launch->next = app->launched;
+    app->launched = launch;
+    PutMsg(&process->pr_MsgPort,&launch->startup.sm_Message);
+    mark_items(app,path,1);
+    if (tool_icon && tool_icon != icon) FreeDiskObject(tool_icon);
+    FreeDiskObject(icon);
+    return 1;
+fail:
+    if (tool_icon && tool_icon != icon) FreeDiskObject(tool_icon);
+    if (icon) FreeDiskObject(icon);
+    launch_free(launch);
+    return 0;
+}
+
+int launch_active(const App *app, const char *path)
+{
+    const struct DockLaunched *launch;
+    for (launch = app->launched; launch; launch = launch->next)
+        if (!Stricmp((STRPTR)launch->path,(STRPTR)path)) return 1;
+    return 0;
+}
+
+/* Frees the programs that ended; 1 when a pin's dot went out. */
+int launch_reap(App *app)
+{
+    struct Message *msg;
+    int ended = 0;
+    if (!app->launch_port) return 0;
+    while ((msg = GetMsg(app->launch_port))) {
+        struct DockLaunched **link = &app->launched;
+        while (*link && &(*link)->startup.sm_Message != msg) link = &(*link)->next;
+        if (!*link) continue;
+        {
+            struct DockLaunched *launch = *link;
+            *link = launch->next;
+            if (!launch_active(app,launch->path)) ended |= mark_items(app,launch->path,0);
+            launch_free(launch);
+        }
+    }
+    return ended;
+}
+
+int launch_open(App *app)
+{
+    app->launch_port = CreateMsgPort();
+    return app->launch_port != NULL;
+}
+
+/* The programs' code is in the dock's memory until they reply: wait for
+   every one. The dock's windows are already closed. */
+void launch_close(App *app)
+{
+    if (!app->launch_port) return;
+    while (app->launched) {
+        WaitPort(app->launch_port);
+        launch_reap(app);
+    }
+    DeleteMsgPort(app->launch_port);
+    app->launch_port = NULL;
+}

@@ -636,30 +636,36 @@ list; GetProgramList and GetOpenDrawerList are unsupported. Its ARexx port is
 DOPUS.1, and `lister new <path>` opens a drawer.
 
 Plan (ApolloOS keeps today's path unchanged):
-- [ ] 1. caps: `dopus` (FindPort "DOPUS.1"), printed by --caps; test rows.
-- [ ] 2. src/amiga_launch.c: a Workbench-style launch for tools and projects,
-      used when there is no WORKBENCH port (or with the hidden test option
-      --self-launch).
+- [x] 1. caps: `dopus` (FindPort "DOPUS.1"), printed by --caps; test rows.
+- [x] 2. src/amiga_launch.c: a Workbench-style launch for tools and projects,
+      used when there is no WORKBENCH port (or with --self-launch).
       - Icon via GetIconTagList (DefIcons fallback). WBTOOL runs the path;
         WBPROJECT runs its default tool with the document as argument 1.
-      - A bare default tool name is searched in the directory of the
-        project, then the WBCTRLA_DuplicateSearchPath list (Workbench or
-        DOpus), then C:.
-      - LoadSeg, CreateNewProc with the icon's stack (at least 4096, rounded
-        to 4), TOOLPRI, home and current directory = the program's
-        directory; PutMsg a WBStartup with locks for every argument.
-      - Tooltype CLI, or a file with the script bit: SystemTags,
-        asynchronous, output to NIL:.
-      - The reply comes to a dock port in the event loop wait mask: then
-        UnLoadSeg, unlock and free. The pin is shown running until then.
-      - On quit the dock closes its windows first and then waits for the
-        replies of programs it started (their code must stay loaded).
+      - A bare default tool name is searched next to the project, then in
+        the WBCTRLA_DuplicateSearchPath list (Workbench or DOpus), then C:,
+        SYS:Utilities, SYS:Tools, SYS:System.
+      - LoadSeg, CreateNewProc with the larger icon stack (at least 4096),
+        TOOLPRI, home and current directory = the tool's drawer; a WBStartup
+        with a lock per argument. No CLI tooltype or script support: plain
+        Workbench 3.x has neither.
+      - Replies come to launch_port in the event loop; the pin shows a dot
+        (RUNNING_SELF) until then. On quit the dock closes its windows and
+        waits for the programs it started.
+      Vampire, ApolloOS, --snapshot --self-launch: Calculator and Scout
+      started (Calculator pri 0; ApolloOS gives every process 40960 bytes
+      of stack, so the icon stack is not visible there); RiVA.guide opened
+      through its default tool; RAM:test.txt (DefIcons, no .info) opened in
+      Editor; dots on while running, off when closed; the drawer pin shows
+      "Could not open / ApolloOS:Utilities / object is not of required
+      type"; Ctrl-C with two programs running closed the dock window and the
+      process ended once both were closed. Graphics memory back to the
+      value before the test.
 - [ ] 3. Drawers and disks without Workbench, through ARexx to DOPUS.1:
       open with `lister new "<path>"`; the status poll reads open drawers
       with `lister query all` and `lister query <handle> path` (dots), and
       Close sends `lister close <handle>`. Scalos waits until someone can
       check its ARexx interface.
-- [ ] 4. The failure text says "Could not open" plus path and reason, not
+- [x] 4. The failure text says "Could not open" plus path and reason, not
       "Workbench".
 - [ ] 5. Verify on the Vampire with --self-launch: tool, tool with a large
       stack (Status in a Shell), project with .info, DefIcons document, a

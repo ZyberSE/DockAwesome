@@ -906,6 +906,7 @@ int program_poll_result(App *app, int *recreate)
         pin = pin_index(app,poll->pins[i].pin_id);
         if (pin < 0) continue;
         running = poll->pins[i].running || poll->pins[i].attributed;
+        if (launch_active(app,app->items[pin].path)) running |= RUNNING_SELF;
         app->items[pin].owner = running ? poll->pins[i].owner : NULL;
         if (poll->pins[i].kind == PIN_DOCUMENT)
             strcpy(app->items[pin].title_path,poll->pins[i].title_path);

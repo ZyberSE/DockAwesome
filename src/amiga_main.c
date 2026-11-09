@@ -1460,9 +1460,19 @@ static void record_launch(App *app, uint32_t pin_id)
     app->launches[app->launch_count++].at = profile_clock();
 }
 
-/* Opens a pin through Workbench. A failure names the path and the reason
-   dos reports, so reports from other Workbench setups say what failed. */
-static int launch_pin(const char *path)
+static int workbench_running(void)
+{
+    int running;
+    Forbid();
+    running = FindPort((STRPTR)"WORKBENCH") != NULL;
+    Permit();
+    return running;
+}
+
+/* Opens a pin through Workbench, or starts it the way Workbench would when
+   another desktop (Directory Opus on AmiKit) runs instead. A failure names
+   the path and the reason dos reports. */
+static int launch_pin(App *app, const char *path)
 {
     LONG default_icon = FALSE, error = 0;
     struct TagItem get[] = {
@@ -1470,9 +1480,14 @@ static int launch_pin(const char *path)
         { ICONGETA_IsDefaultIcon, (ULONG)&default_icon },
         { TAG_DONE, 0 }
     };
-    struct DiskObject *icon = GetIconTagList((STRPTR)path,get);
+    struct DiskObject *icon;
     int opened;
-    if (icon && default_icon && icon->do_Type == WBPROJECT &&
+    if (app->self_launch || !workbench_running()) {
+        opened = launch_object(app,path,&error);
+        icon = NULL;
+    } else if (!(icon = GetIconTagList((STRPTR)path,get))) {
+        if (!(opened = OpenWorkbenchObjectA((STRPTR)path,NULL))) error = IoErr();
+    } else if (default_icon && icon->do_Type == WBPROJECT &&
         icon->do_DefaultTool && icon->do_DefaultTool[0]) {
         /* A document with a DefIcons image has no .info on disk. Pass its
            actual default tool the parent lock and name as a Workbench arg. */
@@ -1493,7 +1508,7 @@ static int launch_pin(const char *path)
         char text[PATH_CAP+128], why[96];
         why[0] = 0;
         if (error) Fault(error,NULL,(STRPTR)why,sizeof(why));
-        snprintf(text,sizeof(text),"Workbench could not open\n%s%s%s",path,why[0] ? "\n" : "",why);
+        snprintf(text,sizeof(text),"Could not open\n%s%s%s",path,why[0] ? "\n" : "",why);
         message(text);
     }
     return opened;
@@ -1580,7 +1595,7 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
         if (item->stack && app->stack_close_press) dock_ui_dismiss_popup(app->ui);
         else if (item->stack) open_stack_view(app,index);
         else if (!focused && !item->temporary) {
-            if (launch_pin(item->path)) {
+            if (launch_pin(app,item->path)) {
                 record_launch(app,item->pin_id);
                 status_changed(app);
             }
@@ -1698,7 +1713,7 @@ static void shell_menu_action(App *app, int action)
     } else if (action == DOCK_UI_QUIT_SHELL) {
         if (quit_shell_window(app)) status_changed(app);
         else message("Could not close the selected Shell.");
-    } else if (launch_pin(app->items[index].path)) status_changed(app);
+    } else if (launch_pin(app,app->items[index].path)) status_changed(app);
 }
 
 static int displayed_scale(const App *app)
@@ -1840,6 +1855,7 @@ static __attribute__((noinline)) void event_loop(App *app)
             (app->live_port ? (1UL<<app->live_port->mp_SigBit) : 0) |
             (app->vblank_open ? app->vblank.mask : 0) |
             (app->program_replies ? (1UL<<app->program_replies->mp_SigBit) : 0) |
+            (app->launch_port ? (1UL<<app->launch_port->mp_SigBit) : 0) |
             (app->status_notify ? (1UL<<app->status_notify_bit) : 0) |
             app->input_context.signal | dock_ui_signal_mask(app->ui) | SIGBREAKF_CTRL_C);
         struct IntuiMessage *msg;
@@ -1848,6 +1864,7 @@ static __attribute__((noinline)) void event_loop(App *app)
         int dismiss_popup;
         ++app->stats.wakes; app->gesture_redraw = 0;
         if (signals & SIGBREAKF_CTRL_C) break;
+        if (launch_reap(app)) { redraw = 1; status_changed(app); }
         if ((signals & workbench) && (workbench_notify_poll(app) || app->workbench_closed)) {
             if (app->workbench_closed) continue;
             if (!full_frame(app)) break;
@@ -1881,7 +1898,7 @@ static __attribute__((noinline)) void event_loop(App *app)
                 int index = pin_index(app,app->menu_pin_id);
                 if (index >= 0 && app->items[index].stack) open_stack_view(app,index);
             } else if (action.type == DOCK_UI_OPEN_PATH) {
-                if (launch_pin(action.path)) status_changed(app);
+                if (launch_pin(app,action.path)) status_changed(app);
             }
             else if (action.type == DOCK_UI_KEEP_ITEM) keep_menu_item(app);
             else if (action.type >= DOCK_UI_NEW_SHELL && action.type <= DOCK_UI_QUIT_SHELL)
@@ -2099,7 +2116,7 @@ static void usage(void)
          "            [--snapshot | --opaque | --pip] [--ammx] [--profile]\n"
          "            [--pip-dump prefix] [--pip-x-offset n] [--pip-y-offset n]\n"
          "            [--bench-sweep speed] [--damage-check] [--no-vsync]\n"
-         "            [Workbench paths...] [--version] [--caps]\n"
+         "            [--self-launch] [Workbench paths...] [--version] [--caps]\n"
          "Drop Workbench icons to pin them. Click a pin to open it.\n"
          "Drag to reorder. Drag out or press Delete to remove a pin.\n"
          "R refreshes the background. Esc or Ctrl-C quits.\n"
@@ -2113,6 +2130,8 @@ static void usage(void)
          "frame, prints the profile and exits. --damage-check compares every\n"
          "frame with a full composition and PiP conversion and reports mismatches.\n"
          "--no-vsync paces zoom animation with the 20 ms timer instead of the display.\n"
+         "--self-launch starts pins the way Workbench does without asking it, as\n"
+         "the dock does when another desktop replaces Workbench.\n"
          "--caps prints the probed CPU, chipset and OS features and the chosen\n"
          "backend, then exits. Include it in bug reports.");
 }
@@ -2192,6 +2211,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--profile")) app->profile = 1;
         else if (!strcmp(argv[i], "--damage-check")) app->damage_check = app->profile = 1;
         else if (!strcmp(argv[i], "--no-vsync")) app->no_vsync = 1;
+        else if (!strcmp(argv[i], "--self-launch")) app->self_launch = 1;
         else if (!strcmp(argv[i], "--bench-sweep")) {
             app->bench_speed = i+1 < argc ? bounded_option(argv[++i],1,64) : INT_MAX;
             if (app->bench_speed == INT_MAX) { puts("--bench-sweep needs a speed from 1 to 64."); free(app); return 20; }
@@ -2313,6 +2333,7 @@ int main(int argc, char **argv)
             app->priority_changed = 1;
         }
     }
+    launch_open(app);
     program_poll_open(app);
     workbench_notify_open(app);
     if (app->bench_speed) bench_sweep(app);
@@ -2335,6 +2356,7 @@ done:
     profile_report(app);
     profile_close(app);
     close_surface(app);
+    launch_close(app);
     if (app->drop_port) {
         /* The AppWindow is gone. Reply to drops that were never handled. */
         struct Message *msg;

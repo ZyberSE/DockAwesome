@@ -1,4 +1,5 @@
 #include "dock_renderer.h"
+#include "dock_pixel.h"
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -165,14 +166,9 @@ DockRect dock_rgb565_refresh(unsigned char *cache, const unsigned char *source,
     return box;
 }
 
-static int clamp_int(int64_t v)
-{
-    return v < INT_MIN ? INT_MIN : v > INT_MAX ? INT_MAX : (int)v;
-}
-
 static DockRect image_rect(const DockImage *image, int x, int y)
 {
-    DockRect r = {x, y, clamp_int((int64_t)x+image->width), clamp_int((int64_t)y+image->height)};
+    DockRect r = {x, y, dock_saturate_int((int64_t)x+image->width), dock_saturate_int((int64_t)y+image->height)};
     return r;
 }
 
@@ -183,19 +179,13 @@ static int same_settings(const DockSettings *a, const DockSettings *b)
         a->end_gap == b->end_gap && a->edge_padding == b->edge_padding;
 }
 
-/* The image a placement draws, or NULL when its level has none. */
-static const DockImage *level_image(const DockCache *icon, int level)
-{
-    return icon && level >= 0 && level < DOCK_MAX_LEVELS && level < icon->levels ? &icon->image[level] : NULL;
-}
-
 /* Long-axis span [a,b) across the plate's cross extent. */
 static void add_span(DockDamage *d, int bottom, const DockRect *panel, int64_t a, int64_t b,
                      int width, int height)
 {
     DockRect r;
-    if (bottom) r = (DockRect){clamp_int(a), panel->top, clamp_int(b), panel->bottom};
-    else r = (DockRect){panel->left, clamp_int(a), panel->right, clamp_int(b)};
+    if (bottom) r = (DockRect){dock_saturate_int(a), panel->top, dock_saturate_int(b), panel->bottom};
+    else r = (DockRect){panel->left, dock_saturate_int(a), panel->right, dock_saturate_int(b)};
     dock_damage_add(d, r, width, height);
 }
 

@@ -58,8 +58,8 @@ $(AMIGA_OUTPUT): $(AMIGA_OBJECTS) tools/build-version.py Makefile
 	"$(AMIGA_CC)" $(AMIGA_INCLUDES) $(AMIGA_FLAGS) $(CPU_FLAGS) -c "$(AMIGA_OBJDIR)/build_version.c" -o "$(AMIGA_OBJDIR)/build_version.o"
 	"$(AMIGA_CC)" $(CPU_FLAGS) -noixemul -Wl,-u,___stkinit $(AMIGA_OBJECTS) "$(AMIGA_OBJDIR)/build_version.o" -o "$@"
 
-HOST_CORE := src/dock_core.c src/dock_renderer.c src/dock_geometry.c src/dock_interaction.c
-HOST_HEADERS := include/dock_core.h include/dock_renderer.h include/dock_geometry.h include/dock_interaction.h
+HOST_CORE := src/dock_core.c src/dock_compose.c src/dock_renderer.c src/dock_geometry.c src/dock_interaction.c
+HOST_HEADERS := include/dock_core.h include/dock_compose.h include/dock_renderer.h include/dock_geometry.h include/dock_interaction.h src/dock_pixel.h
 
 SANITIZE := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
 HOST_TESTS := build/test_core build/test_interaction build/test_geometry build/test_prefs build/test_profile

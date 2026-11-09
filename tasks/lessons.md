@@ -131,6 +131,9 @@
 - Benchmark cache builds with the real decoded pins and live settings. A
   synthetic icon overstated translucent pixels and hid where time went.
 - 64-bit math in per-tap code becomes library calls on the 68k.
+- When moving code to another file, diff the m68k disassembly per function.
+  GCC had inferred that a same-file callee was pure; across files it
+  reloaded fields after the call until the declaration said so.
 - Give delegated native fixes an independent review before deploying.
   Fixes for blocking and bounded waits can move the risk to exit time:
   never exit while the system can still signal the task or call our code.

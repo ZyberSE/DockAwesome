@@ -66,6 +66,19 @@ static void test_normalize(void)
     assert(!dock_cache_build(&cache, &source, &s));
 }
 
+/* dock_clamp tests low first; with low 0 it is the old clip(v, limit),
+   which returns limit for any v >= 0 when limit < 0. */
+static void test_clamp_helpers(void)
+{
+    assert(dock_clamp(-5, 0, 10) == 0 && dock_clamp(5, 0, 10) == 5 && dock_clamp(15, 0, 10) == 10);
+    assert(dock_clamp(-1, 0, -1) == 0 && dock_clamp(0, 0, -1) == -1 && dock_clamp(7, 0, -1) == -1);
+    assert(dock_clamp(3, 5, 2) == 5 && dock_clamp(9, 5, 2) == 2);
+    assert(dock_clamp(INT_MIN, INT_MIN, INT_MAX) == INT_MIN && dock_clamp(INT_MAX, 0, INT_MAX) == INT_MAX);
+    assert(dock_saturate_int((int64_t)INT_MAX+1) == INT_MAX && dock_saturate_int((int64_t)INT_MIN-1) == INT_MIN);
+    assert(dock_saturate_int(INT64_MAX) == INT_MAX && dock_saturate_int(INT64_MIN) == INT_MIN);
+    assert(dock_saturate_int(-42) == -42 && dock_saturate_int(INT_MAX) == INT_MAX);
+}
+
 static void test_image_opaque_at(void)
 {
     unsigned char px[3*2*4] = {0};
@@ -2087,7 +2100,7 @@ static void test_damage_fuzz(void)
 int main(void)
 {
     DockSettings defaults = dock_settings_default();
-    test_normalize(); test_image_opaque_at(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_animation_no_overlap(); test_layout(); test_blend();
+    test_normalize(); test_clamp_helpers(); test_image_opaque_at(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_animation_no_overlap(); test_layout(); test_blend();
     test_mix(); test_pressed_artwork(); test_side_panel_coverage(); test_reorder(); test_renderer();
     test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build(); test_scaled_fill(); test_icon_runs();
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();

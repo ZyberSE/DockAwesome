@@ -1,4 +1,5 @@
 #include "amiga_ui.h"
+#include "dock_compose.h"
 #include "amiga_display.h"
 #include "amiga_font_aa.h"
 #include "about_font.h"
@@ -201,11 +202,6 @@ struct DockUI {
     int window_shapes, popup_rgb, showing_about;
     UWORD popup_pen[MENU_COLORS];
 };
-
-static int clamp(int value, int low, int high)
-{
-    return value < low ? low : (value > high ? high : value);
-}
 
 static int text_length32(struct RastPort *rp, const char *text)
 {
@@ -617,9 +613,9 @@ static void popup_inner_span(const FolderView *folder, int width, int height, in
     int above_lo, above_hi, below_lo, below_hi;
     popup_span(folder,width,height,radius,row ? row-1 : row,&above_lo,&above_hi);
     popup_span(folder,width,height,radius,row+1 < height ? row+1 : row,&below_lo,&below_hi);
-    *inner_lo = clamp(above_lo,lo+1,hi);
+    *inner_lo = dock_clamp(above_lo,lo+1,hi);
     if (*inner_lo < below_lo) *inner_lo = below_lo;
-    *inner_hi = clamp(above_hi,lo,hi-1);
+    *inner_hi = dock_clamp(above_hi,lo,hi-1);
     if (*inner_hi > below_hi) *inner_hi = below_hi;
     if (!row || row+1 == height || *inner_hi < *inner_lo) *inner_lo = *inner_hi = lo;
 }
@@ -974,7 +970,7 @@ static void fill_arrow_part(struct RastPort *rp, int x, int y, int radius,
 
 static void folder_open_glyph(DockUI *ui, struct RastPort *rp, int x, int y, int radius)
 {
-    int thickness = clamp((radius+6)/13,1,radius), inset;
+    int thickness = dock_clamp((radius+6)/13,1,radius), inset;
     popup_color(ui,rp,FOLDER_MUTED);
     for (inset = 0; inset < thickness; ++inset)
         DrawEllipse(rp,x,y,radius-inset,radius-inset);
@@ -1021,7 +1017,7 @@ static void folder_open_glyph_aa(DockImage *target, int cx, int cy, int radius, 
     unsigned int red = (color>>16)&255, green = (color>>8)&255, blue = color&255;
     /* The ring: one native pixel plus half a pixel wide, so it keeps its
        weight once antialiased. Radii and positions in 1/16 px. */
-    int thickness = clamp((radius+6)/13,1,radius);
+    int thickness = dock_clamp((radius+6)/13,1,radius);
     int outer = radius*16+8, inner = outer-thickness*16-8;
     unsigned char covered[2*DOCK_MAX_ICON_SIZE+4];
     int x, y, size = 2*radius+3;
@@ -1663,12 +1659,12 @@ static int label_position(const DockUI *ui, DockEdge edge, const DockRect *ancho
 {
     int bar = ui->screen->BarHeight+2;
     if (edge == DOCK_EDGE_BOTTOM) {
-        *left = clamp((anchor->left+anchor->right-width)/2,LABEL_MARGIN,
+        *left = dock_clamp((anchor->left+anchor->right-width)/2,LABEL_MARGIN,
             ui->screen->Width-width-LABEL_MARGIN);
         *top = anchor->top-LABEL_GAP-height;
     } else {
         *left = edge == DOCK_EDGE_LEFT ? anchor->right+LABEL_GAP : anchor->left-LABEL_GAP-width;
-        *top = clamp((anchor->top+anchor->bottom-height)/2,bar,
+        *top = dock_clamp((anchor->top+anchor->bottom-height)/2,bar,
             ui->screen->Height-height-LABEL_MARGIN);
     }
     return *left >= LABEL_MARGIN && *left+width <= ui->screen->Width-LABEL_MARGIN &&
@@ -1874,7 +1870,7 @@ int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const 
     tip = ui->window_shapes && edge == DOCK_EDGE_BOTTOM ? LABEL_TIP : 0;
     height = body+tip;
     if (!label_position(ui,edge,anchor,width,height,&ui->label_left,&ui->label_top)) return 0;
-    tip_x = clamp((anchor->left+anchor->right)/2-ui->label_left,body/2,width-body/2-1);
+    tip_x = dock_clamp((anchor->left+anchor->right)/2-ui->label_left,body/2,width-body/2-1);
     outer = malloc((size_t)width*height*2);
     if (!outer) return 0;
     inner = outer+(size_t)width*height;
@@ -1998,8 +1994,8 @@ int dock_ui_open_popup(DockUI *ui, DockEdge edge, int anchor_x, int anchor_y,
         left = edge == DOCK_EDGE_LEFT ? anchor_x+POINTER_GAP : anchor_x-width-POINTER_GAP;
         top = anchor_y-3-ui->popup_row/2;
     }
-    left = clamp(left, 0, ui->screen->Width-width);
-    top = clamp(top, screen_top, ui->screen->Height-height);
+    left = dock_clamp(left, 0, ui->screen->Width-width);
+    top = dock_clamp(top, screen_top, ui->screen->Height-height);
     /* A native Dock is part of the screen bitmap, unlike the PiP overlay. */
     covers_native_dock = window_bounds(native_dock,&dock) &&
         left < dock.right && left+width > dock.left && top < dock.bottom && top+height > dock.top;
@@ -2030,18 +2026,18 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
     strcpy(next.path,path);
     InitRastPort(&measure);
     SetFont(&measure,folder_font(ui));
-    next.pad = clamp((icon+2)/5,6,24);
-    next.label_gap = clamp((icon+11)/22,2,8);
+    next.pad = dock_clamp((icon+2)/5,6,24);
+    next.label_gap = dock_clamp((icon+11)/22,2,8);
     next.cell_width = (icon*246+87)/174;
     text_width = text_length32(&measure,"Workbench 0")+6;
     if (next.cell_width < text_width) next.cell_width = text_width;
     next.action_wrap = text_length32(&measure,"Open in Workbench")+6 > next.cell_width;
-    next.cell_height = icon+next.label_gap+font_height+clamp(icon/6,4,16);
-    next.header = control+clamp(icon/5,8,22);
+    next.cell_height = icon+next.label_gap+font_height+dock_clamp(icon/6,4,16);
+    next.header = control+dock_clamp(icon/5,8,22);
     next.footer = control+8;
     extra_bottom = (next.action_wrap ? font_height : 0)+next.pad;
-    next.cols = clamp((max_width-2*next.pad)/next.cell_width,0,FOLDER_COLS);
-    rows = clamp((max_height-next.header-next.footer-extra_bottom)/next.cell_height,0,FOLDER_ROWS);
+    next.cols = dock_clamp((max_width-2*next.pad)/next.cell_width,0,FOLDER_COLS);
+    rows = dock_clamp((max_height-next.header-next.footer-extra_bottom)/next.cell_height,0,FOLDER_ROWS);
     if (!next.cols || !rows) return 0;
     folder_stamp(anchor.profile && entrance,1);
     next.read_ok = amiga_folder_read(path,&next.entries,&next.count);
@@ -2063,15 +2059,15 @@ static int show_folder(DockUI *ui, FolderAnchor anchor, const char *path, size_t
     next.body_width = width;
     next.body_height = height;
     if (anchor.edge == DOCK_EDGE_BOTTOM) {
-        left = clamp(anchor.x-width/2,0,ui->screen->Width-width);
+        left = dock_clamp(anchor.x-width/2,0,ui->screen->Width-width);
         top = anchor.y-GAP-height;
-        next.tip = clamp(anchor.x-left,POPUP_RADIUS+FOLDER_TIP_HALF,
+        next.tip = dock_clamp(anchor.x-left,POPUP_RADIUS+FOLDER_TIP_HALF,
             width-POPUP_RADIUS-FOLDER_TIP_HALF-1);
         height += tip_size;
     } else {
         left = anchor.edge == DOCK_EDGE_LEFT ? anchor.x+GAP : anchor.x-GAP-width;
-        top = clamp(anchor.y-height/2,screen_top,ui->screen->Height-height);
-        next.tip = clamp(anchor.y-top,POPUP_RADIUS+FOLDER_TIP_HALF,
+        top = dock_clamp(anchor.y-height/2,screen_top,ui->screen->Height-height);
+        next.tip = dock_clamp(anchor.y-top,POPUP_RADIUS+FOLDER_TIP_HALF,
             height-POPUP_RADIUS-FOLDER_TIP_HALF-1);
         if (anchor.edge == DOCK_EDGE_LEFT) {
             left -= tip_size;
@@ -2224,8 +2220,8 @@ int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial)
     close_popup(ui,0);
     s = &ui->settings;
     ui->draft = *initial;
-    ui->draft.size = clamp(initial->size,DOCK_MIN_ICON_SIZE,DOCK_MAX_ICON_SIZE);
-    ui->draft.scale_percent = clamp(initial->scale_percent,DOCK_SCALE_ONE,DOCK_MAX_SCALE);
+    ui->draft.size = dock_clamp(initial->size,DOCK_MIN_ICON_SIZE,DOCK_MAX_ICON_SIZE);
+    ui->draft.scale_percent = dock_clamp(initial->scale_percent,DOCK_SCALE_ONE,DOCK_MAX_SCALE);
     if (initial->edge != DOCK_EDGE_LEFT && initial->edge != DOCK_EDGE_RIGHT)
         ui->draft.edge = DOCK_EDGE_BOTTOM;
     s->cap[SIZE_SLIDER] = ui->draft.size > SIZE_SLIDER_MAX ? ui->draft.size : SIZE_SLIDER_MAX;
@@ -2629,7 +2625,7 @@ static void update_slider(DockUI *ui, int slider, int value)
 {
     SettingsView *s = &ui->settings;
     int *setting = slider_value(ui,slider);
-    value = clamp(value,slider_min[slider],s->limit[slider]);
+    value = dock_clamp(value,slider_min[slider],s->limit[slider]);
     if (value == *setting) return;
     *setting = value;
     format_slider(s->value[slider],slider,value);

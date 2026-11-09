@@ -1,6 +1,7 @@
 #ifndef DOCK_CORE_H
 #define DOCK_CORE_H
 #include <stddef.h>
+#include <limits.h>
 #include <stdint.h>
 
 #define DOCK_MAX_ITEMS 32
@@ -10,13 +11,6 @@
 #define DOCK_SCALE_ONE 100
 #define DOCK_ICON_INSET 2
 #define DOCK_MAX_SCALE (DOCK_MAX_ICON_SIZE * DOCK_SCALE_ONE / DOCK_MIN_ICON_SIZE)
-#define DOCK_PANEL_MAX_RADIUS 80
-/* Zero-initialize before use. Reuse corner masks while the radius stays fixed. */
-typedef struct {
-    int radius;
-    unsigned char outer[DOCK_PANEL_MAX_RADIUS * DOCK_PANEL_MAX_RADIUS];
-    unsigned char inner[DOCK_PANEL_MAX_RADIUS * DOCK_PANEL_MAX_RADIUS];
-} DockPanelShape;
 /* Straight-alpha RGBA bytes, independent of host byte order. */
 typedef struct { int width, height; unsigned char *pixels; } DockImage;
 typedef struct {
@@ -51,6 +45,18 @@ typedef void (*DockKeyRGB565)(unsigned char *, const unsigned char *, unsigned l
 typedef int (*DockBytesEqual)(const unsigned char *, const unsigned char *, unsigned long);
 typedef void (*DockConvertRGB24)(unsigned char *, const unsigned char *, unsigned long);
 typedef void (*DockMixHalf)(unsigned char *, const unsigned char *, unsigned long);
+
+/* v limited to [INT_MIN, INT_MAX]. */
+static inline int dock_saturate_int(int64_t v)
+{
+    return v < INT_MIN ? INT_MIN : v > INT_MAX ? INT_MAX : (int)v;
+}
+/* low when v < low, else the smaller of v and high: low wins when
+   high < low. */
+static inline int dock_clamp(int v, int low, int high)
+{
+    return v < low ? low : v > high ? high : v;
+}
 
 DockSettings dock_settings_default(void);
 int dock_settings_valid(const DockSettings *s);
@@ -87,9 +93,6 @@ int dock_image_opaque_at(const DockImage *image, int x, int y);
 int dock_hover_contains(const DockSettings *s, const DockPlacement *p, int count,
                         int width, int height, int x, int y);
 int dock_reorder(void *items, size_t item_size, int count, int from, int to);
-/* Blend RGBA into an opaque destination and clip to its bounds. */
-void dock_blend(DockImage *dst, const DockImage *src, int x, int y);
-void dock_blend_masked(DockImage *dst, const DockImage *src, int x, int y, unsigned char *coverage);
 /* Packed RGBA->RGB24, no partial overlap, zero count permits null pointers. */
 void dock_rgba_to_rgb24_c(unsigned char *dst, const unsigned char *src, unsigned long pixels);
 /* Packed RGB24->opaque RGBA, with the same span/zero-count contract. */
@@ -114,18 +117,4 @@ void dock_mix_half_c(unsigned char *dst, const unsigned char *src, unsigned long
 #ifdef DOCK_AMMX
 void dock_mix_half_ammx(unsigned char *dst, const unsigned char *src, unsigned long pixels);
 #endif
-/* Canvas and backdrop use matching dimensions and opaque RGBA. The backdrop,
-   mix_half and shape cache are optional. Optional coverage holds one byte
-   per canvas pixel: the plate and visible artwork mark 255, all others 0.
-   A one-based pressed item darkens its artwork only; zero is normal.
-   edge is a DOCK_EDGE_* value; artwork remains upright. glass, when given
-   with the backdrop's size, keeps plate rows (the plate color mixed 50% with
-   the backdrop) between frames: a row is mixed once, then copied, until the
-   caller clears ready[] because the backdrop changed. */
-typedef struct { DockImage image; unsigned char *ready; } DockGlass;
-void dock_render_oriented_mask(DockImage *canvas, const DockImage *backdrop,
-                 const DockCache *const *icons, const DockPlacement *p, int count,
-                 const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
-                 unsigned char *coverage, int pressed_item, int edge, int center_panel,
-                 DockGlass *glass);
 #endif

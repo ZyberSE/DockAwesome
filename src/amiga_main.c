@@ -1489,9 +1489,12 @@ static int launch_pin(App *app, const char *path)
         { ICONGETA_IsDefaultIcon, (ULONG)&default_icon },
         { TAG_DONE, 0 }
     };
-    struct DiskObject *icon;
-    int opened;
-    if (self_launching(app)) {
+    struct DiskObject *icon = NULL;
+    int opened = launch_script(path,&error);
+    if (opened >= 0) {
+        /* A script without its own icon runs; Workbench would open it in
+           an editor through its default text icon. */
+    } else if (self_launching(app)) {
         opened = launch_object(app,path,&error);
         icon = NULL;
     } else if (!(icon = GetIconTagList((STRPTR)path,get))) {
@@ -1756,8 +1759,9 @@ static void open_menu(App *app, int x, int y, uint32_t pin_id)
             else if (item_window_action(app,item,WINDOW_CHECK))
                 action = item->kind == PIN_DOCUMENT ? DOCK_UI_CLOSE_ITEM : DOCK_UI_QUIT_ITEM;
         }
-        /* A pin with nothing to offer here (no WindowAction on AmigaOS 3.x)
-           shows the dock's own menu rather than ignoring the click. */
+        /* A pin with nothing to offer here (not running, or no window
+           with a close gadget) shows the dock's own menu rather than
+           ignoring the click. */
         if (!action && !can_keep && !stack) pin_id = 0;
     }
     reset_hover_label(app);

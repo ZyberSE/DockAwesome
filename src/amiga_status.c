@@ -558,6 +558,45 @@ static int window_call(struct Window *window, int call)
     return live;
 }
 
+/* AmigaOS 3.x has no WindowAction: post IDCMP_CLOSEWINDOW as the close
+   gadget would. The message is ours: wait up to a second for the reply,
+   and never free one that was not replied (the app may still reply, so its
+   port stays too). Intuition's CloseWindow replies messages still queued. */
+static int send_close_message(struct Window *window)
+{
+    struct MsgPort *reply = CreateMsgPort();
+    struct IntuiMessage *message;
+    ULONG lock;
+    int live, i, replied = 0;
+    if (!reply) return 0;
+    message = AllocVec(sizeof(struct ExtIntuiMessage),MEMF_PUBLIC|MEMF_CLEAR);
+    if (!message) { DeleteMsgPort(reply); return 0; }
+    message->ExecMessage.mn_Node.ln_Type = NT_MESSAGE;
+    message->ExecMessage.mn_ReplyPort = reply;
+    message->ExecMessage.mn_Length = sizeof(struct IntuiMessage);
+    message->Class = IDCMP_CLOSEWINDOW;
+    CurrentTime(&message->Seconds,&message->Micros);
+    lock = LockIBase(0);
+    Forbid();
+    live = window_listed(window) && window->UserPort && (window->IDCMPFlags & IDCMP_CLOSEWINDOW);
+    UnlockIBase(lock);
+    if (live) {
+        message->IDCMPWindow = window;
+        message->IAddress = window;
+        message->MouseX = window->MouseX;
+        message->MouseY = window->MouseY;
+        PutMsg(window->UserPort,&message->ExecMessage);
+    }
+    Permit();
+    if (!live) { FreeVec(message); DeleteMsgPort(reply); return 0; }
+    for (i = 0; i < 50 && !replied; ++i) {
+        if (GetMsg(reply)) replied = 1;
+        else Delay(1);
+    }
+    if (replied) { FreeVec(message); DeleteMsgPort(reply); }
+    return 1;
+}
+
 static void focus_window(struct Window *window)
 {
     if (window_call(window,WINDOW_CALL_SCREEN) && window_call(window,WINDOW_CALL_FRONT))
@@ -696,7 +735,6 @@ int item_window_action(const App *app, const Item *item, int action)
     struct Screen *screen;
     ULONG lock;
     int matches = 0;
-    if (action != WINDOW_FOCUS && !app->caps.window_action) return 0;
     if (item->owner) {
         /* The task known to show this item's window, whatever its name. */
     } else if (item->kind == PIN_PROGRAM) {
@@ -731,7 +769,10 @@ int item_window_action(const App *app, const Item *item, int action)
     Permit();
     /* Each call below revalidates the window before it runs. */
     if (found && action == WINDOW_FOCUS) focus_window(found);
-    else if (found && matches == 1 && action == WINDOW_CLOSE) window_call(found,WINDOW_CALL_CLOSE);
+    else if (found && matches == 1 && action == WINDOW_CLOSE) {
+        if (app->caps.window_action) window_call(found,WINDOW_CALL_CLOSE);
+        else send_close_message(found);
+    }
     return found && (action == WINDOW_FOCUS || matches == 1);
 }
 

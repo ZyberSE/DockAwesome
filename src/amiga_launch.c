@@ -213,7 +213,11 @@ static int shell_launch(const char *path, const struct DiskObject *icon, LONG *e
     LONG stack = icon_stack(icon), result;
     int fits;
     command[0] = 0;
-    if (has_tool_type(icon,"REXX")) {
+    if (!icon) {
+        /* A script without its own icon, as Coffin's WBDock runs them. */
+        strcpy(command,"Execute ");
+        fits = shell_quote(command,sizeof(command),path);
+    } else if (has_tool_type(icon,"REXX")) {
         /* RX runs a quoted argument as ARexx source, not as a file, so a
            one-line program calls the script by its full name. */
         char call[PATH_CAP*2+16] = "call '";
@@ -252,6 +256,44 @@ static int shell_launch(const char *path, const struct DiskObject *icon, LONG *e
     return 1;
 }
 
+/* A plain file without its own icon that is a script: it has the script
+   bit, or it is not a loadable program (no hunk header). Workbench would
+   give it a default text icon and open it in an editor; a dock entry such
+   as ShapeShifter's Launch or C:WOMyFiles means to run it. */
+static int script_without_icon(const char *path)
+{
+    char info[PATH_CAP+8];
+    struct FileInfoBlock *fib;
+    BPTR lock;
+    ULONG magic = 0;
+    int script = 0;
+    if (strlen(path)+6 > sizeof(info)) return 0;
+    sprintf(info,"%s.info",path);
+    if ((lock = Lock((STRPTR)info,ACCESS_READ))) { UnLock(lock); return 0; }
+    if (!(lock = Lock((STRPTR)path,ACCESS_READ))) return 0;
+    fib = AllocDosObject(DOS_FIB,NULL);
+    if (fib && Examine(lock,fib) && fib->fib_DirEntryType < 0) {
+        if (fib->fib_Protection & FIBF_SCRIPT) script = 1;
+        else if (fib->fib_Size > 0) {
+            BPTR file = OpenFromLock(lock);
+            if (file) {
+                lock = 0;
+                script = Read(file,&magic,4) == 4 ? magic != 0x000003f3UL : 1;
+                Close(file);
+            }
+        }
+    }
+    if (fib) FreeDosObject(DOS_FIB,fib);
+    if (lock) UnLock(lock);
+    return script;
+}
+
+int launch_script(const char *path, LONG *error)
+{
+    *error = 0;
+    return script_without_icon(path) ? shell_launch(path,NULL,error) : -1;
+}
+
 int launch_object(App *app, const char *path, LONG *error)
 {
     struct DockLaunched *launch;
@@ -262,6 +304,7 @@ int launch_object(App *app, const char *path, LONG *error)
     const char *pri;
     *error = 0;
     if (!app->launch_port) { *error = ERROR_NO_FREE_STORE; return 0; }
+    if (script_without_icon(path)) return shell_launch(path,NULL,error);
     if (!(launch = AllocVec(sizeof(*launch),MEMF_PUBLIC|MEMF_CLEAR))) { *error = ERROR_NO_FREE_STORE; return 0; }
     strncpy(launch->path,path,PATH_CAP-1);
     {

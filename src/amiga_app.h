@@ -558,6 +558,10 @@ InputHandlerCode apollo_console_close_handler(const App *app);
 /* amiga_launch.c: Workbench-style launches when Workbench is not running. */
 int launch_open(App *app);
 int launch_object(App *app, const char *path, LONG *error);
+/* A file without its own icon that is a script (script bit, or not a
+   loadable program) runs with Execute: 1 started, 0 failed (error set),
+   -1 when path is no such script. */
+int launch_script(const char *path, LONG *error);
 int launch_active(const App *app, const char *path);
 int launch_reap(App *app);
 void launch_close(App *app);

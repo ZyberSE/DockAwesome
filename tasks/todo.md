@@ -654,8 +654,11 @@ Plan (ApolloOS keeps today's path unchanged):
         UnLoadSeg, unlock and free. The pin is shown running until then.
       - On quit the dock closes its windows first and then waits for the
         replies of programs it started (their code must stay loaded).
-- [ ] 3. Drawers and disks without Workbench: ARexx `lister new "<path>"`
-      to DOPUS.1. Scalos waits until someone can check its ARexx interface.
+- [ ] 3. Drawers and disks without Workbench, through ARexx to DOPUS.1:
+      open with `lister new "<path>"`; the status poll reads open drawers
+      with `lister query all` and `lister query <handle> path` (dots), and
+      Close sends `lister close <handle>`. Scalos waits until someone can
+      check its ARexx interface.
 - [ ] 4. The failure text says "Could not open" plus path and reason, not
       "Workbench".
 - [ ] 5. Verify on the Vampire with --self-launch: tool, tool with a large
@@ -664,6 +667,6 @@ Plan (ApolloOS keeps today's path unchanged):
       started program runs, PiP sweep unchanged. Then a test build for the
       AmiKit user with --caps.
 
-Not in this change: running dots and Close for drawers under DOpus (no open
-drawer list); Workbench's program list under DOpus (dots come from our own
-launches and the window pass).
+Not possible under DOpus: a list of running programs. Its launch list is
+private (LibData.launch_list) and neither ARexx nor dopus5.library exposes
+it, so program dots come from our own launches and the window pass.

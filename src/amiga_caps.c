@@ -90,6 +90,7 @@ int amiga_caps_probe(DockCaps *caps, struct Screen *screen)
     Forbid();
     caps->workbench_port = FindPort((STRPTR)"WORKBENCH") != NULL;
     caps->scalos = FindPort((STRPTR)"SCALOS") != NULL;
+    caps->dopus = FindPort((STRPTR)"DOPUS.1") != NULL;
     Permit();
     amiga_caps_probe_screen(caps,screen);
     return 1;
@@ -131,6 +132,7 @@ void amiga_caps_print(const DockCaps *caps, const DockProfile *profile, int requ
     printf("  %-22s %d\n","screen_depth",caps->screen_depth);
     printf("  %-22s %s\n","workbench_port",yes_no(caps->workbench_port));
     printf("  %-22s %s\n","scalos",yes_no(caps->scalos));
+    printf("  %-22s %s\n","dopus",yes_no(caps->dopus));
     printf("Libraries\n");
     print_library("exec.library",&SysBase->LibNode);
     print_library("intuition.library",&IntuitionBase->LibNode);
@@ -138,7 +140,7 @@ void amiga_caps_print(const DockCaps *caps, const DockProfile *profile, int requ
     print_library("layers.library",LayersBase);
     print_library("cybergraphics.library",cyber);
     {
-        static const char *const desktop[] = { "workbench.library", "icon.library", "scalos.library" };
+        static const char *const desktop[] = { "workbench.library", "icon.library", "scalos.library", "dopus5.library" };
         unsigned int i;
         for (i = 0; i < sizeof(desktop)/sizeof(desktop[0]); ++i) {
             struct Library *library = OpenLibrary((STRPTR)desktop[i],0);

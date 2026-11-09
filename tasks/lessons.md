@@ -255,3 +255,7 @@
 ## Probe a capability by using it (2026-11-10)
 - On Coffin, rgb_rastport (graphics LVO table size) and alpha_text (cybergraphics opens as V51) both said yes, but RGB pens drew palette orange and BltTemplateAlpha drew nothing: an orange Folder Stack frame and an invisible menu text.
 - Rule: a capability that draws is probed by drawing one pixel into a bitmap like the screen's and reading it back.
+
+## Leave the user's dock running after a test (2026-11-10)
+- After a profiled test run I sent Break and asked the user to film the dock; it was not running ("Ser inte dockan").
+- Rule: every test that stops the dock ends with Run >NIL: of the normal command and a Status check, before any request to the user.

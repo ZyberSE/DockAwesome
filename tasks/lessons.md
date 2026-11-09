@@ -233,7 +233,8 @@
   dock finds the PiP2 lease taken and quits silently under Run >NIL:, so
   the old build kept running and the user tested it (2026-11-09).
 
-## Keep a second SAGA overlay on; don't toggle it (2026-11-09)
-- Filmed on Coffin at 60 fps: each time PiP1 was opened, closed or reconfigured (label shown, drag started, Remove pill switched) the dock in PiP2 showed a doubled image below itself for ~3 frames. Moves (position registers only) never did.
-- Rule: open an extra overlay once, show the colour key when idle, and change only pointer/position registers. Reopen only to grow.
-- Go through the user's video frame by frame (ffmpeg crop + tile at full 60 fps) before guessing; the 3 fps sheet hid the cause.
+## Prove a visual cause before building its fix (2026-11-09)
+- I blamed PiP1 on/off toggling for a doubled dock image seen in the user's video and built "PiP1 stays on". The next video showed the same doubling, so the cause was a guess.
+- What was ruled out on Coffin: compose/convert mismatch (--damage-check: 0/0), a dock image in the captured backdrop (--pip-dump source is clean).
+- Rule: when only the user can see the symptom, first confirm with them what exactly they mean (send a still from their own video), then change code.
+- Go through the user's video frame by frame (ffmpeg crop + tile at full 60 fps) before guessing; the 3 fps sheet hid detail.

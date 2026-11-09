@@ -1294,27 +1294,31 @@ static int compose_folder_scale(FolderView *f, DockMixHalf mix, int width, int h
         size_t offset = (size_t)y*width;
         const uint32_t *under = (const uint32_t *)f->motion_backdrop.pixels+offset;
         uint32_t *out = (uint32_t *)f->motion_out.pixels+offset;
-        int sy, lo, hi, w = box.right-box.left;
         const uint32_t *source;
-        memcpy(out+all.left,under+all.left,(size_t)(all.right-all.left)*4);
-        if (y < box.top || y >= box.bottom || !quarters) continue;
+        uint32_t *dst;
+        int sy, lo, hi, a, b, w = box.right-box.left;
+        if (y < box.top || y >= box.bottom || !quarters) {
+            memcpy(out+all.left,under+all.left,(size_t)(all.right-all.left)*4);
+            continue;
+        }
+        if (all.left < box.left) memcpy(out+all.left,under+all.left,(size_t)(box.left-all.left)*4);
+        if (box.right < all.right) memcpy(out+box.right,under+box.right,(size_t)(all.right-box.right)*4);
         sy = dock_clamp(ay+(y-ay)*256/scale,0,height-1);
         popup_span(f,width,height,POPUP_RADIUS,sy,&lo,&hi);
+        /* The columns sample left to right: [a,b) lies inside the outline. */
+        for (a = box.left; a < box.right && column[a] < lo; ++a) {}
+        for (b = box.right; b > a && column[b-1] >= hi; --b) {}
         source = (const uint32_t *)f->motion_frame.pixels+(size_t)sy*width;
-        for (x = box.left; x < box.right; ++x) {
-            int sx = column[x];
-            row_box[x] = sx < lo || sx >= hi ? under[x] : source[sx];
-        }
-        out += box.left; under += box.left;
-        if (quarters >= 3) memcpy(out,row_box+box.left,(size_t)w*4);
+        dst = quarters == 4 ? out : row_box;
+        if (a > box.left) memcpy(dst+box.left,under+box.left,(size_t)(a-box.left)*4);
+        for (x = a; x < b; ++x) dst[x] = source[column[x]];
+        if (b < box.right) memcpy(dst+b,under+b,(size_t)(box.right-b)*4);
         if (quarters == 4) continue;
-        if (quarters == 3) {
-            mix((unsigned char *)out,(const unsigned char *)under,(unsigned long)w);
-            mix((unsigned char *)out,(const unsigned char *)(row_box+box.left),(unsigned long)w);
-        } else {
-            mix((unsigned char *)out,(const unsigned char *)(row_box+box.left),(unsigned long)w);
-            if (quarters == 1) mix((unsigned char *)out,(const unsigned char *)under,(unsigned long)w);
-        }
+        out += box.left; under += box.left; dst += box.left;
+        memcpy(out,quarters == 3 ? dst : under,(size_t)w*4);
+        mix((unsigned char *)out,(const unsigned char *)(quarters == 3 ? under : dst),(unsigned long)w);
+        if (quarters == 1) mix((unsigned char *)out,(const unsigned char *)under,(unsigned long)w);
+        if (quarters == 3) mix((unsigned char *)out,(const unsigned char *)dst,(unsigned long)w);
     }
     free(row_box);
     *present = all;
@@ -1578,9 +1582,11 @@ static int advance_folder_motion(DockUI *ui)
         return 1;
     }
     if (elapsed < f->motion_ticks) {
-        /* Cubic ease-out: most of the way in the first frames. */
-        unsigned int rest = 4096-elapsed*4096/f->motion_ticks;
-        int weight = 256-(int)(((rest*rest>>12)*rest>>12)>>4);
+        /* Quadratic ease-out for the size, linear for the fade: at 50 Hz
+           the motion has 6-7 frames, and a cubic curve spent most of the
+           way in the first one. */
+        int t = (int)(elapsed*256/f->motion_ticks), rest = 256-t;
+        int weight = 256-rest*rest/256;
         int scale = closing ? f->scale_from+(FOLDER_SCALE_START-f->scale_from)*weight/256 :
             FOLDER_SCALE_START+(256-FOLDER_SCALE_START)*weight/256;
         int source = f->motion_frame.pixels != NULL;
@@ -1589,7 +1595,7 @@ static int advance_folder_motion(DockUI *ui)
         /* Grow from the tip and fade in while opening; the reverse while
            closing. Without a box to scale, closing hides strips. */
         int composed_ok = source && compose_folder_scale(f,ui->mix_half ? ui->mix_half : dock_mix_half_c,
-            ui->popup->Width,ui->popup->Height,scale,(unsigned int)(closing ? 256-weight : weight),&rect);
+            ui->popup->Width,ui->popup->Height,scale,(unsigned int)(closing ? rest : t),&rect);
         if (!composed_ok && closing) {
             int target = f->reveal_from*(256-weight)/256;
             if (target < f->reveal_shown) f->reveal_shown = target;

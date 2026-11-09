@@ -516,9 +516,17 @@ static int pointer_inside(App *app, int *x, int *y)
     return inside;
 }
 
+/* The stack pin's morph follows the Folder Stack in quarter steps (and to
+   its ends): redrawing the dock every motion frame took the frame past
+   one 20 ms field on Coffin and halved the box's frame rate. */
+static int morph_due(const App *app, int morph)
+{
+    return morph != app->morph && (morph == 0 || morph == 256 || abs(morph-app->morph) >= 64);
+}
+
 int animation_needed(const App *app)
 {
-    if (app->morph != dock_ui_folder_progress(app->ui)) return 1;
+    if (morph_due(app,dock_ui_folder_progress(app->ui))) return 1;
     return (app->moving_item && app->held_icon.level != app->held_target.level) ||
         memcmp(row_placement(app), app->target, sizeof(*app->placement)*row_count(app)) != 0;
 }
@@ -594,7 +602,7 @@ static int animate_row(App *app)
     int morph = dock_ui_folder_progress(app->ui);
     int changed = dock_edge_animate(&app->settings, app->edge, &app->animation,
         row, app->target, row_count(app));
-    if (app->morph != morph) {
+    if (morph_due(app,morph)) {
         app->morph = morph;
         changed = 1;
     }

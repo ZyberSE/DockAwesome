@@ -1297,8 +1297,12 @@ static void draw(App *app)
     if (dragged >= 0 && !app->gesture.remove_armed) {
         int level = app->moving_item ? app->held_icon.level : app->placement[dragged].level;
         const DockImage *icon = &app->items[dragged].cache.image[level];
-        overlays[overlay_count++] = (DockOverlay){icon, app->gesture.x-icon->width/2,
-            app->gesture.y-icon->height/2};
+        int x = app->gesture.x-icon->width/2, y = app->gesture.y-icon->height/2;
+        /* With a preview window past the surface, its picture where the
+           window is: the two halves of the icon stay one picture. */
+        const DockImage *shown = amiga_drag_preview_icon(app->drag_preview,&x,&y);
+        if (shown) { icon = shown; x -= app->left; y -= app->top; }
+        overlays[overlay_count++] = (DockOverlay){icon, x, y};
     }
     app->renderer.overlays = overlays; app->renderer.overlay_count = overlay_count;
     dock_renderer_draw(&app->renderer, &app->canvas, (app->snapshot || app->pip_mode) ? &app->backdrop : NULL,
@@ -1699,22 +1703,23 @@ static int update_drag_preview(App *app)
         /* PiP1 is taken: the window preview below. */
     }
     if (inside) icon = NULL;
-    if (!icon || (app->drag_preview && shaped &&
-            (app->drag_preview_icon != icon || app->drag_preview_remove != gesture->remove_armed))) {
+    /* A shaped window cannot change its shape: it reopens when Remove
+       arms or disarms, not on each size change (that flickered). */
+    if (!icon || (app->drag_preview && shaped && app->drag_preview_remove != gesture->remove_armed)) {
         int closed = app->drag_preview != NULL;
         app->preview_attempt = 0;
         amiga_drag_preview_close(app->drag_preview); app->drag_preview = NULL;
         if (!icon) return closed;
     }
     if (app->drag_preview) {
-        amiga_drag_preview_move(app->drag_preview,x,y);
+        int moved = amiga_drag_preview_move(app->drag_preview,x,y);
         amiga_drag_preview_set_remove(app->drag_preview,gesture->remove_armed);
-        return 0;
+        return moved;
     }
     if (app->preview_attempt == gesture->token) return 0;
     app->preview_attempt = gesture->token;
     app->drag_preview = amiga_drag_preview_open(app->screen,icon,shaped,gesture->remove_armed,x,y);
-    app->drag_preview_icon = icon; app->drag_preview_remove = gesture->remove_armed;
+    app->drag_preview_remove = gesture->remove_armed;
     return app->drag_preview != NULL;
 }
 

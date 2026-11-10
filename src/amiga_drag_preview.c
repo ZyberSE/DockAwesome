@@ -153,19 +153,27 @@ static int save_under(AmigaDragPreview *p, int left, int top)
     return 1;
 }
 
-void amiga_drag_preview_move(AmigaDragPreview *p, int x, int y)
+int amiga_drag_preview_move(AmigaDragPreview *p, int x, int y)
 {
     int left, top;
-    if (!p) return;
+    if (!p) return 0;
     /* Intuition queues MoveWindow. Keep at most one move in flight. */
-    if (p->window->LeftEdge != p->left || p->window->TopEdge != p->top) return;
+    if (p->window->LeftEdge != p->left || p->window->TopEdge != p->top) return 0;
     position(p,x,y,&left,&top);
-    if (left == p->left && top == p->top) return;
-    if (!p->shaped && !save_under(p,left,top)) return;
+    if (left == p->left && top == p->top) return 0;
+    if (!p->shaped && !save_under(p,left,top)) return 0;
     MoveWindow(p->window,left-p->left,top-p->top);
     p->left = left; p->top = top;
     /* Smart Refresh carries this drawing along when the move lands. */
     if (!p->shaped) render(p);
+    return 1;
+}
+
+const DockImage *amiga_drag_preview_icon(const AmigaDragPreview *p, int *x, int *y)
+{
+    if (!p) return NULL;
+    *x = p->left+(p->width-p->icon.width)/2; *y = p->top;
+    return &p->icon;
 }
 
 void amiga_drag_preview_set_remove(AmigaDragPreview *p, int remove)

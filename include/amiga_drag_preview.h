@@ -15,7 +15,11 @@ AmigaDragPreview *amiga_drag_preview_open(struct Screen *screen, const DockImage
 /* Show or hide the "Remove" label (without shapes; a shaped preview is
    reopened instead). */
 void amiga_drag_preview_set_remove(AmigaDragPreview *preview, int remove);
-void amiga_drag_preview_move(AmigaDragPreview *preview, int pointer_x, int pointer_y);
+/* Returns 1 when the window moves (to where icon reports it). */
+int amiga_drag_preview_move(AmigaDragPreview *preview, int pointer_x, int pointer_y);
+/* The window's private copy of the icon and its top left on the screen
+   once the last move lands, for the dock to draw the same picture in step. */
+const DockImage *amiga_drag_preview_icon(const AmigaDragPreview *preview, int *x, int *y);
 int amiga_drag_preview_owns(const AmigaDragPreview *preview, const struct Window *window);
 void amiga_drag_preview_close(AmigaDragPreview *preview);
 #endif

@@ -834,3 +834,11 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
       present. Exit path reviewed, nothing found.
 - [ ] Run >file loses profile output on Coffin (use an Execute script).
 - [ ] Merge pip-os3 (user's call); push only when asked.
+- [x] Build 352 (PiP off at start and on Ctrl-Amiga-Amiga, --pip-off, menus
+      step aside only when they can reach the dock) installed on AmigaOS
+      3.2.3 and Coffin; rollbacks Disabled/DockAwesome-build344.old there.
+- [ ] ApolloOS: install build 352 on its next boot (it has 350).
+- [ ] With the user: reboot with Ctrl-Amiga-Amiga into another system and
+      check that no previous dock frame (or black box) shows at boot; offer
+      `DockAwesome --pip-off` early in S:User-Startup for other reboots.
+

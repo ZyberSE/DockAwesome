@@ -45,10 +45,19 @@ static size_t sidecar_base_length(const DockFolderEntry *entry)
     return length-5;
 }
 
-/* Icon files are not entries of their own. */
+/* Icon files are not entries of their own; their dates go with the entry. */
 static size_t drop_sidecars(DockFolderEntry *entries, size_t count)
 {
     size_t i, visible = 0;
+    for (i = 0; i < count; ++i) {
+        size_t length = sidecar_base_length(&entries[i]);
+        DockFolderEntry key, *entry;
+        if (!length) continue;
+        memcpy(key.name,entries[i].name,length);
+        key.name[length] = '\0';
+        entry = bsearch(&key,entries,count,sizeof(*entries),compare_names);
+        if (entry) { entry->stamp[2] = entries[i].stamp[0]; entry->stamp[3] = entries[i].stamp[1]; }
+    }
     for (i = 0; i < count; ++i) {
         if (!sidecar_base_length(&entries[i])) {
             if (visible != i) entries[visible] = entries[i];
@@ -116,6 +125,9 @@ static int read_folder(const char *path, DockFolderEntry **entries, size_t *coun
         }
         memcpy(result[used].name, name, length + 1);
         result[used].drawer = drawer;
+        result[used].stamp[0] = (unsigned long)fib->fib_Date.ds_Days;
+        result[used].stamp[1] = (unsigned long)fib->fib_Date.ds_Minute*3000+fib->fib_Date.ds_Tick;
+        result[used].stamp[2] = result[used].stamp[3] = 0;
         ++used;
     }
     ok = IoErr() == ERROR_NO_MORE_ENTRIES;

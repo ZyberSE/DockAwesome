@@ -332,6 +332,7 @@ static int prepare_stack(App *app, const char *path, const DockSettings *setting
     item->pin_id = new_pin_id(app);
     item->kind = PIN_DRAWER;
     item->stack = 1;
+    app->prefetch_pending = 1;
     return 1;
 }
 
@@ -724,7 +725,10 @@ static void animation_schedule(App *app)
 {
     int flash_pending = app->flash_pin_id && profile_clock() < app->flash_deadline;
     int fast = animation_needed(app) || flash_pending || dock_ui_folder_pending(app->ui);
-    ULONG delay = dock_ui_folder_frame_delay(app->ui);
+    /* Only Folder Stack icons to load: the next batch at once, not at the
+       next field (an icon takes 15-50 ms to read). */
+    int loading = dock_ui_folder_loading(app->ui) && !animation_needed(app) && !flash_pending;
+    ULONG delay = loading ? 1000 : dock_ui_folder_frame_delay(app->ui);
     if (!fast && !app->label_at) { animation_cancel(app); return; }
     if (fast && app->timer_pending && app->timer_label_only) animation_cancel(app);
     if (!app->timer_open || app->timer_pending || app->vblank.armed || app->timer_failed) return;
@@ -742,7 +746,7 @@ static void animation_schedule(App *app)
     }
     /* Zoom ticks and Folder Stack motion frames (timed, 4 ms requests)
        both follow the display. */
-    if (fast && delay <= 20000 && app->vblank_open && app->vblank_rate_ok && !app->no_vsync) {
+    if (fast && !loading && delay <= 20000 && app->vblank_open && app->vblank_rate_ok && !app->no_vsync) {
         /* One tick per display field. A field that passes before the read
            below only delays the tick by one field. */
         app->vblank.armed = 1;
@@ -1532,6 +1536,17 @@ static int launch_pin(App *app, const char *path)
     return opened;
 }
 
+/* dock_ui_prefetch_folder for the stack pin. */
+static int prefetch_stack_icons(App *app)
+{
+    int i;
+    for (i = 0; i < app->count; ++i)
+        if (app->items[i].stack)
+            return dock_ui_prefetch_folder(app->ui,app->items[i].path,app->settings.base_size,
+                read_folder_icon,app);
+    return 0;
+}
+
 static void open_stack_view(App *app, int index)
 {
     uint64_t started = app->profile ? profile_clock() : 0;
@@ -2143,6 +2158,10 @@ static __attribute__((noinline)) void event_loop(App *app)
         }
         due = live_due(app);
         if (due) program_poll_schedule(app);
+        /* A background poll while nothing moves and the pointer is off the
+           dock: read one more Folder Stack icon ahead of its opening. */
+        if (due && app->prefetch_pending && !app->active && !app->gesture.active && !animation_needed(app))
+            app->prefetch_pending = prefetch_stack_icons(app);
         /* The backend's background poll (PiP: live capture and drag image).
            Only a backend sets failed here; every other failure has already
            left the loop. */

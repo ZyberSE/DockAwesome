@@ -6,6 +6,9 @@
 typedef struct {
     char name[108];
     int drawer;
+    /* The entry's and its .info's dates (days, ticks in the day; zero when
+       there is no .info): an icon read for these is still current. */
+    unsigned long stamp[4];
 } DockFolderEntry;
 
 /* DOS errors fail instead of opening volume requesters that block the main task. */

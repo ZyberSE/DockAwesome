@@ -64,6 +64,13 @@ int dock_ui_folder_moving(const DockUI *ui);
 /* How far the Folder Stack box is out on screen: 0 (hidden) to 256 (open). */
 int dock_ui_folder_progress(const DockUI *ui);
 ULONG dock_ui_folder_frame_delay(const DockUI *ui);
+/* Only icons are left to load in the open Folder Stack: no motion. */
+int dock_ui_folder_loading(const DockUI *ui);
+/* Reads one more icon of path's first page into the icon cache, for a
+   Folder Stack that opens with its icons. Call while the dock is idle;
+   returns 1 while icons remain (or a popup is open). */
+int dock_ui_prefetch_folder(DockUI *ui, const char *path, int icon_size,
+    DockUIReadIcon read_icon, const void *context);
 int dock_ui_folder_step(DockUI *ui);
 void dock_ui_finish_folder_motion(DockUI *ui);
 /* The label is nonactivating and lives outside the visible Dock artwork. */

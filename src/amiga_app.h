@@ -350,6 +350,7 @@ typedef struct App {
     uint32_t drag_float_token;
     const DockImage *drag_float_icon; /* the cache image shown, to see a level change */
     uint32_t preview_attempt;
+    int prefetch_pending; /* the stack's icons are still being read ahead */
     int drag_preview_remove; /* drag_preview's Remove state when opened */
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;

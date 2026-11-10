@@ -122,6 +122,10 @@ typedef struct {
     int body_left, body_width, body_height, tip;
     int pad, label_gap, action_wrap;
     int next_icon, artwork_ready, needs_repaint;
+    /* --profile: the icons of this page, EClock ticks from the first load
+       to the last, and per icon read. */
+    ULONG fill_start, read_sum, read_max;
+    int read_count, cache_hits, fill_reported;
     int motion, motion_frames, handoff;
     /* Reveal from the tip side: pixels composed or shown along the axis
        away from the dock, those already on screen, and the extent at the
@@ -143,6 +147,24 @@ typedef struct {
     DockImage artwork;
     DockImage loaded[FOLDER_COLS*FOLDER_ROWS];
 } FolderView;
+
+/* Folder Stack icons as built, kept between openings: reading one takes
+   15-50 ms on ApolloOS (DefIcons and PNG icons), so a page of 23 took half
+   a second each time. An entry is current while the file's and its .info's
+   dates and the size match. */
+enum { FOLDER_ICON_CACHE = 160 };
+typedef struct {
+    char path[DOCK_PREFS_PATH_CAP];
+    unsigned long stamp[4];
+    DockImage icon;
+} FolderCachedIcon;
+/* dock_ui_prefetch_folder: the drawer's first page, and how far it got. */
+typedef struct {
+    char path[DOCK_PREFS_PATH_CAP];
+    int icon_size;
+    DockFolderEntry *entries;
+    size_t count, next;
+} FolderPrefetch;
 
 typedef struct {
     struct Gadget *slider[SLIDER_COUNT], *readout[SLIDER_COUNT], *position, *path;
@@ -199,6 +221,9 @@ struct DockUI {
     DockImage popup_glass;
     int glass_tint_shift; /* nonzero: popup_glass still holds the bare backdrop */
     FolderView folder;
+    FolderCachedIcon *icon_cache; /* FOLDER_ICON_CACHE entries, filled round robin */
+    int icon_cache_next;
+    FolderPrefetch prefetch;
     FolderReveal *folder_reveal;
     char folder_open_path[DOCK_PREFS_PATH_CAP];
     DockImage backdrop_carry;
@@ -561,6 +586,12 @@ void dock_ui_destroy(DockUI *ui)
     if (ui->folder_font) CloseFont(ui->folder_font);
     amiga_display_close(ui->label_display);
     free(ui->label_pixels);
+    free(ui->prefetch.entries);
+    if (ui->icon_cache) {
+        int i;
+        for (i = 0; i < FOLDER_ICON_CACHE; ++i) free(ui->icon_cache[i].icon.pixels);
+        free(ui->icon_cache);
+    }
     FreeScreenDrawInfo(ui->screen, ui->draw);
     free(ui);
 }
@@ -1572,6 +1603,8 @@ static void reset_folder_page(DockUI *ui)
 {
     FolderView *f = &ui->folder;
     f->next_icon = f->artwork_ready = f->needs_repaint = 0;
+    f->fill_start = f->read_sum = f->read_max = 0;
+    f->read_count = f->cache_hits = f->fill_reported = 0;
     free_folder_icons(f);
     if (f->motion == FOLDER_OPENING) {
         /* Start from the bare backdrop; the box grows out of the tip. */
@@ -1758,52 +1791,180 @@ int dock_ui_folder_pending(const DockUI *ui)
         (ui->popup && (f->motion || (f->count && f->next_icon < folder_visible_files(f))));
 }
 
+int dock_ui_folder_loading(const DockUI *ui)
+{
+    return ui && !ui->folder_reveal && !ui->folder.motion && dock_ui_folder_pending(ui);
+}
+
 ULONG dock_ui_folder_frame_delay(const DockUI *ui)
 {
     return ui->folder.motion && !ui->folder.handoff ? 4000 : 20000;
 }
 
-int dock_ui_folder_step(DockUI *ui)
+static FolderCachedIcon *cached_folder_icon(const DockUI *ui, const char *path,
+    const unsigned long *stamp, int size)
+{
+    int i;
+    for (i = 0; ui->icon_cache && i < FOLDER_ICON_CACHE; ++i) {
+        FolderCachedIcon *c = &ui->icon_cache[i];
+        if (c->icon.pixels && c->icon.width == size && !memcmp(c->stamp,stamp,sizeof(c->stamp)) &&
+            !strcmp(c->path,path)) return c;
+    }
+    return NULL;
+}
+
+static int copy_image(DockImage *out, const DockImage *in)
+{
+    size_t bytes = (size_t)in->width*in->height*4;
+    *out = (DockImage){in->width,in->height,malloc(bytes)};
+    if (!out->pixels) return 0;
+    memcpy(out->pixels,in->pixels,bytes);
+    return 1;
+}
+
+/* Keep a copy of a built icon, in place of an older one of the same path
+   or else the oldest. */
+static void cache_folder_icon(DockUI *ui, const char *path, const unsigned long *stamp,
+    const DockImage *icon)
+{
+    FolderCachedIcon *c = NULL;
+    int i;
+    if (!ui->icon_cache && !(ui->icon_cache = calloc(FOLDER_ICON_CACHE,sizeof(*ui->icon_cache))))
+        return;
+    for (i = 0; i < FOLDER_ICON_CACHE && !c; ++i)
+        if (ui->icon_cache[i].icon.pixels && !strcmp(ui->icon_cache[i].path,path)) c = &ui->icon_cache[i];
+    if (!c) {
+        c = &ui->icon_cache[ui->icon_cache_next];
+        ui->icon_cache_next = (ui->icon_cache_next+1)%FOLDER_ICON_CACHE;
+    }
+    free(c->icon.pixels);
+    c->icon = (DockImage){0};
+    if (strlen(path) >= sizeof(c->path) || !copy_image(&c->icon,icon)) return;
+    strcpy(c->path,path);
+    memcpy(c->stamp,stamp,sizeof(c->stamp));
+}
+
+/* Read and build an entry's icon at size and keep a copy. */
+static int read_folder_icon(DockUI *ui, const char *path, const unsigned long *stamp, int size,
+    DockUIReadIcon read_icon, const void *context, DockImage *icon)
+{
+    DockImage source = {0};
+    void *requesters = amiga_requesters_off();
+    int ok = read_icon(context,path,&source) && dock_icon_build(icon,&source,size);
+    amiga_requesters_restore(requesters);
+    free(source.pixels);
+    if (ok) cache_folder_icon(ui,path,stamp,icon);
+    return ok;
+}
+
+/* Load and show the page's next icon: from the cache while the entry's
+   dates match, else read and built (and kept). */
+static void load_folder_icon(DockUI *ui)
 {
     FolderView *f = &ui->folder;
     char path[DOCK_PREFS_PATH_CAP];
-    DockImage source = {0};
-    DockImage icon;
-    void *requesters;
-    int i, x, y, loaded;
-    size_t entry;
+    DockImage icon = {0};
+    const FolderCachedIcon *cached;
+    int i = f->next_icon++, size = f->anchor.icon_size, ok = 0;
+    const DockFolderEntry *entry = &f->entries[f->page*folder_page_size(f)+i];
+    struct EClockVal before, after;
+    strcpy(path,f->path);
+    if (!AddPart((STRPTR)path,(STRPTR)entry->name,sizeof(path))) return;
+    cached = cached_folder_icon(ui,path,entry->stamp,size);
+    if (cached) {
+        ok = copy_image(&icon,&cached->icon);
+        ++f->cache_hits;
+    } else {
+        if (f->anchor.profile) ReadEClock(&before);
+        ok = read_folder_icon(ui,path,entry->stamp,size,f->anchor.read_icon,f->anchor.context,&icon);
+        if (f->anchor.profile) {
+            ULONG ticks;
+            ReadEClock(&after);
+            ticks = after.ev_lo-before.ev_lo;
+            f->read_sum += ticks; ++f->read_count;
+            if (ticks > f->read_max) f->read_max = ticks;
+        }
+    }
+    if (!ok) return;
+    if (!f->artwork_ready && !prepare_folder_artwork(ui)) { free(icon.pixels); return; }
+    {
+        int x = folder_icon_left(f,i), y = folder_icon_top(f,i);
+        dock_blend(&f->artwork,&icon,x,y);
+        f->loaded[i] = icon;
+        if (!ui->popup_glass.pixels ||
+            !amiga_display_present_tile(ui->popup_display,ui->popup,&f->artwork,x,y,size,size))
+            f->needs_repaint = 1;
+    }
+}
+
+/* Icons load for up to this long per step (one at least), then the event
+   loop runs again; one icon per step took ~1 s for a page of 23. */
+enum { FOLDER_LOAD_BUDGET_US = 12000 };
+
+int dock_ui_folder_step(DockUI *ui)
+{
+    FolderView *f = &ui->folder;
+    struct EClockVal start, now;
+    ULONG hz, budget;
     if (ui->folder_reveal) {
-        struct EClockVal now;
         ReadEClock(&now);
         if ((LONG)(now.ev_lo-ui->folder_reveal->deadline) >= 0) finish_folder_reveal(ui,0);
         return 0;
     }
     if (!dock_ui_folder_pending(ui)) return 0;
     if (f->motion) return advance_folder_motion(ui);
-    i = f->next_icon++;
-    entry = f->page*folder_page_size(f)+i;
-    strcpy(path,f->path);
-    requesters = amiga_requesters_off();
-    loaded = AddPart((STRPTR)path,(STRPTR)f->entries[entry].name,sizeof(path)) &&
-        f->anchor.read_icon(f->anchor.context,path,&source);
-    amiga_requesters_restore(requesters);
-    if (loaded) {
-        int size = f->anchor.icon_size;
-        if ((f->artwork_ready || prepare_folder_artwork(ui)) && dock_icon_build(&icon,&source,size)) {
-            x = folder_icon_left(f,i);
-            y = folder_icon_top(f,i);
-            dock_blend(&f->artwork,&icon,x,y);
-            f->loaded[i] = icon;
-            if (!ui->popup_glass.pixels ||
-                !amiga_display_present_tile(ui->popup_display,ui->popup,&f->artwork,x,y,size,size))
-                f->needs_repaint = 1;
-        }
-    }
-    free(source.pixels);
-    if (f->needs_repaint && !dock_ui_folder_pending(ui)) {
+    hz = ReadEClock(&start);
+    budget = (ULONG)((uint64_t)hz*FOLDER_LOAD_BUDGET_US/1000000);
+    if (!f->next_icon) f->fill_start = start.ev_lo;
+    do {
+        load_folder_icon(ui);
+        ReadEClock(&now);
+    } while (f->next_icon < folder_visible_files(f) && now.ev_lo-start.ev_lo < budget);
+    if (dock_ui_folder_pending(ui)) return 0;
+    if (f->needs_repaint) {
         f->needs_repaint = 0;
         paint_folder(ui);
     }
+    if (f->anchor.profile && !f->fill_reported && hz) {
+        f->fill_reported = 1;
+        printf("Folder Stack icons: %d read, %d cached, in %lu us, read_us_avg=%lu read_us_max=%lu\n",
+            f->read_count,f->cache_hits,(unsigned long)((uint64_t)(now.ev_lo-f->fill_start)*1000000/hz),
+            (unsigned long)(f->read_count ? (uint64_t)f->read_sum*1000000/hz/f->read_count : 0),
+            (unsigned long)((uint64_t)f->read_max*1000000/hz));
+        fflush(stdout);
+    }
+    return 0;
+}
+
+int dock_ui_prefetch_folder(DockUI *ui, const char *path, int icon_size,
+    DockUIReadIcon read_icon, const void *context)
+{
+    FolderPrefetch *p;
+    if (!ui || !path[0] || strlen(path) >= sizeof(ui->prefetch.path)) return 0;
+    p = &ui->prefetch;
+    if (strcmp(p->path,path) || p->icon_size != icon_size) {
+        free(p->entries);
+        memset(p,0,sizeof(*p));
+        strcpy(p->path,path);
+        p->icon_size = icon_size;
+        if (!amiga_folder_read(path,&p->entries,&p->count)) { p->count = 0; return 0; }
+        if (p->count > FOLDER_COLS*FOLDER_ROWS) p->count = FOLDER_COLS*FOLDER_ROWS;
+    }
+    if (ui->popup) return p->next < p->count;
+    /* Entries already kept cost a compare; stop after one read. */
+    while (p->next < p->count) {
+        char entry_path[DOCK_PREFS_PATH_CAP];
+        const DockFolderEntry *entry = &p->entries[p->next++];
+        DockImage icon = {0};
+        strcpy(entry_path,path);
+        if (!AddPart((STRPTR)entry_path,(STRPTR)entry->name,sizeof(entry_path)) ||
+            cached_folder_icon(ui,entry_path,entry->stamp,icon_size)) continue;
+        read_folder_icon(ui,entry_path,entry->stamp,icon_size,read_icon,context,&icon);
+        free(icon.pixels);
+        break;
+    }
+    if (p->next < p->count) return 1;
+    free(p->entries); p->entries = NULL;
     return 0;
 }
 

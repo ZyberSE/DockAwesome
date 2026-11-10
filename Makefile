@@ -108,7 +108,7 @@ release:
 	$(RM) -r build/release
 	@mkdir -p build/release/DockAwesome
 	cp build/DockAwesome build/DockAwesome.info build/release/DockAwesome/
-	cp release/ReadMe.txt README.md build/release/DockAwesome/
+	cp release/ReadMe.txt README.md RELEASE_NOTES.md build/release/DockAwesome/
 	@echo "Staged build/release/DockAwesome for DockAwesome-$(RELEASE_FILE).lha"
 
 clean:

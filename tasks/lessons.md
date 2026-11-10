@@ -298,3 +298,10 @@
 - A "black box at ApolloOS boot" (twice) and, photographed on AmigaOS 3.2.3, Coffin's last dock frame at boot: PiP stays on through a reboot, showing the previous system's buffer (black once that memory is cleared). My first guess (window backfill) was reverted unmerged.
 - Rule: ask what exactly is seen (shape, content, timing) before guessing at a boot-time artefact; a photo of the stale frame identified it at once.
 - The dock turns both units off at start (unless leased), on Ctrl-Amiga-Amiga (keyboard reset handler), and --pip-off exists for S:User-Startup.
+
+## Release notes list only what has run on hardware (2026-11-10)
+"Works with Directory Opus 5 as the desktop" went into the 1.0b2 notes from a
+commit title, while tasks/todo.md said "Not run: DOpus 5 listers; needs AmiKit".
+- Before writing a release-notes line, find its verification in tasks/todo.md
+  (or the commit body). "Built, not yet run on hardware" stays out.
+- Commit titles describe intent; the verification notes describe what is true.

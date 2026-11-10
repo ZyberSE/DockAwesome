@@ -430,8 +430,6 @@ static int pip_open(App *app)
         if (app->width+((app->settings.max_size+64+31)&~31) <= PIP_SHARE_WIDTH)
             app->float_layer = amiga_float_create(app->screen, app->pip_x_offset, app->pip_y_offset,
                 app->settings.max_size+64, app->settings.max_size+32);
-        if (app->vblank_open)
-            amiga_float_flip_at_vblank(app->float_layer,&app->vblank.flip1_register,&app->vblank.flip1_buffer);
         dock_ui_set_float(app->ui, app->float_layer);
         app->appwindow = AddAppWindowA(0, 0, app->window, app->drop_port, NULL);
         if (!app->appwindow) return 0;

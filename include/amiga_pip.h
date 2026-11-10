@@ -29,8 +29,6 @@ int amiga_pip_set_keying(AmigaPip *pip, int enable);
    tore a tall surface (a dock on the left or right edge) across the field.
    NULL slots write at once again. */
 void amiga_pip_flip_at_vblank(AmigaPip *pip, volatile ULONG *register_slot, volatile ULONG *buffer_slot);
-/* Buffer 0 or 1, to fill both before the first present. */
-unsigned char *amiga_pip_buffer(AmigaPip *pip, int index);
 unsigned char *amiga_pip_back_buffer(AmigaPip *pip);
 /* 0 or 1: which buffer amiga_pip_back_buffer returns. A failed or suspended
    present keeps it, so it then holds the newest conversion. */

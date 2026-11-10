@@ -222,10 +222,6 @@ unsigned char *amiga_pip_back_buffer(AmigaPip *p)
 #endif
     return p->pixels[p->front^1];
 }
-unsigned char *amiga_pip_buffer(AmigaPip *p, int index)
-{
-    return p && (index == 0 || index == 1) ? p->pixels[index] : NULL;
-}
 int amiga_pip_back_index(const AmigaPip *p) { return p?p->front^1:0; }
 int amiga_pip_stride(const AmigaPip *p) { return p?p->stride:0; }
 unsigned int amiga_pip_core_revision(const AmigaPip *p) { return p?p->core:0; }
@@ -246,9 +242,7 @@ int amiga_pip_present(AmigaPip *p)
     }
     next=p->front^1;
     if (!p->configured || p->configuration_dirty || x!=p->physical_x || y!=p->physical_y) {
-        /* Turning on, moving or resizing: with a VBlank slot, at the top of
-           the next field rather than across the one being scanned. */
-        if (p->flip_slot) { *p->flip_slot = 0; WaitTOF(); }
+        if (p->flip_slot) *p->flip_slot = 0;
         reg16(p,0x12,0); p->touched=1;
         reg16(p,0x00,(UWORD)x); reg16(p,0x02,(UWORD)y);
         reg16(p,0x04,(UWORD)(x+p->width)); reg16(p,0x06,(UWORD)(y+p->height));

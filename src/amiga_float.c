@@ -28,6 +28,7 @@ struct AmigaFloat {
     int ox, oy;            /* where the front buffer holds it in the overlay */
     int shown;
     Area drawn[2];         /* the picture's pixels in each buffer */
+    volatile ULONG *flip_register, *flip_buffer; /* amiga_float_flip_at_vblank */
 };
 
 static void fill_key(AmigaFloat *f, unsigned char *buffer, Area a)
@@ -60,12 +61,13 @@ static int reserve(AmigaFloat *f, int w, int h)
     }
     f->cap_w = cap_w; f->cap_h = cap_h;
     all = (Area){0,0,cap_w,cap_h};
-    /* Both buffers keyed clear; the presents turn PiP1 on (or wait for
-       the screen to come to the front). */
+    amiga_pip_flip_at_vblank(f->pip,f->flip_register,f->flip_buffer);
+    /* Both buffers keyed clear. The first present, with the picture at its
+       place, turns PiP1 on in one step (in the vertical blank with a slot):
+       turned on keyed first and then moved, a label came up torn. */
     for (i = 0; i < 2; ++i) {
-        fill_key(f,amiga_pip_back_buffer(f->pip),all);
+        fill_key(f,amiga_pip_buffer(f->pip,i),all);
         f->drawn[i] = (Area){0};
-        amiga_pip_present(f->pip);
     }
     return 1;
 }
@@ -169,6 +171,13 @@ void amiga_float_hide(AmigaFloat *f)
     f->shown = 0;
     amiga_pip_close(f->pip);
     f->pip = NULL;
+}
+
+void amiga_float_flip_at_vblank(AmigaFloat *f, volatile ULONG *register_slot, volatile ULONG *buffer_slot)
+{
+    if (!f) return;
+    f->flip_register = register_slot; f->flip_buffer = buffer_slot;
+    amiga_pip_flip_at_vblank(f->pip,register_slot,buffer_slot);
 }
 
 void amiga_float_destroy(AmigaFloat *f)

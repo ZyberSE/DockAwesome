@@ -1,6 +1,7 @@
 #ifndef AMIGA_FLOAT_H
 #define AMIGA_FLOAT_H
 #include "dock_core.h"
+#include <exec/types.h>
 struct Screen;
 typedef struct AmigaFloat AmigaFloat;
 
@@ -20,4 +21,7 @@ int amiga_float_move(AmigaFloat *flt, int x, int y);
 int amiga_float_shown(const AmigaFloat *flt);
 void amiga_float_hide(AmigaFloat *flt);
 void amiga_float_destroy(AmigaFloat *flt);
+/* PiP1 flips in the vertical blank (amiga_pip_flip_at_vblank); NULL slots
+   flip at once. */
+void amiga_float_flip_at_vblank(AmigaFloat *flt, volatile ULONG *register_slot, volatile ULONG *buffer_slot);
 #endif

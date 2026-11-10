@@ -984,6 +984,7 @@ static int animation_open(App *app)
         AddIntServer(INTB_VERTB,&app->vblank_interrupt);
         app->vblank_open = 1;
         amiga_pip_flip_at_vblank(app->pip,&app->vblank.flip_register,&app->vblank.flip_buffer);
+        amiga_float_flip_at_vblank(app->float_layer,&app->vblank.flip1_register,&app->vblank.flip1_buffer);
         app->vblank_check_at = profile_clock(); app->vblank_check_field = app->vblank.fields;
     }
     app->stats.min_ticks = UINT64_MAX;
@@ -1102,6 +1103,7 @@ static void profile_close(App *app)
     if (app->vblank_open) {
         /* The server must be gone before the task and App go away. */
         amiga_pip_flip_at_vblank(app->pip,NULL,NULL);
+        amiga_float_flip_at_vblank(app->float_layer,NULL,NULL);
         RemIntServer(INTB_VERTB,&app->vblank_interrupt);
         app->vblank_open = 0;
     }

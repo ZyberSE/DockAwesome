@@ -200,8 +200,11 @@ _Static_assert(offsetof(ProgramPoll,owners) <= 0xffff, "ProgramPoll message exce
    then follow the display instead of a 20 ms timer that drifts against
    its 50 Hz, which shows a frame twice or never now and then. */
 /* flip_register/flip_buffer: a PiP2 buffer flip for the server to do
-   (amiga_pip_flip_at_vblank). */
-typedef struct { struct Task *task; ULONG mask; volatile ULONG armed, fields, flip_register, flip_buffer; } VBlankState;
+   (amiga_pip_flip_at_vblank); flip1_*: the same for PiP1 (labels, drags). */
+typedef struct {
+    struct Task *task; ULONG mask; volatile ULONG armed, fields, flip_register, flip_buffer,
+        flip1_register, flip1_buffer;
+} VBlankState;
 void dock_vblank_entry(void);
 /* --profile counters. Only the profile report reads them. */
 typedef struct {

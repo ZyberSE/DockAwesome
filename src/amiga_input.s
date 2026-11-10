@@ -59,8 +59,9 @@ _dock_folder_backfill_entry:
     rts
 
 ; Vertical-blank interrupt server. a1 = VBlankState {task, mask, armed,
-; fields, flip_register, flip_buffer}: count every field, show a pending
-; PiP2 buffer, and while armed signal the main task. Return
+; fields, flip_register, flip_buffer, flip1_register, flip1_buffer}: count
+; every field, show pending PiP2 and PiP1 buffers, and while armed signal
+; the main task. Return
 ; with Z set so the rest of the VERTB chain runs.
     xdef _dock_vblank_entry
 _dock_vblank_entry:
@@ -71,6 +72,12 @@ _dock_vblank_entry:
     move.l 16(a1),a0
     move.l d0,(a0)
 .no_flip:
+    move.l 28(a1),d0        ; a PiP1 buffer
+    beq.s .no_flip1
+    clr.l 28(a1)
+    move.l 24(a1),a0
+    move.l d0,(a0)
+.no_flip1:
     tst.l 8(a1)
     beq.s .vblank_done
     move.l a6,-(sp)

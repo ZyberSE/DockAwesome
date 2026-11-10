@@ -62,7 +62,7 @@ HOST_CORE := src/dock_core.c src/dock_compose.c src/dock_renderer.c src/dock_geo
 HOST_HEADERS := include/dock_core.h include/dock_compose.h include/dock_renderer.h include/dock_geometry.h include/dock_interaction.h src/dock_pixel.h
 
 SANITIZE := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
-HOST_TESTS := build/test_core build/test_interaction build/test_geometry build/test_prefs build/test_profile
+HOST_TESTS := build/test_core build/test_interaction build/test_geometry build/test_prefs build/test_profile build/test_bob
 HOST_SANITIZE_TESTS := $(HOST_TESTS:=_sanitize)
 
 $(HOST_TESTS) build/bench_core: build/%: $(HOST_CORE) $(HOST_HEADERS) tests/%.c
@@ -73,11 +73,12 @@ $(HOST_SANITIZE_TESTS): build/%_sanitize: $(HOST_CORE) $(HOST_HEADERS) tests/%.c
 	$(HOST_CC) $(HOST_FLAGS) $(SANITIZE) $(filter %.c,$^) -o "$@"
 build/test_prefs build/test_prefs_sanitize: src/dock_prefs.c include/dock_prefs.h
 build/test_profile build/test_profile_sanitize: src/dock_profile.c include/dock_profile.h
+build/test_bob build/test_bob_sanitize: src/dock_bob.c include/dock_bob.h
 build/test_core_be: $(HOST_CORE) $(HOST_HEADERS) tests/test_core.c
 	@mkdir -p build
 	$(HOST_CC) $(HOST_FLAGS) -DDOCK_EMULATE_BIG_ENDIAN $(filter %.c,$^) -o "$@"
 
-host-test: build/test_core build/test_core_be build/test_interaction build/test_geometry build/test_prefs build/test_profile
+host-test: build/test_core build/test_core_be build/test_interaction build/test_geometry build/test_prefs build/test_profile build/test_bob
 	for t in $^; do ./$$t || exit 1; done
 host-bench: build/bench_core
 	./build/bench_core

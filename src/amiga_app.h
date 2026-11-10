@@ -14,6 +14,7 @@
 #include "amiga_pip.h"
 #include "amiga_drop_catcher.h"
 #include "amiga_drag_preview.h"
+#include "amiga_drag_bob.h"
 #include "amiga_float.h"
 #include "amiga_text.h"
 #include "amiga_ui.h"
@@ -352,6 +353,15 @@ typedef struct App {
     uint32_t preview_attempt;
     int prefetch_pending; /* the stack's icons are still being read ahead */
     int drag_preview_remove; /* drag_preview's Remove state when opened */
+    /* Without shapes and PiP1: the pin drawn on the screen (amiga_drag_bob.h),
+       its picture for drag_bob_icon and Remove, where it goes after the
+       frame, and whether that picture is new. --window-drag uses the
+       window preview instead. */
+    AmigaDragBob *drag_bob;
+    DockImage drag_bob_picture;
+    const DockImage *drag_bob_icon;
+    int drag_bob_remove, drag_bob_x, drag_bob_y, drag_bob_due, drag_bob_new, window_drag;
+    uint32_t bob_attempt;
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;
     uint64_t flash_deadline;
@@ -522,6 +532,8 @@ int rest_after_pin_change(App *app, int before);
 int animation_needed(const App *app);
 void animation_cancel(App *app);
 void live_cancel(App *app);
+/* Restore the screen under a drawn drag pin and free it. */
+void drag_bob_close(App *app);
 void stack_button_build(App *app);
 void ui_blocking(void *context, int blocking);
 int ui_fit(void *context, const DockUIPrefs *draft);

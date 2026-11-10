@@ -1643,29 +1643,101 @@ static void apply_gesture(App *app, const DockGestureInput *in, int *redraw, int
 
 /* The dragged pin in PiP1: the icon, with the Remove pill under it once
    armed. Returns 0 when PiP1 is not available. */
+/* The dragged pin's picture: the icon, with the Remove pill under it once
+   armed (*remove is cleared without a pill). The caller frees it. */
+static int drag_picture(App *app, const DockImage *icon, int *remove, DockImage *image)
+{
+    DockImage pill = {0};
+    int width, height, row;
+    if (*remove && !dock_ui_pill_image(app->ui,"Remove",&pill)) *remove = 0;
+    width = *remove && pill.width > icon->width ? pill.width : icon->width;
+    height = icon->height+(*remove ? 4+pill.height : 0);
+    *image = (DockImage){width,height,calloc((size_t)width*height,4)};
+    if (!image->pixels) { free(pill.pixels); return 0; }
+    for (row = 0; row < icon->height; ++row)
+        memcpy(image->pixels+((size_t)row*width+(width-icon->width)/2)*4,
+            icon->pixels+(size_t)row*icon->width*4,(size_t)icon->width*4);
+    for (row = 0; *remove && row < pill.height; ++row)
+        memcpy(image->pixels+((size_t)(icon->height+4+row)*width+(width-pill.width)/2)*4,
+            pill.pixels+(size_t)row*pill.width*4,(size_t)pill.width*4);
+    free(pill.pixels);
+    return 1;
+}
+
+/* The dragged pin in PiP1. Returns 0 when PiP1 is not available. */
 static int show_drag_float(App *app, const DockImage *icon, int remove, int x, int y)
 {
-    DockImage pill = {0}, image;
-    int width, height, row, ok;
-    if (remove && !dock_ui_pill_image(app->ui,"Remove",&pill)) remove = 0;
-    width = remove && pill.width > icon->width ? pill.width : icon->width;
-    height = icon->height+(remove ? 4+pill.height : 0);
-    image = (DockImage){width,height,calloc((size_t)width*height,4)};
-    if (!image.pixels) { free(pill.pixels); return 0; }
-    for (row = 0; row < icon->height; ++row)
-        memcpy(image.pixels+((size_t)row*width+(width-icon->width)/2)*4,
-            icon->pixels+(size_t)row*icon->width*4,(size_t)icon->width*4);
-    for (row = 0; remove && row < pill.height; ++row)
-        memcpy(image.pixels+((size_t)(icon->height+4+row)*width+(width-pill.width)/2)*4,
-            pill.pixels+(size_t)row*pill.width*4,(size_t)pill.width*4);
+    DockImage image;
+    int ok;
+    if (!drag_picture(app,icon,&remove,&image)) return 0;
     dock_ui_hide_label(app->ui);
-    ok = amiga_float_show(app->float_layer,&image,x-width/2,y-icon->height/2);
-    free(image.pixels); free(pill.pixels);
+    ok = amiga_float_show(app->float_layer,&image,x-image.width/2,y-icon->height/2);
+    free(image.pixels);
     if (ok) {
         app->drag_float_remove = remove;
-        app->drag_float_width = width; app->drag_float_icon_height = icon->height;
+        app->drag_float_width = image.width; app->drag_float_icon_height = icon->height;
     }
     return ok;
+}
+
+void drag_bob_close(App *app)
+{
+    amiga_drag_bob_close(app->drag_bob);
+    app->drag_bob = NULL;
+    free(app->drag_bob_picture.pixels);
+    app->drag_bob_picture = (DockImage){0};
+    app->drag_bob_icon = NULL;
+    app->drag_bob_due = 0;
+}
+
+/* Without shapes and PiP1 on an RTG screen: the pin drawn straight on the
+   screen (amiga_drag_bob.h), placed after the frame (drag_bob_present).
+   Returns -1 to use the window preview instead (--window-drag, or it could
+   not start in this gesture). */
+static int update_drag_bob(App *app, const DockImage *icon, int x, int y)
+{
+    DockGesture *gesture = &app->gesture;
+    int remove = gesture->remove_armed;
+    if (app->window_drag) return -1;
+    if (!icon) {
+        if (!app->drag_bob) return -1;
+        drag_bob_close(app);
+        return 1;
+    }
+    if (!app->drag_bob) {
+        if (app->bob_attempt == gesture->token) return -1;
+        app->bob_attempt = gesture->token;
+        dock_ui_hide_label(app->ui);
+        app->drag_bob = amiga_drag_bob_open(app->screen);
+        if (!app->drag_bob) return -1;
+    }
+    if (icon != app->drag_bob_icon || remove != app->drag_bob_remove) {
+        DockImage picture;
+        app->drag_bob_remove = remove;
+        if (!drag_picture(app,icon,&remove,&picture)) { drag_bob_close(app); return -1; }
+        free(app->drag_bob_picture.pixels);
+        app->drag_bob_picture = picture;
+        app->drag_bob_icon = icon;
+        app->drag_bob_new = 1;
+    }
+    app->drag_bob_x = x-app->drag_bob_picture.width/2;
+    app->drag_bob_y = y-icon->height/2;
+    app->drag_bob_due = 1;
+    return 0;
+}
+
+/* After the frame is presented, so the screen and PiP change together. */
+static void drag_bob_present(App *app)
+{
+    if (!app->drag_bob || !app->drag_bob_due) return;
+    app->drag_bob_due = 0;
+    if (!amiga_drag_bob_place(app->drag_bob,app->drag_bob_new ? &app->drag_bob_picture : NULL,
+            app->drag_bob_x,app->drag_bob_y)) {
+        drag_bob_close(app); /* the window preview takes over */
+        app->gesture_redraw = 1;
+        return;
+    }
+    app->drag_bob_new = 0;
 }
 
 /* What carries a dragged pin beyond the dock's surface.
@@ -1720,6 +1792,10 @@ static int update_drag_preview(App *app)
         /* PiP1 is taken: the window preview below. */
     }
     if (inside) icon = NULL;
+    if (!shaped && !app->drag_preview) {
+        int bob = update_drag_bob(app,icon,x,y);
+        if (bob >= 0) return bob;
+    }
     /* A shaped window cannot change its shape: it reopens when Remove
        arms or disarms, not on each size change (that flickered). */
     if (!icon || (app->drag_preview && shaped && app->drag_preview_remove != gesture->remove_armed)) {
@@ -2172,6 +2248,7 @@ static __attribute__((noinline)) void event_loop(App *app)
         update_hover_label(app);
         animation_schedule(app); live_schedule(app);
         if (redraw) draw(app);
+        drag_bob_present(app);
         animation_profile_end(app);
         if (app->notice[0]) {
             /* The drop was replied and its receiver released before this frame. */
@@ -2234,7 +2311,7 @@ static void usage(void)
          "            [--snapshot | --opaque | --pip] [--ammx] [--profile]\n"
          "            [--pip-dump prefix] [--pip-x-offset n] [--pip-y-offset n]\n"
          "            [--bench-sweep speed] [--damage-check] [--no-vsync]\n"
-         "            [--self-launch] [Workbench paths...] [--version] [--caps]\n"
+         "            [--self-launch] [--window-drag] [Workbench paths...] [--version] [--caps]\n"
          "Drop Workbench icons to pin them. Click a pin to open it.\n"
          "Drag to reorder. Drag out or press Delete to remove a pin.\n"
          "R refreshes the background. Esc or Ctrl-C quits.\n"
@@ -2250,6 +2327,8 @@ static void usage(void)
          "--no-vsync paces zoom animation with the 20 ms timer instead of the display.\n"
          "--self-launch starts pins the way Workbench does without asking it, as\n"
          "the dock does when another desktop replaces Workbench.\n"
+         "--window-drag carries a pin dragged out of the dock in a window, as\n"
+         "before, instead of drawing it on the screen (RTG without window shapes).\n"
          "--caps prints the probed CPU, chipset and OS features and the chosen\n"
          "backend, then exits. Include it in bug reports.");
 }
@@ -2330,6 +2409,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--damage-check")) app->damage_check = app->profile = 1;
         else if (!strcmp(argv[i], "--no-vsync")) app->no_vsync = 1;
         else if (!strcmp(argv[i], "--self-launch")) app->self_launch = 1;
+        else if (!strcmp(argv[i], "--window-drag")) app->window_drag = 1;
         else if (!strcmp(argv[i], "--bench-sweep")) {
             app->bench_speed = i+1 < argc ? bounded_option(argv[++i],1,64) : INT_MAX;
             if (app->bench_speed == INT_MAX) { puts("--bench-sweep needs a speed from 1 to 64."); free(app); return 20; }

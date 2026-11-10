@@ -30,6 +30,7 @@ void close_surface(App *app)
     dock_ui_hide_label(app->ui);
     app->label_pin_id = 0; app->label_at = 0; app->label_visible = 0;
     amiga_drag_preview_close(app->drag_preview); app->drag_preview = NULL;
+    drag_bob_close(app);
     interaction_cancel(app);
     dock_gesture_reset(&app->gesture);
     input_invalidate(app);

@@ -11,6 +11,8 @@ A macOS-style dock for the Vampire V4, with live transparency through SAGA PiP.
 
 ![A large magnified icon under the pointer](docs/images/dock-zoom.png)
 
+![Folder Stack open over the dock](docs/images/folder-stack.png)
+
 ## Requirements
 
 - A Vampire V4 (68080 with AMMX).

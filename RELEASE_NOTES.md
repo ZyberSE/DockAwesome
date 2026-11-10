@@ -7,9 +7,9 @@ Changes since 1.0 beta 1.
 **More systems**
 - Runs on AmigaOS 3.2.3 and AmigaOS 3.9 on the Vampire, with live PiP
   transparency, as well as on ApolloOS.
-- Works with Directory Opus 5 as the desktop.
-- Starts pins the way Workbench does: Start from Shell and ARexx icons,
-  `$STACK` and `TOOLPRI`.
+- When another desktop replaces Workbench, the dock starts pins itself the
+  way Workbench does: Start from Shell and ARexx icons, `$STACK` and
+  `TOOLPRI`.
 
 **Look and feel**
 - A zoom wave like the macOS Dock, paced by the display. Size goes up to

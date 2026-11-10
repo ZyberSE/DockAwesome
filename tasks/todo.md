@@ -793,12 +793,23 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
 - [x] Installed build 315 on ApolloOS: SYS:WBStartup/DockAwesome; the old
       build 225 (black rectangle after boot) is Disabled/DockAwesome-build225.old.
       Older .old builds removed; DockAwesome-1.0b1.old kept.
-- [ ] Reboot into ApolloOS with the user: does build 315 come up at boot
-      (225 took seconds and showed a black rectangle)?
+- [x] The user rebooted ApolloOS: build 315 came up from WBStartup (dock
+      window there). Whether the black rectangle is gone: ask the user.
+- [x] Drag out on ApolloOS (shaped): the window opens past the surface, not
+      only when Remove arms (4f6891f); the dock draws the window's own picture
+      where the window is, and the window reopens only on Remove changes
+      (9c28c08). User: "Allt funkar nu".
+- [x] Folder Stack: default icons (DefIcons) for entries without a .info
+      (5e8d5ed); round antialiased back and page buttons (5e4e0ec). Seen on
+      ApolloOS; back button tested.
+- [x] Installed build 320 on ApolloOS; rollback Disabled/DockAwesome-build318.old.
+- [ ] Delete SYS:WBStartup/Disabled/DockAwesome-build315.old after the next
+      ApolloOS boot (Workbench holds it since it started it at boot).
+- [ ] Coffin: install build 320 and check the bottom dock's drag out (the
+      window path now draws the window's picture), the default icons and the
+      native back button.
 - [ ] A crash after starting a second dock (PiP2 is already in use, OK):
       unknown whether the new or the broken old dock; reproduce with the user
       present. Exit path reviewed, nothing found.
-- [ ] Coffin runs db01deb (before 653280b): no behaviour change there, but
-      update on its next boot so both run the same build.
 - [ ] Run >file loses profile output on Coffin (use an Execute script).
 - [ ] Merge pip-os3 (user's call); push only when asked.

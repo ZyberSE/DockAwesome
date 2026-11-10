@@ -807,8 +807,8 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
       ApolloOS boot (Workbench holds it since it started it at boot).
 - [x] Folder Stack icons kept between openings and read ahead while idle
       (4272be2): 22 icons 940 ms -> first opening 132 ms, later 12 ms.
-- [x] Installed build 325 on ApolloOS? No: ApolloOS has 320 in WBStartup and
-      325 ran from RAM: for the test. Install 325 there on its next boot.
+- [ ] ApolloOS has build 320 in WBStartup (325 only ran from RAM: for the
+      test): install 325 there on its next boot.
 - [x] Installed build 325 on Coffin (rollback Disabled/DockAwesome-build314.old).
 - [ ] Coffin with the user: drag out of the bottom dock (the window path now
       draws the window's picture), default icons, native back button, icon

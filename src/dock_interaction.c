@@ -28,6 +28,7 @@ DockGestureEffects dock_gesture_update(DockGesture *g, const DockGestureInput *i
         dock_gesture_reset(g);
         g->active = 1; g->token = in->token; g->pin_id = in->pin_id;
         g->target_slot = -1;
+        g->fixed = !!(in->flags & DOCK_INPUT_FIXED);
         g->down_x = g->x = in->x; g->down_y = g->y = in->y;
         effect.flags = DOCK_EFFECT_REDRAW | DOCK_EFFECT_FOCUS; effect.pin_id = g->pin_id;
         return effect;
@@ -44,7 +45,8 @@ DockGestureEffects dock_gesture_update(DockGesture *g, const DockGestureInput *i
     moved = in->x != g->x || in->y != g->y;
     g->x = in->x; g->y = in->y;
     dx = (int64_t)in->x-g->down_x; dy = (int64_t)in->y-g->down_y;
-    if (!g->dragged && (dx > 4 || dx < -4 || dy > 4 || dy < -4 || (in->flags & DOCK_INPUT_DRAGGED))) {
+    if (!g->dragged && !g->fixed && (dx > DOCK_DRAG_THRESHOLD || dx < -DOCK_DRAG_THRESHOLD ||
+        dy > DOCK_DRAG_THRESHOLD || dy < -DOCK_DRAG_THRESHOLD || (in->flags & DOCK_INPUT_DRAGGED))) {
         g->dragged = 1;
         effect.flags |= DOCK_EFFECT_REDRAW;
     }
@@ -79,16 +81,10 @@ static int inside_margin(int x, int y, int64_t left, int top,
 int dock_interaction_outside(const DockSettings *s, const DockPlacement *p,
     int count, int width, int height, int x, int y, int margin)
 {
-    int64_t left, right;
-    int top, bottom, i;
-    if (!dock_settings_valid(s) || count < 0 || count > DOCK_MAX_ITEMS ||
-        (count && !p) || width < 1 || height < 1 || margin < 0) return 0;
-    left = count ? (int64_t)p[0].x-s->padding : s->padding;
-    right = count ? (int64_t)p[count-1].x+p[count-1].size+s->padding : width-s->padding;
-    if (left < 0) left = 0;
-    if (right > width) right = width;
-    dock_panel_cross_bounds(s,height,&top,&bottom);
-    if (inside_margin(x, y, left, top, right, bottom, margin)) return 0;
+    DockRect r;
+    int i;
+    if (margin < 0 || !dock_edge_panel_rect(s, DOCK_EDGE_BOTTOM, p, count, width, height, &r)) return 0;
+    if (inside_margin(x, y, r.left, r.top, r.right, r.bottom, margin)) return 0;
     for (i = 0; i < count; ++i)
         if (inside_margin(x, y, p[i].x, p[i].y,
                 (int64_t)p[i].x+p[i].size, (int64_t)p[i].y+p[i].size, margin)) return 0;

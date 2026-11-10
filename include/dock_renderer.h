@@ -1,7 +1,6 @@
 #ifndef DOCK_RENDERER_H
 #define DOCK_RENDERER_H
-#include "dock_core.h"
-#include "dock_geometry.h"
+#include "dock_compose.h"
 /* Pixel backend owns no OS resources. Add kernels without touching layout or
    Workbench. AMMX selection is explicit: never execute a probe instruction. */
 typedef struct { const char *name; DockMixHalf mix_half; DockConvertRGB24 rgba_to_rgb24;
@@ -19,6 +18,10 @@ void dock_damage_set_full(DockDamage *d);
    intersect; overflow sets full. */
 void dock_damage_add(DockDamage *d, DockRect r, int width, int height);
 void dock_damage_merge(DockDamage *dst, const DockDamage *src, int width, int height);
+/* The rectangles to upload for damage into out: its own when there are
+   at most max, else their bounding box; the whole canvas when full.
+   Returns their count, 0 when nothing changed. */
+int dock_damage_upload_rects(const DockDamage *d, int width, int height, int max, DockRect *out);
 
 /* Converts the damaged regions of frame (RGBA) to keyed big-endian RGB565
    in buffer, or the whole frame when damage is full. Each row span widens
@@ -26,44 +29,37 @@ void dock_damage_merge(DockDamage *dst, const DockDamage *src, int width, int he
    on whole quads and octets; widened or overlapping spans are harmless
    because encode plus key is idempotent per pixel. The coverage span is
    copied to scratch (width bytes), mask may clear it, then key uses it:
-   coverage itself is never written. A NULL coverage counts as covered. */
+   coverage itself is never written. A NULL coverage counts as covered.
+   Returns the pixels converted, widening included; 0 when nothing is. */
 typedef void (*DockCoverageMask)(void *context, int y, int left, int right,
                                  unsigned char *coverage_span);
-void dock_convert565_damage(unsigned char *buffer, int stride,
+unsigned long dock_convert565_damage(unsigned char *buffer, int stride,
     const DockImage *frame, const unsigned char *coverage,
     const DockDamage *damage, unsigned char *scratch,
     DockConvertRGB565 encode, DockKeyRGB565 key,
     DockCoverageMask mask, void *context);
 
-/* An image blended over the frame after the icons, with coverage: running
-   dots and the dragged icon. */
-typedef struct { const DockImage *image; int x, y; } DockOverlay;
-#define DOCK_MAX_OVERLAYS (DOCK_MAX_ITEMS+1)
+/* Brings cache (width x height RGB565, width*2 bytes per row) to what a
+   whole capture writes: columns [0,visible) from source, which has
+   source_stride bytes per row, and zero beyond. equal skips unchanged rows;
+   only each changed row's differing span is written. Returns the bounding
+   box of the changed pixels, empty ({0,0,0,0}) when nothing changed. */
+DockRect dock_rgb565_refresh(unsigned char *cache, const unsigned char *source,
+    size_t source_stride, int width, int visible, int height, DockBytesEqual equal);
 
-/* The plate as drawn: dock_edge_panel_rect with the center_panel mirror,
-   and its corner radius. Returns 0 when nothing is drawn. */
-int dock_render_panel(const DockSettings *s, int edge, const DockPlacement *p, int count,
-                      int width, int height, int center_panel, DockRect *rect, int *radius);
-/* dock_render_oriented_mask plus overlays, writing canvas and coverage only
-   inside clip, with the bytes a full render gives there. Glass rows are
-   still mixed whole (into the glass cache only). */
-void dock_render_oriented_clip(DockImage *canvas, const DockImage *backdrop,
-                 const DockCache *const *icons, const DockPlacement *p, int count,
-                 const DockSettings *s, DockMixHalf mix_half, DockPanelShape *shape,
-                 unsigned char *coverage, int pressed_item, int edge, int center_panel,
-                 DockGlass *glass, const DockOverlay *overlays, int overlay_count,
-                 const DockRect *clip);
+#define DOCK_MAX_OVERLAYS (DOCK_MAX_ITEMS+1)
 
 /* The inputs of the last draw, compared field by field to find damage. */
 typedef struct {
     int valid;
-    const unsigned char *canvas, *backdrop, *coverage;
+    const unsigned char *canvas, *backdrop, *coverage; /* backdrop: NULL when not captured. */
     const void *pixels;
-    int width, height, captured, edge, center_panel, count, radius, overlay_count;
+    int width, height, edge, center_panel, count, radius, overlay_count;
     DockSettings settings;
     DockRect panel; /* Empty plates are stored as {0,0,0,0}. */
     DockPlacement placement[DOCK_MAX_ITEMS];
     const unsigned char *image[DOCK_MAX_ITEMS]; /* NULL when nothing is drawn. */
+    unsigned long stamp[DOCK_MAX_ITEMS]; /* The cache's stamp; 0 with no image. */
     DockRect icon[DOCK_MAX_ITEMS];
     unsigned char pressed[DOCK_MAX_ITEMS];
     DockOverlay overlay[DOCK_MAX_OVERLAYS];
@@ -85,16 +81,24 @@ typedef struct {
     const DockOverlay *overlays;
     int overlay_count;
     /* Plate rows mixed with the backdrop. Call dock_renderer_backdrop_changed
-       whenever the backdrop pixels change; free with dock_renderer_release. */
+       or _damaged whenever the backdrop pixels change; free with
+       dock_renderer_release. */
     DockGlass glass;
     DockDamage damage;
+    /* Backdrop regions queued by dock_renderer_backdrop_damaged; the next
+       draw adds them to its damage. */
+    DockDamage backdrop_damage;
     DockRenderState previous;
 } DockRenderer;
-/* The next draw is full. Call it whenever an icon cache is freed, replaced
-   or rebuilt, or the item order or count changes: a rebuilt cache can reuse
-   a freed address. The other two calls imply it. */
+/* The next draw is full. A slot is redrawn when its placement, pressed
+   state, image address or cache stamp changes, so freeing, rebuilding,
+   swapping or reordering caches needs no call; change pixels in place only
+   with dock_cache_restamp. The other two calls imply it. */
 void dock_renderer_invalidate(DockRenderer *renderer);
 void dock_renderer_backdrop_changed(DockRenderer *renderer);
+/* The backdrop changed only inside box (canvas coordinates): the next draw
+   redraws box on top of its own damage and remixes the plate rows it spans. */
+void dock_renderer_backdrop_damaged(DockRenderer *renderer, DockRect box);
 void dock_renderer_release(DockRenderer *renderer);
 const DockPixelBackend *dock_backend_portable(void);
 #ifdef DOCK_AMMX

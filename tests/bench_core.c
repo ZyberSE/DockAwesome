@@ -1,4 +1,5 @@
 #include "dock_core.h"
+#include "dock_compose.h"
 #include "dock_geometry.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,6 +1,7 @@
 /* Physical PiP2 registration: exact native RGB565 copy, no tint or conversion.
    Only the private screen is drawn. PiP register access stays in amiga_pip.c. */
 #include "amiga_pip.h"
+#include "amiga_text.h"
 #include <exec/types.h>
 #include <devices/inputevent.h>
 #include <graphics/gfxbase.h>
@@ -36,15 +37,6 @@ static void stage(const char *message)
     }
 }
 
-static void text32(struct RastPort *rp,const char *text)
-{
-    /* Classic NDK Text() inline declares D0 as UWORD. ApolloOS reads ULONG;
-       undefined high bits turn strlen52 into0xffff0034 and scan vast memory.
-       Request a complete ULONG register argument for this public library LVO. */
-    (void)LP3(0x3c,LONG,PipText32,struct RastPort *,rp,a1,
-        CONST_STRPTR,(CONST_STRPTR)text,a0,ULONG,(ULONG)strlen(text),d0,,GfxBase);
-}
-
 static int wait_front(struct Screen *screen)
 {
     int i;
@@ -52,20 +44,16 @@ static int wait_front(struct Screen *screen)
     return IntuitionBase->FirstScreen==screen;
 }
 
+/* The pattern in RGB565, written to the screen at any RTG depth through
+   WritePixelArray (each colour expanded exactly), and the ROI copied for
+   PiP: on a 24-bit screen the two show the same colours. */
 static int make_pattern(struct Screen *screen, unsigned char *roi, int x,int y,int w,int h)
 {
-    APTR base=NULL,lock;
-    ULONG stride=0,format=~0UL,bytes=0;
-    int px,py;
-    lock=LockBitMapTags(screen->RastPort.BitMap,LBMI_BASEADDRESS,(ULONG)&base,
-        LBMI_BYTESPERROW,(ULONG)&stride,LBMI_BYTESPERPIX,(ULONG)&bytes,
-        LBMI_PIXFMT,(ULONG)&format,TAG_DONE);
-    if(!lock) return 0;
-    if(!base || bytes!=2 || format!=PIXFMT_RGB16 || stride<(ULONG)screen->Width*2) {
-        UnLockBitMap(lock);return 0;
-    }
-    for(py=0;py<screen->Height;++py) {
-        UWORD *row=(UWORD *)((unsigned char *)base+(size_t)py*stride);
+    UWORD *row=malloc((size_t)screen->Width*2);
+    unsigned char *rgb=malloc((size_t)screen->Width*3);
+    int px,py,ok=1;
+    if(!row || !rgb) { free(row);free(rgb);return 0; }
+    for(py=0;py<screen->Height && ok;++py) {
         for(px=0;px<screen->Width;++px) {
             /* Coprime spacings and non-repeating tiles make offsets obvious. */
             unsigned int tile=((unsigned int)(px/37)*73U)^((unsigned int)(py/29)*151U);
@@ -78,11 +66,23 @@ static int make_pattern(struct Screen *screen, unsigned char *roi, int x,int y,i
             if((px==x+73 || px==x+w-89) && py>y-50 && py<y+h+50) color=0xffe0;
             if((py==y+43 || py==y+h-37) && px>x-60 && px<x+w+60) color=0xffe0;
             row[px]=color;
+            rgb[px*3]=(unsigned char)(((color>>11)&31)*255/31);
+            rgb[px*3+1]=(unsigned char)(((color>>5)&63)*255/63);
+            rgb[px*3+2]=(unsigned char)((color&31)*255/31);
+        }
+        if(WritePixelArray(rgb,0,0,(UWORD)(screen->Width*3),&screen->RastPort,0,py,
+                screen->Width,1,RECTFMT_RGB)!=(ULONG)screen->Width) ok=0;
+        if(py>=y && py<y+h) {
+            int col;
+            for(col=0;col<w;++col) {
+                UWORD v=row[x+col];
+                roi[((size_t)(py-y)*w+col)*2]=(unsigned char)(v>>8);
+                roi[((size_t)(py-y)*w+col)*2+1]=(unsigned char)v;
+            }
         }
     }
-    for(py=0;py<h;++py)
-        memcpy(roi+(size_t)py*w*2,(unsigned char *)base+(size_t)(y+py)*stride+x*2,(size_t)w*2);
-    UnLockBitMap(lock);return 1;
+    free(row);free(rgb);
+    return ok;
 }
 
 static void instructions(struct Window *window,int dx,int dy,int enabled)
@@ -90,7 +90,7 @@ static void instructions(struct Window *window,int dx,int dy,int enabled)
     static int first=1;
     char line[112];
     const char *lines[]={
-        "Exact RGB565 copy: arrows move PiP by 1 pixel.",
+        "PiP copy of the pattern: arrows move PiP by 1 pixel.",
         "Shift + arrow: 8 pixels. Esc / Return: finish. Timeout: 120 sec.",
         "Correct alignment: grid lines stay continuous as PiP blinks."};
     int i;
@@ -101,10 +101,10 @@ static void instructions(struct Window *window,int dx,int dy,int enabled)
     if(first) stage("instructions: fill complete");
     SetAPen(window->RPort,1);SetDrMd(window->RPort,JAM1);SetFont(window->RPort,control_font);
     if(first) stage("instructions: pens/mode/font complete; text begin");
-    for(i=0;i<3;++i) { Move(window->RPort,12,30+i*15);text32(window->RPort,lines[i]); }
+    for(i=0;i<3;++i) { Move(window->RPort,12,30+i*15);amiga_text_draw(window->RPort,lines[i],strlen(lines[i])); }
     if(first) stage("instructions: fixed text complete");
     snprintf(line,sizeof(line),"PiP correction x=%+d y=%+d | plane %s | range -128..128",dx,dy,enabled?"ON":"OFF");
-    Move(window->RPort,12,82);text32(window->RPort,line);
+    Move(window->RPort,12,82);amiga_text_draw(window->RPort,line,strlen(line));
     if(first) stage("instructions: status text complete");
     first=0;
 }
@@ -126,7 +126,7 @@ int main(int argc,char **argv)
     AmigaPip *pip=NULL;
     unsigned char *roi=NULL;
     ULONG mode,sec,micro,start_sec,start_micro,elapsed,last_blink=0;
-    int x,y,dx=16,dy=-1,enabled=1,finish=0,status=20;
+    int x,y,dx=17,dy=-1,enabled=1,finish=0,status=20;
     char error[192];
     { BPTR file=Open((STRPTR)"RAM:DockAwesomePiPAlign.stage",MODE_NEWFILE);if(file) Close(file); }
     stage("start");
@@ -139,12 +139,13 @@ int main(int argc,char **argv)
     if(!IntuitionBase || !GfxBase || !CyberGfxBase) { puts("FAIL: OS/RTG libraries");goto done; }
     stage("libraries open");
     pub=LockPubScreen(NULL);
-    if(!pub || pub->Width<640 || pub->Height<480 || GetBitMapAttr(pub->RastPort.BitMap,BMA_DEPTH)!=16) {
-        puts("FAIL: needs a 16-bit public screen");goto done;
+    if(!pub || pub->Width<640 || pub->Height<480 || GetBitMapAttr(pub->RastPort.BitMap,BMA_DEPTH)<15) {
+        puts("FAIL: needs an RTG public screen of 15 bits or more");goto done;
     }
+    /* The Workbench's own mode and depth: PiP's offset can differ by mode. */
     mode=GetVPModeID(&pub->ViewPort);
     screen=OpenScreenTags(NULL,SA_DisplayID,mode,SA_Width,pub->Width,SA_Height,pub->Height,
-        SA_Depth,16,SA_Type,CUSTOMSCREEN,SA_Behind,TRUE,SA_Quiet,TRUE,
+        SA_Depth,GetBitMapAttr(pub->RastPort.BitMap,BMA_DEPTH),SA_Type,CUSTOMSCREEN,SA_Behind,TRUE,SA_Quiet,TRUE,
         SA_Title,(ULONG)"PiP2 pixel alignment calibration",TAG_DONE);
     if(!screen) { puts("FAIL: private screen");goto done; }
     stage("private screen open");
@@ -160,6 +161,8 @@ int main(int argc,char **argv)
     stage("control window open");
     pip=amiga_pip_open(screen,x,y,W,H,0,error,sizeof(error));
     if(!pip) { printf("FAIL: %s\n",error);goto done; }
+    /* Start from the dock's default offsets. */
+    if(!amiga_pip_set_alignment(pip,dx,dy)) { puts("FAIL: initial alignment");goto done; }
     stage("PiP state allocated; hardware not enabled");
     printf("Core%u; exact native ROI(%d,%d)%dx%d; initial corrections x=%d y=%d\n",
         amiga_pip_core_revision(pip),x,y,W,H,dx,dy);fflush(stdout);
@@ -198,6 +201,7 @@ int main(int argc,char **argv)
                 if(amiga_pip_set_alignment(pip,nx,ny) && (nx!=dx || ny!=dy)) {
                     dx=nx;dy=ny;changed=1;
                     printf("PiP correction x=%+d y=%+d\n",dx,dy);fflush(stdout);
+                    { char note[48]; snprintf(note,sizeof(note),"correction x=%d y=%d",dx,dy); stage(note); }
                 }
             }
         }
@@ -210,6 +214,8 @@ int main(int argc,char **argv)
         Delay(1);
     }
     printf("Chosen PiP corrections: x=%+d y=%+d (visual calibration; no automatic alignment verdict)\n",dx,dy);
+    /* Also in the stage file: a Run >file can lose stdout. */
+    { char note[48]; snprintf(note,sizeof(note),"chosen x=%d y=%d",dx,dy); stage(note); }
     status=0;
 done:
     stage("cleanup begin");

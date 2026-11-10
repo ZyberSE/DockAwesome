@@ -1,6 +1,8 @@
 #include "dock_interaction.h"
+#include "dock_geometry.h"
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 static DockGestureInput input(int kind, uint32_t token, uint32_t pin, uint32_t hit, int x, int y)
 {
@@ -23,6 +25,27 @@ static void test_click_and_pairing(void)
     assert((e.flags & DOCK_EFFECT_LAUNCH) && !(e.flags & DOCK_EFFECT_REMOVE_PIN));
     assert(!g.active && !dock_gesture_pressed(&g));
     assert(!dock_gesture_update(&g, &in).flags);
+}
+
+/* A fixed pin (Folder Stack) never drags: no reorder, no remove; a
+   release over it still opens it. */
+static void test_fixed_pin(void)
+{
+    DockGesture g = {0}; DockGestureInput in; DockGestureEffects e;
+    in = input(DOCK_GESTURE_DOWN, 4, 42, 42, 20, 30); in.flags |= DOCK_INPUT_FIXED;
+    dock_gesture_update(&g, &in);
+    in = input(DOCK_GESTURE_MOVE, 4, 0, 0, 90, -70); in.target_slot = 2; in.outside = 1;
+    in.flags |= DOCK_INPUT_DRAGGED;
+    dock_gesture_update(&g, &in);
+    assert(!g.dragged && !g.remove_armed && g.target_slot == -1);
+    in = input(DOCK_GESTURE_UP, 4, 0, 0, 20, -70); in.outside = 1;
+    e = dock_gesture_update(&g, &in);
+    assert(!(e.flags & (DOCK_EFFECT_REORDER|DOCK_EFFECT_REMOVE_PIN|DOCK_EFFECT_LAUNCH)) && !g.active);
+    in = input(DOCK_GESTURE_DOWN, 5, 42, 42, 20, 30); in.flags |= DOCK_INPUT_FIXED;
+    dock_gesture_update(&g, &in);
+    in = input(DOCK_GESTURE_MOVE, 5, 0, 42, 40, 30); dock_gesture_update(&g, &in);
+    in = input(DOCK_GESTURE_UP, 5, 0, 42, 40, 30); e = dock_gesture_update(&g, &in);
+    assert((e.flags & DOCK_EFFECT_LAUNCH) && e.pin_id == 42);
 }
 
 static void test_reorder_and_outside(void)
@@ -105,9 +128,97 @@ static void test_geometry(void)
     assert(dock_interaction_outside(&s, p, 3, 384, 92, gap, -100, 24));
 }
 
+/* The plate bounds as both functions derived them before using
+   dock_edge_panel_rect: outside clipped only the outer sides. */
+static int reference_outside(const DockSettings *s, const DockPlacement *p, int count,
+    int width, int height, int x, int y, int margin)
+{
+    int64_t left, right;
+    int top, bottom, i;
+    left = count ? (int64_t)p[0].x-s->padding : s->padding;
+    right = count ? (int64_t)p[count-1].x+p[count-1].size+s->padding : width-s->padding;
+    if (left < 0) left = 0;
+    if (right > width) right = width;
+    dock_panel_cross_bounds(s,height,&top,&bottom);
+    if ((int64_t)x >= left-margin && (int64_t)x < right+margin &&
+        (int64_t)y >= (int64_t)top-margin && (int64_t)y < (int64_t)bottom+margin) return 0;
+    for (i = 0; i < count; ++i)
+        if ((int64_t)x >= (int64_t)p[i].x-margin && (int64_t)x < (int64_t)p[i].x+p[i].size+margin &&
+            (int64_t)y >= (int64_t)p[i].y-margin && (int64_t)y < (int64_t)p[i].y+p[i].size+margin) return 0;
+    return 1;
+}
+
+static int reference_hover(const DockSettings *s, const DockPlacement *p, int count,
+    int width, int height, int x, int y)
+{
+    int64_t left, right;
+    int top, bottom, i;
+    if (x < 0 || y < 0 || x >= width || y >= height) return 0;
+    left = count ? (int64_t)p[0].x-s->padding : s->padding;
+    right = count ? (int64_t)p[count-1].x+p[count-1].size+s->padding : width-s->padding;
+    dock_panel_cross_bounds(s,height,&top,&bottom);
+    for (i = 0; i < count; ++i) if (p[i].y < top) top = p[i].y;
+    if (x >= left && x < right && y >= top && y < bottom) return 1;
+    return dock_hit_test(p, count, x, y) >= 0;
+}
+
+static void check_plate(const DockSettings *s, const DockPlacement *p, int count, int width, int height)
+{
+    int x, y;
+    for (y = -40; y < height+40; y += 3)
+        for (x = -40; x < width+40; ++x) {
+            assert(dock_interaction_outside(s,p,count,width,height,x,y,5) ==
+                reference_outside(s,p,count,width,height,x,y,5));
+            assert(dock_hover_contains(s,p,count,width,height,x,y) ==
+                reference_hover(s,p,count,width,height,x,y));
+        }
+}
+
+/* Rest, wave, animated and gap rows: the shared plate rectangle gives the
+   same answers as the old per-function bounds. */
+static void test_plate_equivalence(void)
+{
+    DockSettings s = dock_settings_default();
+    DockPlacement p[DOCK_MAX_ITEMS], current[DOCK_MAX_ITEMS], gap;
+    DockAnimation a;
+    int count, mx, step, pad;
+    for (pad = 0; pad <= 64; pad += 32) {
+        s.padding = pad; s.end_gap = pad ? 6 : 0;
+        for (count = 0; count <= 7; ++count) {
+            int width = dock_viewport_length(&s,count), height = 200;
+            assert(dock_layout(&s,count,width,height,0,0,0,p));
+            check_plate(&s,p,count,width,height);
+            if (!count) continue;
+            for (mx = -20; mx < width+20; mx += 37) {
+                memcpy(current,p,sizeof(p));
+                assert(dock_layout(&s,count,width,height,mx,height-20,1,p));
+                check_plate(&s,p,count,width,height);
+                dock_animation_reset(&a);
+                for (step = 0; step < 4; ++step) {
+                    dock_animate_step(&s,&a,current,p,count);
+                    check_plate(&s,current,count,width,height);
+                }
+                if (count+1 < DOCK_MAX_ITEMS &&
+                    dock_edge_gap_layout(&s,DOCK_EDGE_BOTTOM,count,width,height,count/2,mx,height-20,1,current,&gap))
+                    check_plate(&s,current,count,width,height);
+            }
+        }
+    }
+    /* Hover gave the same answers for any row, even one off the surface. */
+    p[0] = (DockPlacement){-500,10,40,0}; p[1] = (DockPlacement){400,10,40,0};
+    for (count = 1; count <= 2; ++count) {
+        int x, y;
+        for (y = -5; y < 125; y += 3) for (x = -5; x < 325; ++x)
+            assert(dock_hover_contains(&s,p+2-count,count,320,120,x,y) ==
+                reference_hover(&s,p+2-count,count,320,120,x,y));
+    }
+}
+
 int main(void)
 {
-    test_click_and_pairing(); test_reorder_and_outside();
+    test_click_and_pairing();
+    test_fixed_pin(); test_reorder_and_outside();
     test_cancellation_and_excursion(); test_global_cancel_and_invalid_down(); test_geometry();
+    test_plate_equivalence();
     puts("interaction tests passed"); return 0;
 }

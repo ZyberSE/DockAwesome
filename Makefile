@@ -58,54 +58,32 @@ $(AMIGA_OUTPUT): $(AMIGA_OBJECTS) tools/build-version.py Makefile
 	"$(AMIGA_CC)" $(AMIGA_INCLUDES) $(AMIGA_FLAGS) $(CPU_FLAGS) -c "$(AMIGA_OBJDIR)/build_version.c" -o "$(AMIGA_OBJDIR)/build_version.o"
 	"$(AMIGA_CC)" $(CPU_FLAGS) -noixemul -Wl,-u,___stkinit $(AMIGA_OBJECTS) "$(AMIGA_OBJDIR)/build_version.o" -o "$@"
 
-HOST_CORE := src/dock_core.c src/dock_renderer.c src/dock_geometry.c src/dock_interaction.c
-HOST_HEADERS := include/dock_core.h include/dock_renderer.h include/dock_geometry.h include/dock_interaction.h
+HOST_CORE := src/dock_core.c src/dock_compose.c src/dock_renderer.c src/dock_geometry.c src/dock_interaction.c
+HOST_HEADERS := include/dock_core.h include/dock_compose.h include/dock_renderer.h include/dock_geometry.h include/dock_interaction.h src/dock_pixel.h
 
-build/test_core: $(HOST_CORE) $(HOST_HEADERS) tests/test_core.c
+SANITIZE := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
+HOST_TESTS := build/test_core build/test_interaction build/test_geometry build/test_prefs build/test_profile build/test_bob
+HOST_SANITIZE_TESTS := $(HOST_TESTS:=_sanitize)
+
+$(HOST_TESTS) build/bench_core: build/%: $(HOST_CORE) $(HOST_HEADERS) tests/%.c
 	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) $(HOST_CORE) tests/test_core.c -o "$@"
-build/test_interaction: $(HOST_CORE) $(HOST_HEADERS) tests/test_interaction.c
+	$(HOST_CC) $(HOST_FLAGS) $(filter %.c,$^) -o "$@"
+$(HOST_SANITIZE_TESTS): build/%_sanitize: $(HOST_CORE) $(HOST_HEADERS) tests/%.c
 	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) $(HOST_CORE) tests/test_interaction.c -o "$@"
-build/test_geometry: $(HOST_CORE) $(HOST_HEADERS) tests/test_geometry.c
-	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) $(HOST_CORE) tests/test_geometry.c -o "$@"
-build/test_prefs: $(HOST_CORE) $(HOST_HEADERS) src/dock_prefs.c include/dock_prefs.h tests/test_prefs.c
-	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) $(HOST_CORE) src/dock_prefs.c tests/test_prefs.c -o "$@"
+	$(HOST_CC) $(HOST_FLAGS) $(SANITIZE) $(filter %.c,$^) -o "$@"
+build/test_prefs build/test_prefs_sanitize: src/dock_prefs.c include/dock_prefs.h
+build/test_profile build/test_profile_sanitize: src/dock_profile.c include/dock_profile.h
+build/test_bob build/test_bob_sanitize: src/dock_bob.c include/dock_bob.h
 build/test_core_be: $(HOST_CORE) $(HOST_HEADERS) tests/test_core.c
 	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) -DDOCK_EMULATE_BIG_ENDIAN $(HOST_CORE) tests/test_core.c -o "$@"
-host-test: build/test_core build/test_core_be build/test_interaction build/test_geometry build/test_prefs
-	./build/test_core
-	./build/test_core_be
-	./build/test_interaction
-	./build/test_geometry
-	./build/test_prefs
+	$(HOST_CC) $(HOST_FLAGS) -DDOCK_EMULATE_BIG_ENDIAN $(filter %.c,$^) -o "$@"
 
-build/bench_core: $(HOST_CORE) $(HOST_HEADERS) tests/bench_core.c
-	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) $(HOST_CORE) tests/bench_core.c -o "$@"
+host-test: build/test_core build/test_core_be build/test_interaction build/test_geometry build/test_prefs build/test_profile build/test_bob
+	for t in $^; do ./$$t || exit 1; done
 host-bench: build/bench_core
 	./build/bench_core
-
-build/test_core_sanitize: $(HOST_CORE) $(HOST_HEADERS) tests/test_core.c
-	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer $(HOST_CORE) tests/test_core.c -o "$@"
-build/test_interaction_sanitize: $(HOST_CORE) $(HOST_HEADERS) tests/test_interaction.c
-	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer $(HOST_CORE) tests/test_interaction.c -o "$@"
-build/test_geometry_sanitize: $(HOST_CORE) $(HOST_HEADERS) tests/test_geometry.c
-	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer $(HOST_CORE) tests/test_geometry.c -o "$@"
-build/test_prefs_sanitize: $(HOST_CORE) $(HOST_HEADERS) src/dock_prefs.c include/dock_prefs.h tests/test_prefs.c
-	@mkdir -p build
-	$(HOST_CC) $(HOST_FLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer $(HOST_CORE) src/dock_prefs.c tests/test_prefs.c -o "$@"
-host-sanitize: build/test_core_sanitize build/test_interaction_sanitize build/test_geometry_sanitize build/test_prefs_sanitize
-	./build/test_core_sanitize
-	./build/test_interaction_sanitize
-	./build/test_geometry_sanitize
-	./build/test_prefs_sanitize
+host-sanitize: $(HOST_SANITIZE_TESTS)
+	for t in $^; do ./$$t || exit 1; done
 
 verify: amiga
 	file "$(AMIGA_OUTPUT)"
@@ -130,7 +108,7 @@ release:
 	$(RM) -r build/release
 	@mkdir -p build/release/DockAwesome
 	cp build/DockAwesome build/DockAwesome.info build/release/DockAwesome/
-	cp release/ReadMe.txt README.md build/release/DockAwesome/
+	cp release/ReadMe.txt README.md RELEASE_NOTES.md build/release/DockAwesome/
 	@echo "Staged build/release/DockAwesome for DockAwesome-$(RELEASE_FILE).lha"
 
 clean:
@@ -138,46 +116,26 @@ clean:
 
 -include $(AMIGA_C_OBJECTS:.o=.d)
 
-.PHONY: ammx-probe
-ammx-probe:
-	$(MAKE) build/DockAwesomeAMMXProbe
+PROBE_OBJECTS := $(addprefix $(AMIGA_OBJDIR)/,ammx_probe.o pip_probe.o pip_coexist_probe.o pip_align_probe.o)
+PIP_PROBES := build/DockAwesomePipProbe080 build/DockAwesomePipCoexistProbe080 build/DockAwesomePipAlignProbe080
 
-build/obj080/ammx_probe.o: tools/ammx_probe.c include/dock_core.h | check-toolchain
+.PHONY: ammx-probe pip-probe pip-coexist-probe pip-align-probe
+ammx-probe: build/DockAwesomeAMMXProbe
+pip-probe: build/DockAwesomePipProbe080
+pip-coexist-probe: build/DockAwesomePipCoexistProbe080
+pip-align-probe: build/DockAwesomePipAlignProbe080
+
+$(PROBE_OBJECTS): $(AMIGA_OBJDIR)/%.o: tools/%.c | check-toolchain
 	@mkdir -p "$(@D)"
-	"$(AMIGA_CC)" $(AMIGA_INCLUDES) $(AMIGA_FLAGS) -DDOCK_AMMX -m68080 -c "$<" -o "$@"
+	"$(AMIGA_CC)" $(AMIGA_INCLUDES) $(AMIGA_FLAGS) $(CPU_FLAGS) -c "$<" -o "$@"
+$(AMIGA_OBJDIR)/ammx_probe.o: include/dock_core.h
+$(filter $(AMIGA_OBJDIR)/pip_%,$(PROBE_OBJECTS)): include/amiga_pip.h
 
-build/DockAwesomeAMMXProbe: build/obj080/dock_core.o build/obj080/dock_geometry.o build/obj080/dock_interaction.o build/obj080/ammx_probe.o build/obj080/ammx.o
-	"$(AMIGA_CC)" -m68080 -noixemul -Wl,-u,___stkinit $^ -o "$@"
+build/DockAwesomeAMMXProbe: $(addprefix $(AMIGA_OBJDIR)/,dock_core.o dock_geometry.o dock_interaction.o ammx_probe.o ammx.o)
+	"$(AMIGA_CC)" $(CPU_FLAGS) -noixemul -Wl,-u,___stkinit $^ -o "$@"
 
-.PHONY: pip-probe
-pip-probe:
-	$(MAKE) build/DockAwesomePipProbe080
-
-build/obj080/pip_probe.o: tools/pip_probe.c include/amiga_pip.h | check-toolchain
-	@mkdir -p "$(@D)"
-	"$(AMIGA_CC)" $(AMIGA_INCLUDES) $(AMIGA_FLAGS) -DDOCK_AMMX -m68080 -c "$<" -o "$@"
-
-build/DockAwesomePipProbe080: build/obj080/pip_probe.o build/obj080/amiga_pip.o Makefile
-	"$(AMIGA_CC)" -m68080 -noixemul -Wl,-u,___stkinit build/obj080/pip_probe.o build/obj080/amiga_pip.o -o "$@"
-
-.PHONY: pip-coexist-probe
-pip-coexist-probe:
-	$(MAKE) build/DockAwesomePipCoexistProbe080
-
-build/obj080/pip_coexist_probe.o: tools/pip_coexist_probe.c include/amiga_pip.h | check-toolchain
-	@mkdir -p "$(@D)"
-	"$(AMIGA_CC)" $(AMIGA_INCLUDES) $(AMIGA_FLAGS) -DDOCK_AMMX -m68080 -c "$<" -o "$@"
-
-build/DockAwesomePipCoexistProbe080: build/obj080/pip_coexist_probe.o build/obj080/amiga_pip.o Makefile
-	"$(AMIGA_CC)" -m68080 -noixemul -Wl,-u,___stkinit build/obj080/pip_coexist_probe.o build/obj080/amiga_pip.o -o "$@"
-
-.PHONY: pip-align-probe
-pip-align-probe:
-	$(MAKE) build/DockAwesomePipAlignProbe080
-
-build/obj080/pip_align_probe.o: tools/pip_align_probe.c include/amiga_pip.h | check-toolchain
-	@mkdir -p "$(@D)"
-	"$(AMIGA_CC)" $(AMIGA_INCLUDES) $(AMIGA_FLAGS) -DDOCK_AMMX -m68080 -c "$<" -o "$@"
-
-build/DockAwesomePipAlignProbe080: build/obj080/pip_align_probe.o build/obj080/amiga_pip.o Makefile
-	"$(AMIGA_CC)" -m68080 -noixemul -Wl,-u,___stkinit build/obj080/pip_align_probe.o build/obj080/amiga_pip.o -o "$@"
+build/DockAwesomePipProbe080: $(AMIGA_OBJDIR)/pip_probe.o $(AMIGA_OBJDIR)/amiga_pip.o
+build/DockAwesomePipCoexistProbe080: $(AMIGA_OBJDIR)/pip_coexist_probe.o $(AMIGA_OBJDIR)/amiga_pip.o
+build/DockAwesomePipAlignProbe080: $(AMIGA_OBJDIR)/pip_align_probe.o $(AMIGA_OBJDIR)/amiga_pip.o
+$(PIP_PROBES): Makefile
+	"$(AMIGA_CC)" $(CPU_FLAGS) -noixemul -Wl,-u,___stkinit $(filter %.o,$^) -o "$@"

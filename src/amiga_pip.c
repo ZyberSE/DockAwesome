@@ -15,19 +15,23 @@
 #include <string.h>
 #include <stdint.h>
 
+#define PIP1_BASE 0x00dff3d0UL
 #define PIP2_BASE 0x00dff3b0UL
 #define CORE_REVISION 0x00dff3eaUL
+#define PIP1_LEASE "DockAwesome.PiP1"
 #define PIP2_LEASE "DockAwesome.PiP2"
 
 struct AmigaPip {
     struct Screen *screen;
+    ULONG base; /* the unit's registers: PiP1 or PiP2 */
     struct SignalSemaphore lease;
-    int leased, x, y, width, height, stride, front, configured, touched;
+    int leased, x, y, width, height, stride, front, configured, touched, right_padding;
     int physical_x, physical_y;
     int x_offset, y_offset;
     int keying, configuration_dirty;
     int retirement_pending;
     ULONG last_present_field;
+    volatile ULONG *flip_slot; /* amiga_pip_flip_at_vblank */
     unsigned int core;
     APTR allocation[2];
     unsigned char *pixels[2];
@@ -39,13 +43,13 @@ static void failure(char *error, size_t capacity, const char *text)
 }
 
 #ifdef DOCK_AMMX
-static void reg16(unsigned int offset, UWORD value)
+static void reg16(const AmigaPip *p, unsigned int offset, UWORD value)
 {
-    *(volatile UWORD *)(PIP2_BASE + offset) = value;
+    *(volatile UWORD *)(p->base + offset) = value;
 }
-static void reg32(unsigned int offset, ULONG value)
+static void reg32(const AmigaPip *p, unsigned int offset, ULONG value)
 {
-    *(volatile ULONG *)(PIP2_BASE + offset) = value;
+    *(volatile ULONG *)(p->base + offset) = value;
 }
 static ULONG field_counter(void)
 {
@@ -54,11 +58,38 @@ static ULONG field_counter(void)
 }
 #endif
 
+volatile UWORD *amiga_pip_dma_register(int unit)
+{
+    return (volatile UWORD *)((unit == 1 ? PIP1_BASE : PIP2_BASE)+0x12);
+}
+
+int amiga_pip_off_if_free(void)
+{
+#ifndef DOCK_AMMX
+    return 0;
+#else
+    unsigned int core = *(volatile UWORD *)CORE_REVISION;
+    if (core < 11900 || core == 0xffff) return 0;
+    Forbid();
+    if (!FindSemaphore((STRPTR)PIP2_LEASE)) *amiga_pip_dma_register(2) = 0;
+    if (!FindSemaphore((STRPTR)PIP1_LEASE)) *amiga_pip_dma_register(1) = 0;
+    Permit();
+    return 1;
+#endif
+}
+
 AmigaPip *amiga_pip_open(struct Screen *screen, int x, int y, int width, int height, int right_padding,
                        char *error, size_t error_capacity)
 {
+    return amiga_pip_open_unit(screen,2,x,y,width,height,right_padding,error,error_capacity);
+}
+
+AmigaPip *amiga_pip_open_unit(struct Screen *screen, int unit, int x, int y, int width, int height,
+                       int right_padding, char *error, size_t error_capacity)
+{
+    const char *lease_name = unit == 1 ? PIP1_LEASE : PIP2_LEASE;
 #ifndef DOCK_AMMX
-    (void)screen; (void)x; (void)y; (void)width; (void)height; (void)right_padding;
+    (void)screen; (void)unit; (void)x; (void)y; (void)width; (void)height; (void)right_padding;
     failure(error,error_capacity,"PiP needs DockAwesome080.");
     return NULL;
 #else
@@ -71,8 +102,8 @@ AmigaPip *amiga_pip_open(struct Screen *screen, int x, int y, int width, int hei
         width > AMIGA_PIP_MAX_WIDTH || height > AMIGA_PIP_MAX_HEIGHT ||
         right_padding < 0 || right_padding >= width || x < 0 || y < 1 ||
         x > screen->Width-width+right_padding || y > screen->Height-height ||
-        GetBitMapAttr(screen->RastPort.BitMap,BMA_DEPTH) != 16) {
-        failure(error,error_capacity,"PiP2 needs a valid 16-bit SAGA screen region."); return NULL;
+        GetBitMapAttr(screen->RastPort.BitMap,BMA_DEPTH) < 15) {
+        failure(error,error_capacity,"PiP2 needs a valid 16-, 24- or 32-bit screen region."); return NULL;
     }
     /* On core 12515, 336 px showed stripes and 352 px worked with zero modulo. */
     if (width&31) {
@@ -86,15 +117,17 @@ AmigaPip *amiga_pip_open(struct Screen *screen, int x, int y, int width, int hei
     p=calloc(1,sizeof(*p));
     if (!p) { failure(error,error_capacity,"Not enough memory for PiP2 state."); return NULL; }
     p->screen=screen; p->x=x; p->y=y; p->width=width; p->height=height;
+    p->base = unit == 1 ? PIP1_BASE : PIP2_BASE;
+    p->right_padding = right_padding;
     p->stride=width*2; p->front=1; p->core=core;
     p->x_offset=16; p->y_offset=-1;
-    InitSemaphore(&p->lease); p->lease.ss_Link.ln_Name=(char *)PIP2_LEASE;
+    InitSemaphore(&p->lease); p->lease.ss_Link.ln_Name=(char *)lease_name;
     Forbid();
-    conflict=FindSemaphore((STRPTR)PIP2_LEASE)!=NULL;
+    conflict=FindSemaphore((STRPTR)lease_name)!=NULL;
     if (!conflict) { AddSemaphore(&p->lease); p->leased=1; }
     Permit();
     if (conflict) {
-        failure(error,error_capacity,"PiP2 is already in use.");
+        failure(error,error_capacity,unit == 1 ? "PiP1 is already in use." : "PiP2 is already in use.");
         free(p); return NULL;
     }
     bytes=(size_t)p->stride*height;
@@ -114,10 +147,22 @@ AmigaPip *amiga_pip_open(struct Screen *screen, int x, int y, int width, int hei
 #endif
 }
 
+void amiga_pip_flip_at_vblank(AmigaPip *p, volatile ULONG *register_slot, volatile ULONG *buffer_slot)
+{
+    if (!p) return;
+    if (p->flip_slot) *p->flip_slot = 0;
+    p->flip_slot = NULL;
+    if (!register_slot || !buffer_slot) return;
+    *buffer_slot = 0;
+    *register_slot = p->base+0x08;
+    p->flip_slot = buffer_slot;
+}
+
 void amiga_pip_suspend(AmigaPip *p)
 {
+    if (p && p->flip_slot) *p->flip_slot = 0;
 #ifdef DOCK_AMMX
-    if (p && p->touched && p->configured) reg16(0x12,0); /* DMA row bytes0 disables */
+    if (p && p->touched && p->configured) reg16(p,0x12,0); /* DMA row bytes0 disables */
 #endif
     if (p) p->configured=0;
 }
@@ -127,6 +172,25 @@ static int physical_position(const AmigaPip *p, int x_offset, int y_offset, int 
     *x=p->x+p->screen->LeftEdge+x_offset;
     *y=p->y+p->screen->TopEdge+y_offset;
     return *x >= 0 && *y >= 0 && *x+p->width <= 65535 && *y+p->height <= 65535;
+}
+
+/* The screen region checks of open apply. A configured overlay moves at
+   once, without a buffer flip. */
+int amiga_pip_move(AmigaPip *p, int x, int y)
+{
+    if (!p || x < 0 || y < 1 || x > p->screen->Width-p->width+p->right_padding ||
+        y > p->screen->Height-p->height) return 0;
+    p->x = x; p->y = y;
+#ifdef DOCK_AMMX
+    if (p->configured) {
+        int px, py;
+        if (!physical_position(p,p->x_offset,p->y_offset,&px,&py)) return 0;
+        reg16(p,0x00,(UWORD)px); reg16(p,0x02,(UWORD)py);
+        reg16(p,0x04,(UWORD)(px+p->width)); reg16(p,0x06,(UWORD)(py+p->height));
+        p->physical_x = px; p->physical_y = py;
+    }
+#endif
+    return 1;
 }
 
 int amiga_pip_set_alignment(AmigaPip *p, int x_offset, int y_offset)
@@ -150,12 +214,13 @@ void amiga_pip_close(AmigaPip *p)
 {
     int i;
     if (!p) return;
+    if (p->flip_slot) *p->flip_slot = 0;
 #ifdef DOCK_AMMX
     if (p->touched) {
         /* Stop DMA before freeing either possibly scanned buffer. */
-        reg16(0x12,0);
+        reg16(p,0x12,0);
         WaitTOF();
-        reg32(0x08,0);
+        reg32(p,0x08,0);
     }
 #endif
     for (i=0;i<2;++i) if (p->allocation[i]) FreeVec(p->allocation[i]);
@@ -177,6 +242,10 @@ unsigned char *amiga_pip_back_buffer(AmigaPip *p)
 #endif
     return p->pixels[p->front^1];
 }
+const unsigned char *amiga_pip_front_buffer(const AmigaPip *p)
+{
+    return p ? p->pixels[p->front] : NULL;
+}
 int amiga_pip_back_index(const AmigaPip *p) { return p?p->front^1:0; }
 int amiga_pip_stride(const AmigaPip *p) { return p?p->stride:0; }
 unsigned int amiga_pip_core_revision(const AmigaPip *p) { return p?p->core:0; }
@@ -189,7 +258,7 @@ int amiga_pip_present(AmigaPip *p)
     int x,y,next;
     if (!p) return 0;
     if (IntuitionBase->FirstScreen != p->screen ||
-        GetBitMapAttr(p->screen->RastPort.BitMap,BMA_DEPTH) != 16) {
+        GetBitMapAttr(p->screen->RastPort.BitMap,BMA_DEPTH) < 15) {
         amiga_pip_suspend(p); return 0;
     }
     if (!physical_position(p,p->x_offset,p->y_offset,&x,&y)) {
@@ -197,19 +266,21 @@ int amiga_pip_present(AmigaPip *p)
     }
     next=p->front^1;
     if (!p->configured || p->configuration_dirty || x!=p->physical_x || y!=p->physical_y) {
-        reg16(0x12,0); p->touched=1;
-        reg16(0x00,(UWORD)x); reg16(0x02,(UWORD)y);
-        reg16(0x04,(UWORD)(x+p->width)); reg16(0x06,(UWORD)(y+p->height));
-        reg16(0x0c,(UWORD)(2|(p->keying?0x0100:0))); /* RGB565 + optional fixed0xf81f source key */
-        reg16(0x0e,0); /* supported widths have no inter-row padding/modulo */
-        reg16(0x10,0);  /* chromakey disabled: front overlay */
-        reg32(0x08,(ULONG)p->pixels[next]);
-        reg16(0x12,(UWORD)p->stride);
+        if (p->flip_slot) *p->flip_slot = 0;
+        reg16(p,0x12,0); p->touched=1;
+        reg16(p,0x00,(UWORD)x); reg16(p,0x02,(UWORD)y);
+        reg16(p,0x04,(UWORD)(x+p->width)); reg16(p,0x06,(UWORD)(y+p->height));
+        reg16(p,0x0c,(UWORD)(2|(p->keying?0x0100:0))); /* RGB565 + optional fixed0xf81f source key */
+        reg16(p,0x0e,0); /* supported widths have no inter-row padding/modulo */
+        reg16(p,0x10,0);  /* chromakey disabled: front overlay */
+        reg32(p,0x08,(ULONG)p->pixels[next]);
+        reg16(p,0x12,(UWORD)p->stride);
         p->physical_x=x; p->physical_y=y; p->configured=1; p->configuration_dirty=0;
-    } else reg32(0x08,(ULONG)p->pixels[next]);
-    /* Read after the volatile register write: a racing VBlank then causes a
-       conservative extra wait, never premature reuse of the previous front.
-       Pointer flips are not synchronized, so mid-field tearing is possible. */
+    } else if (p->flip_slot) *p->flip_slot = (ULONG)p->pixels[next];
+    else reg32(p,0x08,(ULONG)p->pixels[next]);
+    /* Read after the write: a racing VBlank then causes a conservative extra
+       wait, never premature reuse of the previous front. Without a VBlank
+       slot the pointer flips at once, so mid-field tearing is possible. */
     p->last_present_field=field_counter(); p->retirement_pending=1;
     p->front=next;
     return 1;

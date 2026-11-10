@@ -27,10 +27,14 @@ typedef struct {
 } DockUIAction;
 typedef int (*DockUIReadIcon)(const void *context, const char *path, DockImage *icon);
 
-/* The caller keeps screen and the graphics/intuition libraries alive. */
-DockUI *dock_ui_create(struct Screen *screen, int window_shapes);
+/* The caller keeps screen and the graphics/intuition libraries alive.
+   The flags come from DockProfile (ui_shapes, ui_glass, ui_rgb_pens,
+   aa_text): shaped windows, RGBA glass on an RTG screen, native drawing in
+   RGB (else the nearest palette pens), and antialiased text through
+   cybergraphics alpha. */
+DockUI *dock_ui_create(struct Screen *screen, int window_shapes, int glass, int rgb_pens, int alpha_text);
 void dock_ui_set_converters(DockUI *ui, DockConvertRGB24 encode, DockConvertRGB565 decode,
-    DockConvertRGB565 encode565);
+    DockConvertRGB565 encode565, DockMixHalf mix_half);
 /* Called with 1 before and 0 after a UI call that blocks the main task, such
    as the ASL drawer requester. Suspend PiP and input capture in between. */
 typedef void (*DockUIBlocking)(void *context, int blocking);
@@ -49,7 +53,6 @@ int dock_ui_open_popup(DockUI *ui, DockEdge edge, int anchor_x, int anchor_y,
     int item_action, int can_keep, int drawer);
 int dock_ui_open_folder(DockUI *ui, DockEdge edge, int x, int y, const char *path,
     int icon_size, DockUIReadIcon read_icon, const void *context, int profile);
-void dock_ui_close_popup(DockUI *ui);
 void dock_ui_dismiss_popup(DockUI *ui);
 int dock_ui_popup_bounds(const DockUI *ui, DockRect *bounds);
 void dock_ui_popup_span(const DockUI *ui, int row, int *left, int *right);
@@ -61,12 +64,26 @@ int dock_ui_folder_moving(const DockUI *ui);
 /* How far the Folder Stack box is out on screen: 0 (hidden) to 256 (open). */
 int dock_ui_folder_progress(const DockUI *ui);
 ULONG dock_ui_folder_frame_delay(const DockUI *ui);
+/* Only icons are left to load in the open Folder Stack: no motion. */
+int dock_ui_folder_loading(const DockUI *ui);
+/* Reads one more icon of path's first page into the icon cache, for a
+   Folder Stack that opens with its icons. Call while the dock is idle;
+   returns 1 while icons remain (or a popup is open). */
+int dock_ui_prefetch_folder(DockUI *ui, const char *path, int icon_size,
+    DockUIReadIcon read_icon, const void *context);
 int dock_ui_folder_step(DockUI *ui);
 void dock_ui_finish_folder_motion(DockUI *ui);
 /* The label is nonactivating and lives outside the visible Dock artwork. */
 int dock_ui_show_label(DockUI *ui, DockEdge edge, const DockRect *anchor, const char *text);
 void dock_ui_move_label(DockUI *ui, DockEdge edge, const DockRect *anchor);
 void dock_ui_hide_label(DockUI *ui);
+/* Labels show in this PiP1 layer (no window shapes), or in windows when
+   NULL. The UI does not own it. */
+struct AmigaFloat;
+void dock_ui_set_float(DockUI *ui, struct AmigaFloat *float_layer);
+/* A flat label pill with hard edges as RGBA (alpha 0 outside); the caller
+   frees out->pixels. */
+int dock_ui_pill_image(DockUI *ui, const char *text, DockImage *out);
 int dock_ui_dialog_bounds(const DockUI *ui, DockRect *bounds);
 int dock_ui_open_settings(DockUI *ui, const DockUIPrefs *initial);
 int dock_ui_open_about(DockUI *ui);

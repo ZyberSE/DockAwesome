@@ -550,3 +550,295 @@ icon centre). Share of the full zoom per icon from the pointer:
 - [x] Build 215 installed in WBStartup (build 207 in
       WBStartup/Disabled/DockAwesome-build207.old). The 90% button and the
       tint guard came after it, from the Codex review.
+
+## /simplify across the codebase (2026-11-09)
+
+- [x] Makefile: pattern rules for host tests, sanitize and probes (183 to
+      139 lines); `make -n -B` gives the same commands.
+- [x] Core: dock_convert565_damage returns the pixels converted (replacing
+      the profile copy), dock_image_opaque_at shared by both input hit
+      tests, DOCK_DRAG_THRESHOLD, the plate rect from dock_edge_panel_rect,
+      the empty plate normalized once, a derivable renderer field removed.
+- [x] Amiga: one backend selection and snapshot fallback, full_frame,
+      buttons_engaged, zoom_levels, ticks_us, the v50 Intuition LVOs in
+      amiga_abi.h, popup shape via make_folder_shape, a shared coverage
+      blend, never-written profile counters and write-only fields removed.
+- [x] Host tests, sanitizer and the 68080 build pass with no warnings.
+- [ ] Not run on the Vampire yet: needs a real-machine check of PiP,
+      snapshot fallback, popups and drag before installing.
+
+## Simplify follow-ups and platform architecture (2026-11-09)
+
+Plan: ~/.claude/plans/rosy-frolicking-lynx.md. Vampire stays the target;
+the architecture must allow other platforms later at no performance cost
+(per-frame or startup dispatch only, measured against the baseline).
+
+Baseline, build 219 (simplify commit), Size 36, 12 pins, 800x96 PiP canvas:
+- PiP sweep 8 px: render 7.8-7.9 ms (compose 5.6, conversion 2.2-2.3).
+- Snapshot sweep 8 px: render 13.8 ms (compose 4.6, conversion 8.3 at
+  100% of the canvas, portable kernels: AMMX is PiP-only today).
+- Window moved behind the PiP dock: 21 changes, all full frames,
+  render 24.6 ms (compose 16.3, conversion 8.3), decode 2.1, compare 1.3.
+- --damage-check: 0 compose and 0 convert mismatches.
+
+- [x] 1. Backdrop change damages only the changed box (PiP hot path).
+      Window behind the dock: render 24.6 -> 13.6 ms, 1 of 22 frames full,
+      changed box 42% of the canvas; --damage-check 0.
+- [x] 2. Snapshot/opaque present only damage; AMMX kernels in every mode.
+      Snapshot sweep: render 13.8 -> 5.9 ms, conversion 8.3 -> 0.64 ms;
+      a window passing over the dock repaints fully; --damage-check 0.
+- [x] 3. Cache stamps replace address-based invalidation; one morph buffer.
+      Folder Stack open/close and reorder: --damage-check 0 over 204 frames.
+- [x] 4. Folder Stack close button rebuilt only when its inputs change.
+- [x] 5. Bugs: stale dock_screen after Workbench reopen; slider vs Save rules.
+      Slider checked on the Vampire; a screen mode change is not yet tested.
+- [x] 6. Compositor in dock_compose.c; shared clamp helpers. Every m68k
+      function is instruction-identical; Vampire sweep unchanged.
+- [x] 7. Hover label, Size slider, popup rows, drag mask (labels, popup row
+      hover and the slider checked on the Vampire). Unmasked PiP conversion keys
+      coverage in place: 2.17-2.24 -> 1.82 ms per sweep frame, 3 A/B pairs.
+- [x] 8a. DockCaps probe (amiga_caps.c), pure dock_choose_profile with
+      host tests, --caps. ApolloOS R9.5: cpu_080 yes (AttnFlags $a47f),
+      core 12398, profile pip/ammx/glass. Sweep A/B within noise.
+- [x] 8b. SurfaceOps (pip, window) chosen once per surface; amiga_main.c
+      split into input handler, status, workbench and surface modules
+      (4787 -> 2359 lines). Hot functions instruction-identical or proven
+      equivalent; Vampire sweep: conversion 1.81 -> 1.73 ms, compose same;
+      --damage-check 0 in PiP and snapshot; popup, Folder Stack, R checked.
+- [x] 9. Build 225 installed in SYS:WBStartup (build 218 in
+      SYS:WBStartup/Disabled/DockAwesome-build218.old). RAM: test files
+      removed.
+
+Review (2026-11-09):
+- Measured on the Vampire against build 219:
+  PiP sweep 7.8-7.9 -> 7.4-7.5 ms (conversion 2.2 -> 1.73);
+  snapshot sweep 13.8 -> 5.9 ms; window moved behind the dock
+  24.6 -> 13.6 ms per change, 21 of 21 -> 1 of 22 frames full.
+- Not yet tested: a Workbench screen mode change (step 5 input fix and the
+  depth re-probe), opaque mode with an empty dock, an 8-bit screen.
+- Next measured costs: PiP compose 5.6 ms per sweep frame; a backdrop box
+  still remixes whole glass rows; GCC places draw/event_loop in
+  .text.unlikely (size-optimized), worth an A/B with __attribute__((hot)).
+
+## Launching pins without Workbench (AmiKit / Directory Opus)
+
+Report: on AmiKit for Vampire every pin click shows "Workbench could not
+open this object." AmiKit runs Directory Opus 5 Magellan as the desktop
+instead of Workbench.
+
+Cause, from the DOpus 5 source (github.com/BlitterStudio/dopus5,
+source/Library/wb.c): DOpus patches OpenWorkbenchObjectA only on OS4
+(`#ifdef __amigaos4__`). On 68k the call goes to workbench.library, which
+fails without the Workbench process. DOpus's own OS4 patch does what we
+need: `FindPort("WORKBENCH") ? original : launch ourselves`. On 68k DOpus
+does patch WorkbenchControlA: WBCTRLA_DuplicateSearchPath returns its path
+list; GetProgramList and GetOpenDrawerList are unsupported. Its ARexx port is
+DOPUS.1, and `lister new <path>` opens a drawer.
+
+Plan (ApolloOS keeps today's path unchanged):
+- [x] 1. caps: `dopus` (FindPort "DOPUS.1"), printed by --caps; test rows.
+- [x] 2. src/amiga_launch.c: a Workbench-style launch for tools and projects,
+      used when there is no WORKBENCH port (or with --self-launch).
+      - Icon via GetIconTagList (DefIcons fallback). WBTOOL runs the path;
+        WBPROJECT runs its default tool with the document as argument 1.
+      - A bare default tool name is searched next to the project, then in
+        the WBCTRLA_DuplicateSearchPath list (Workbench or DOpus), then C:,
+        SYS:Utilities, SYS:Tools, SYS:System.
+      - LoadSeg, CreateNewProc with the larger icon stack (at least 4096;
+        Workbench itself uses the project's, RKM Libraries ch. 14), TOOLPRI
+        from the opened icon, home and current directory = the tool's drawer; a WBStartup
+        with a lock per argument. Icons set to "Start from Shell" (CLI) or "Start from
+        ARexx" (REXX) run through SystemTags with an AUTO output window, and a
+        $STACK: string in the program raises the stack, as workbench.library
+        45+ does (amiga-refs/amigaos-3.2, wb release notes).
+      - Replies come to launch_port in the event loop; the pin shows a dot
+        (RUNNING_SELF) until then. On quit the dock closes its windows and
+        waits for the programs it started.
+      Vampire, ApolloOS, --snapshot --self-launch: Calculator and Scout
+      started (Calculator pri 0; ApolloOS gives every process 40960 bytes
+      of stack, so the icon stack is not visible there); RiVA.guide opened
+      through its default tool; RAM:test.txt (DefIcons, no .info) opened in
+      Editor; dots on while running, off when closed; the drawer pin shows
+      "Could not open / ApolloOS:Utilities / object is not of required
+      type"; Ctrl-C with two programs running closed the dock window and the
+      process ended once both were closed. Graphics memory back to the
+      value before the test.
+- [ ] 3. Drawers and disks without Workbench, through ARexx to DOPUS.1
+      (built, not yet run on hardware): open with `lister new "<path>"`
+      (sent without waiting; a failing reply becomes a notice); the status
+      worker reads `lister query all` and `lister query <handle> path` and
+      matches drawers with SameLock (dots); Close sends
+      `lister close <handle>`. Without DOpus a drawer pin says "object is not
+      of required type". Scalos waits until someone can check its ARexx
+      interface.
+- [x] 4. The failure text says "Could not open" plus path and reason, not
+      "Workbench".
+- [x] 3b. Directory Opus 4.17 (ApolloOS, Coffin) also names its port
+      DOPUS.1 but has no lister commands: the probe and every ARexx send
+      now also need dopus5.library in memory. With DOpus 4 running,
+      --caps says dopus no and a drawer pin gives "object is not of
+      required type" without talking to it (Vampire, 2026-11-09).
+- [ ] 5. Verify on the Vampire with --self-launch: tool, tool with a large
+      stack (Status in a Shell), project with .info, DefIcons document, a
+      CLI tooltype, a script, Folder Stack open, the dock quit while a
+      started program runs, PiP sweep unchanged. Then a test build for the
+      AmiKit user with --caps.
+
+Vampire, ApolloOS R9.5, --self-launch, test tools in RAM: (2026-11-09):
+- TOOLPRI=-5 on a tool icon: the process ran at -5. A project with no
+  TOOLPRI started its tool at 0, as Workbench does.
+- $STACK:200000 in a tool with an 8192 icon: 200000 bytes.
+- Project (stack 100000, default tool "plain" next to it): plain started
+  with 100000 bytes and WBStartup args plain + doc in RAM:lt.
+- CLI tooltype: ran from a Shell, argc 1, current dir the icon's drawer.
+  The command got the Shell's default stack (40960 here), not the icon's
+  50000: SystemTags' NP_StackSize sets the Shell process, and Directory
+  Opus 5 launches CLI icons the same way.
+- REXX tooltype: RX "<path>" ran the path as ARexx source (error 41);
+  fixed with RX "call '<path>'". hello.rexx and "it's a script.rexx" then
+  ran from the dock in their drawer.
+- Lock check: a drawer stayed locked after its tool ended, but Workbench's
+  own OpenWorkbenchObjectA of the same libnix test tool leaves the same
+  lock, and a tool with no C startup leaves none with any combination of
+  NP_CurrentDir/NP_HomeDir. Not caused by the dock's launcher.
+- Not run: DOpus 5 listers (only DOpus 4.17 here); needs AmiKit.
+
+Not possible under DOpus: a list of running programs. Its launch list is
+private (LibData.launch_list) and neither ARexx nor dopus5.library exposes
+it, so program dots come from our own launches and the window pass.
+
+## PiP on AmigaOS 3.x on a Vampire (Coffin, AmiKit) (2026-11-09)
+
+Goal: the ApolloOS experience (live see-through dock, windows dragged
+under it) where the Vampire runs AmigaOS 3.9/3.2 with P96. The probe on
+branch pip-os3-probe (b535291) showed it works on Coffin r65 at 16 bits:
+SAGA PiP2 and its colour key work under P96, the dock shows, zoom works,
+and a window dragged under it updates without lag once a busy layer list
+no longer stops the capture.
+
+PiP2 itself is RGB565 only (SAGA formats: 8/15/16-bit, YUV), so the dock's
+own pixels are 16-bit; the desktop around and through it keeps its depth.
+
+Plan (branch pip-os3 from simplify-followups):
+- [x] 1. Profile: PiP needs AMMX and core >= 11900 only. Window shapes and
+      the 16-bit screen stop being requirements; apollo_pointer only on
+      ApolloOS Intuition (shaped_windows). Update test_profile rows
+      (AmigaOS 3.2/3.9 and 24/32-bit screens now choose PiP).
+- [x] 2. Receiver window without shapes: a 1x1 window (no backfill) while
+      no drag is on; visible width from the canvas, not the window.
+- [x] 3. Live capture keeps going when the layer list is busy (only the
+      Z-order check needs it). Verify on ApolloOS before merging.
+- [x] 4. Drops without shapes. Moving the receiver at the press failed:
+      Workbench 3.9 stalls input and cancels the drag (receiver in place
+      at 3 of 3 releases, no AppMessage). It now arms ahead: buttons up and
+      the pointer on a Workbench icon or drawer puts the receiver on the
+      dock box (front, painting the desktop saved then); leaving puts it
+      back at 1x1. Coffin 16-bit, by the agent: Scout dropped from a drawer
+      was added; drags inside a drawer still work; a window moved under the
+      plate afterwards was followed (5 changes).
+- [ ] 5. (built, not run at 24/32 bits) 24- and 32-bit screens: capture converts RGB24/BGR24/ARGB32/
+      BGRA32/RGBA32 rows to RGB565 for the same compare and decode path
+      (the overlay is RGB565 anyway). Measure the capture cost against
+      the 16-bit 4.0 ms.
+- [ ] 6. Verify: Coffin 16 and 24 bit (show at start, zoom, drag under,
+      click, right-click menu, drop an icon, Folder Stack, Settings);
+      ApolloOS unchanged (PiP sweep, drops, --damage-check); --caps rows.
+      Coffin 16-bit so far: shows at start, zoom, window dragged under it
+      without lag (user), clicks and right-click menu, drop from a drawer.
+- [ ] Output of a dock started with Run >file is lost on Coffin (the
+      foreground run with > keeps it); look into it.
+
+### Floating parts on PiP1 (no window shapes) (2026-11-09)
+The save-under drag preview lags (Intuition moves windows asynchronously)
+and labels have square corners without shapes. SAGA's second overlay,
+PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
+- [x] 1. amiga_pip: choose the unit (PiP1 0xdff3d0, PiP2 0xdff3b0, own
+      lease each) and move an open overlay.
+- [x] 2. amiga_float: an ARGB image shown in PiP1, alpha 0 as the key
+      colour, width padded to 32; opened once and kept on (keyed clear
+      when idle), reopened only to grow; cut at the screen edge.
+- [x] 3. Dragged pin on PiP1 when PiP has no shapes: the same picture as
+      the dock's (PiP2 lies over PiP1), redrawn on each size change,
+      Remove as a pill once armed; window preview when PiP1 is taken.
+- [x] 4. Hover labels on PiP1.
+- [x] 5. Verified on Coffin 24-bit by the user (videos IMG_2477-2479):
+      drag in/out, Remove, labels. ApolloOS: not yet rechecked.
+
+### Coffin polish (2026-11-10) — verified on Coffin, user approved
+- [x] A Folder Stack pin cannot be dragged (all modes and OSes).
+- [x] Workbench drag over the PiP dock: the drag image is painted into
+      PiP2 over the whole surface (holes lagged Workbench's image).
+- [x] Folder Stack and menus without window shapes: glass over the
+      captured screen, rounded edges and tip, AA glyph, entrance motion.
+- [x] rgb_rastport and alpha_text probed by drawing (both false on Coffin).
+- [x] Folder Stack grows from its tip and fades, both ways; quarter-step
+      fade via the 50% mix; 5-6 frames in 130 ms at 50 Hz.
+
+### Coffin as daily dock (2026-11-10) — user approved
+- [x] Pins from Coffin's WBDock (SYS:WBStartup/WBDock), bottom edge, size 32.
+- [x] PiP1 floats only beside a narrow dock (scrambled the 992 px dock).
+- [x] Icon-less scripts run with Execute (ShapeShifter Launch, WOMyFiles).
+- [x] Quit for running apps on AmigaOS 3.x (posted IDCMP_CLOSEWINDOW).
+- [x] No drag preview past the screen-edge side of the dock.
+- [x] Installed on Coffin 2026-11-10: SYS:WBStartup/DockAwesome (+ .info, DONOTWAIT), ENVARC:DockAwesome.json, WBDock moved to SYS:WBStartup/Disabled/. Build db01deb. Rollback: move WBDock back, delete the two DockAwesome files.
+
+### Before merging pip-os3
+- [x] ApolloOS regression, build 315 (2026-11-10 night, by agent):
+      --caps: rgb_rastport yes (after the RGB565-precision probe fix,
+      653280b), alpha_text yes, ui_glass yes; --damage-check 80 frames, 0
+      mismatches; shaped label (tip, glass), menu (glass, AA text), Folder
+      Stack (scale + fade: entrance 6-7 frames in ~150 ms, dismissal 6 in
+      ~140 ms), shaped drag preview with Remove, Workbench drop added a pin
+      (drag image painted 8 frames); config restored afterwards.
+- [x] Installed build 315 on ApolloOS: SYS:WBStartup/DockAwesome; the old
+      build 225 (black rectangle after boot) is Disabled/DockAwesome-build225.old.
+      Older .old builds removed; DockAwesome-1.0b1.old kept.
+- [x] The user rebooted ApolloOS: build 315 came up from WBStartup (dock
+      window there). Whether the black rectangle is gone: ask the user.
+- [x] Drag out on ApolloOS (shaped): the window opens past the surface, not
+      only when Remove arms (4f6891f); the dock draws the window's own picture
+      where the window is, and the window reopens only on Remove changes
+      (9c28c08). User: "Allt funkar nu".
+- [x] Folder Stack: default icons (DefIcons) for entries without a .info
+      (5e8d5ed); round antialiased back and page buttons (5e4e0ec). Seen on
+      ApolloOS; back button tested.
+- [x] Installed build 320 on ApolloOS; rollback Disabled/DockAwesome-build318.old.
+- [ ] Delete SYS:WBStartup/Disabled/DockAwesome-build315.old after the next
+      ApolloOS boot (Workbench holds it since it started it at boot).
+- [x] Folder Stack icons kept between openings and read ahead while idle
+      (4272be2): 22 icons 940 ms -> first opening 132 ms, later 12 ms.
+- [x] AmigaOS 3.2.3 (Vampire): installed build 344 in WBStartup with its own
+      ENVARC config (WBDock's programs, bottom), WBDock moved to
+      WBStartup/Disabled, rollback Disabled/DockAwesome-build326.old. Fixed
+      there: stale band from the drop receiver (now behind windows), window
+      preview lag (pins drawn on the screen, dock_bob), tearing on a side
+      dock (PiP2 flips in the VBlank), labels in windows (PiP1 only with
+      --pip1), left dock keyed tail. User: "Funkar perfekt!".
+- [x] ApolloOS: installed build 344 (rollback Disabled/DockAwesome-build320.old;
+      315 and 318 removed). --caps unchanged; shaped drag-out with Remove
+      checked with the button held.
+- [ ] ApolloOS with the user: drag-out seam now that PiP2 flips in the
+      VBlank (the shaped window moves at once), tooltips, Folder Stack.
+- [x] Coffin: installed build 344 (rollback Disabled/DockAwesome-build325.old;
+      314 removed). Drawn drag pin with the round Remove pill checked with
+      the button held; the screen came back clean. User: "Allt funkar på
+      Coffin också!" (said on 325; 344 installed after).
+- [x] Installed build 325 on Coffin (rollback Disabled/DockAwesome-build314.old).
+- [ ] Coffin with the user: drag out of the bottom dock (the window path now
+      draws the window's picture), default icons, native back button, icon
+      fill speed.
+- Note: Coffin starts AmiMCP from S:User-Startup (run amiagent TOKEN=amiga),
+  ApolloOS from SYS:WBStartup/AmiMCP (IconX script waiting for AROSTCP).
+- [ ] A crash after starting a second dock (PiP2 is already in use, OK):
+      unknown whether the new or the broken old dock; reproduce with the user
+      present. Exit path reviewed, nothing found.
+- [ ] Run >file loses profile output on Coffin (use an Execute script).
+- [ ] Merge pip-os3 (user's call); push only when asked.
+- [x] Build 352 (PiP off at start and on Ctrl-Amiga-Amiga, --pip-off, menus
+      step aside only when they can reach the dock) installed on AmigaOS
+      3.2.3 and Coffin; rollbacks Disabled/DockAwesome-build344.old there.
+- [x] ApolloOS: installed build 352 (rollback Disabled/DockAwesome-build350.old).
+- [ ] With the user: reboot with Ctrl-Amiga-Amiga into another system and
+      check that no previous dock frame (or black box) shows at boot; offer
+      `DockAwesome --pip-off` early in S:User-Startup for other reboots.
+

@@ -1,4 +1,5 @@
 #include "dock_renderer.h"
+#include "dock_pixel.h"
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,16 +58,37 @@ void dock_damage_merge(DockDamage *dst, const DockDamage *src, int width, int he
     for (i = 0; i < src->count && !dst->full; ++i) dock_damage_add(dst, src->rect[i], width, height);
 }
 
-void dock_convert565_damage(unsigned char *buffer, int stride,
+int dock_damage_upload_rects(const DockDamage *d, int width, int height, int max, DockRect *out)
+{
+    int i;
+    if (!d || !out || max < 1 || width < 1 || height < 1) return 0;
+    if (d->full) { out[0] = (DockRect){0, 0, width, height}; return 1; }
+    if (d->count <= max) {
+        for (i = 0; i < d->count; ++i) out[i] = d->rect[i];
+        return d->count;
+    }
+    out[0] = d->rect[0];
+    for (i = 1; i < d->count; ++i) {
+        const DockRect *r = &d->rect[i];
+        if (r->left < out[0].left) out[0].left = r->left;
+        if (r->top < out[0].top) out[0].top = r->top;
+        if (r->right > out[0].right) out[0].right = r->right;
+        if (r->bottom > out[0].bottom) out[0].bottom = r->bottom;
+    }
+    return 1;
+}
+
+unsigned long dock_convert565_damage(unsigned char *buffer, int stride,
     const DockImage *frame, const unsigned char *coverage,
     const DockDamage *damage, unsigned char *scratch,
     DockConvertRGB565 encode, DockKeyRGB565 key,
     DockCoverageMask mask, void *context)
 {
     DockRect whole;
+    unsigned long pixels = 0;
     int i, n, y, width;
     if (!buffer || !frame || !frame->pixels || frame->width < 1 || frame->height < 1 ||
-        !damage || !scratch || !encode || !key) return;
+        !damage || !scratch || !encode || !key) return 0;
     width = frame->width;
     whole = (DockRect){0, 0, width, frame->height};
     n = damage->full ? 1 : damage->count;
@@ -80,23 +102,73 @@ void dock_convert565_damage(unsigned char *buffer, int stride,
         for (y = top; y < bottom; ++y) {
             unsigned char *out = buffer+(size_t)y*stride+(size_t)left*2;
             unsigned long count = (unsigned long)(right-left);
-            if (coverage) memcpy(scratch, coverage+(size_t)y*width+left, count);
+            const unsigned char *span = scratch;
+            /* Without a mask, key reads coverage in place: it never writes it. */
+            if (coverage && !mask) span = coverage+(size_t)y*width+left;
+            else if (coverage) memcpy(scratch, coverage+(size_t)y*width+left, count);
             else memset(scratch, 255, count);
             if (mask) mask(context, y, left, right, scratch);
             encode(out, frame->pixels+((size_t)y*width+left)*4, count);
-            key(out, scratch, count);
+            key(out, span, count);
+            pixels += count;
         }
     }
+    return pixels;
 }
 
-static int clamp_int(int64_t v)
+static int zero_bytes(const unsigned char *p, size_t n)
 {
-    return v < INT_MIN ? INT_MIN : v > INT_MAX ? INT_MAX : (int)v;
+    while (n--) if (*p++) return 0;
+    return 1;
+}
+
+/* One RGB565 pixel as a single 16-bit load (rows start on even addresses;
+   GCC 6 routes a 2-byte memcpy through the stack). Only compared, so byte
+   order does not matter. */
+static unsigned int pixel565(const unsigned char *row, int x)
+{
+    return ((const uint16_t *)(const void *)row)[x];
+}
+
+DockRect dock_rgb565_refresh(unsigned char *cache, const unsigned char *source,
+    size_t source_stride, int width, int visible, int height, DockBytesEqual equal)
+{
+    DockRect box = {0,0,0,0};
+    size_t row_bytes = (size_t)width*2;
+    int y, a, b, low, high;
+    if (!cache || !source || width < 1 || height < 1) return box;
+    if (visible < 0) visible = 0;
+    if (visible > width) visible = width;
+    if (!equal) equal = dock_bytes_equal_c;
+    for (y = 0; y < height; ++y) {
+        unsigned char *line = cache+(size_t)y*row_bytes;
+        const unsigned char *src = source+(size_t)y*source_stride;
+        /* The tail past the screen is zero after any whole capture; only a
+           foreign write such as the drag reference leaves bytes there. */
+        if (equal(line,src,(unsigned long)visible*2) &&
+            zero_bytes(line+(size_t)visible*2,row_bytes-(size_t)visible*2)) continue;
+        /* [a,b) spans the differing pixels. Scanning from both ends costs
+           only changed rows, and stops at their first difference. */
+        for (a = 0; a < visible && pixel565(line,a) == pixel565(src,a); ++a) {}
+        if (a == visible) while (!pixel565(line,a)) ++a;
+        for (b = width; b > visible && !pixel565(line,b-1); --b) {}
+        if (b == visible) while (pixel565(line,b-1) == pixel565(src,b-1)) --b;
+        low = a > visible ? a : visible; high = b < visible ? b : visible;
+        if (a < high) memcpy(line+a*2, src+a*2, (size_t)(high-a)*2);
+        if (low < b) memset(line+low*2, 0, (size_t)(b-low)*2);
+        if (box.left == box.right) box = (DockRect){a, y, b, y+1};
+        else {
+            if (a < box.left) box.left = a;
+            if (b > box.right) box.right = b;
+            box.bottom = y+1;
+        }
+    }
+    return box;
 }
 
 static DockRect image_rect(const DockImage *image, int x, int y)
 {
-    DockRect r = {x, y, clamp_int((int64_t)x+image->width), clamp_int((int64_t)y+image->height)};
+    DockRect r = {x, y, dock_saturate_int((int64_t)x+image->width), dock_saturate_int((int64_t)y+image->height)};
     return r;
 }
 
@@ -112,8 +184,8 @@ static void add_span(DockDamage *d, int bottom, const DockRect *panel, int64_t a
                      int width, int height)
 {
     DockRect r;
-    if (bottom) r = (DockRect){clamp_int(a), panel->top, clamp_int(b), panel->bottom};
-    else r = (DockRect){panel->left, clamp_int(a), panel->right, clamp_int(b)};
+    if (bottom) r = (DockRect){dock_saturate_int(a), panel->top, dock_saturate_int(b), panel->bottom};
+    else r = (DockRect){panel->left, dock_saturate_int(a), panel->right, dock_saturate_int(b)};
     dock_damage_add(d, r, width, height);
 }
 
@@ -135,7 +207,8 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
     DockDamage *d;
     DockRect panel, full;
     const DockOverlay *overlays;
-    int radius, captured, width, height, bottom, overlay_count, i, n;
+    const unsigned char *back;
+    int radius, width, height, bottom, overlay_count, i, n;
     if (!r || !r->pixels) return;
     if (backdrop && backdrop->pixels && backdrop->width > 0 && backdrop->height > 0) {
         if (r->glass.image.width != backdrop->width || r->glass.image.height != backdrop->height) {
@@ -159,10 +232,10 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
             &panel, &radius)) { o->valid = 0; return; }
     width = canvas->width; height = canvas->height;
     bottom = r->edge == DOCK_EDGE_BOTTOM;
-    if (panel.right <= panel.left || panel.bottom <= panel.top) panel = (DockRect){0,0,0,0};
-    captured = backdrop && backdrop->pixels && backdrop->width == width && backdrop->height == height;
+    back = backdrop && backdrop->pixels && backdrop->width == width && backdrop->height == height ?
+        backdrop->pixels : NULL;
     if (!o->valid || o->canvas != canvas->pixels || o->width != width || o->height != height ||
-        o->backdrop != (captured ? backdrop->pixels : NULL) || o->captured != captured ||
+        o->backdrop != back ||
         o->coverage != r->coverage || o->pixels != (const void *)r->pixels ||
         o->edge != (int)r->edge || o->center_panel != r->center_panel || o->count != count ||
         !same_settings(&o->settings, s) || o->radius != radius ||
@@ -187,11 +260,10 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
             add_divider(d, bottom, &panel, &p[count-2], &p[count-1], width, height);
         }
         for (i = 0; i < count; ++i) {
-            int level = p[i].level;
-            const DockImage *image = icons[i] && level >= 0 && level < DOCK_MAX_LEVELS &&
-                level < icons[i]->levels ? &icons[i]->image[level] : NULL;
+            const DockImage *image = level_image(icons[i], p[i].level);
             if (memcmp(&o->placement[i], &p[i], sizeof(*p)) ||
                 o->image[i] != (image ? image->pixels : NULL) ||
+                o->stamp[i] != (image ? icons[i]->stamp : 0) ||
                 o->pressed[i] != (r->pressed_item == i+1)) {
                 dock_damage_add(d, o->icon[i], width, height);
                 if (image) dock_damage_add(d, image_rect(image, p[i].x, p[i].y), width, height);
@@ -207,28 +279,27 @@ void dock_renderer_draw(DockRenderer *r, DockImage *canvas,
             if (v && v->image) dock_damage_add(d, image_rect(v->image, v->x, v->y), width, height);
         }
     }
+    /* Queued backdrop changes join after the compare; a full draw covers them. */
+    dock_damage_merge(d, &r->backdrop_damage, width, height);
+    dock_damage_clear(&r->backdrop_damage);
     full = (DockRect){0, 0, width, height};
-    if (d->full)
+    n = d->full ? 1 : d->count;
+    for (i = 0; i < n; ++i)
         dock_render_oriented_clip(canvas, backdrop, icons, p, count, s, r->pixels->mix_half,
             &r->panel, r->coverage, r->pressed_item, r->edge, r->center_panel, glass,
-            overlays, overlay_count, &full);
-    else for (i = 0; i < d->count; ++i)
-        dock_render_oriented_clip(canvas, backdrop, icons, p, count, s, r->pixels->mix_half,
-            &r->panel, r->coverage, r->pressed_item, r->edge, r->center_panel, glass,
-            overlays, overlay_count, &d->rect[i]);
+            overlays, overlay_count, d->full ? &full : &d->rect[i]);
     /* Keep this frame's inputs for the next comparison. */
     o->valid = overlay_count <= DOCK_MAX_OVERLAYS;
     o->canvas = canvas->pixels; o->width = width; o->height = height;
-    o->backdrop = captured ? backdrop->pixels : NULL; o->captured = captured;
+    o->backdrop = back;
     o->coverage = r->coverage; o->pixels = r->pixels;
     o->edge = r->edge; o->center_panel = r->center_panel; o->count = count;
     o->settings = *s; o->panel = panel; o->radius = radius;
     for (i = 0; i < count; ++i) {
-        int level = p[i].level;
-        const DockImage *image = icons[i] && level >= 0 && level < DOCK_MAX_LEVELS &&
-            level < icons[i]->levels ? &icons[i]->image[level] : NULL;
+        const DockImage *image = level_image(icons[i], p[i].level);
         o->placement[i] = p[i];
         o->image[i] = image ? image->pixels : NULL;
+        o->stamp[i] = image ? icons[i]->stamp : 0;
         o->icon[i] = image ? image_rect(image, p[i].x, p[i].y) : (DockRect){0,0,0,0};
         o->pressed[i] = r->pressed_item == i+1;
     }
@@ -251,6 +322,18 @@ void dock_renderer_backdrop_changed(DockRenderer *r)
     if (!r) return;
     dock_renderer_invalidate(r);
     if (r->glass.ready) memset(r->glass.ready,0,(size_t)r->glass.image.height);
+}
+
+void dock_renderer_backdrop_damaged(DockRenderer *r, DockRect box)
+{
+    int top, bottom;
+    if (!r || box.left >= box.right || box.top >= box.bottom) return;
+    /* The draw clips the box to its canvas. */
+    dock_damage_add(&r->backdrop_damage, box, INT_MAX, INT_MAX);
+    if (!r->glass.ready) return;
+    top = box.top > 0 ? box.top : 0;
+    bottom = box.bottom < r->glass.image.height ? box.bottom : r->glass.image.height;
+    if (top < bottom) memset(r->glass.ready+top, 0, (size_t)(bottom-top));
 }
 
 void dock_renderer_release(DockRenderer *r)

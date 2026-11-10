@@ -1,6 +1,5 @@
 #include "dock_geometry.h"
 #include "dock_interaction.h"
-#include <limits.h>
 
 static int side_edge(DockEdge edge)
 {
@@ -25,20 +24,6 @@ static int valid(const DockSettings *s, DockEdge edge, const DockPlacement *p,
         (edge == DOCK_EDGE_BOTTOM || side_edge(edge)) &&
         count >= 0 && count <= DOCK_MAX_ITEMS && (!count || p) &&
         width > 0 && height > 0;
-}
-
-static int bounded_int(int64_t value)
-{
-    if (value < INT_MIN) return INT_MIN;
-    if (value > INT_MAX) return INT_MAX;
-    return (int)value;
-}
-
-static int clip(int value, int limit)
-{
-    if (value < 0) return 0;
-    if (value > limit) return limit;
-    return value;
 }
 
 int dock_panel_thickness(const DockSettings *s)
@@ -70,7 +55,7 @@ static void to_virtual(DockEdge edge, int cross, const DockPlacement *actual,
         virtual[i] = p;
         virtual[i].x = p.y;
         virtual[i].y = edge == DOCK_EDGE_LEFT ?
-            bounded_int((int64_t)cross-p.x-p.size) : p.x;
+            dock_saturate_int((int64_t)cross-p.x-p.size) : p.x;
     }
 }
 
@@ -82,7 +67,7 @@ static void from_virtual(DockEdge edge, int cross, const DockPlacement *virtual,
         DockPlacement p = virtual[i];
         actual[i] = p;
         actual[i].x = edge == DOCK_EDGE_LEFT ?
-            bounded_int((int64_t)cross-p.y-p.size) : p.y;
+            dock_saturate_int((int64_t)cross-p.y-p.size) : p.y;
         actual[i].y = p.x;
     }
 }
@@ -94,7 +79,7 @@ static void pointer_virtual(DockEdge edge, int width, int x, int y,
                             int *vx, int *vy)
 {
     *vx = y;
-    *vy = edge == DOCK_EDGE_LEFT ? bounded_int((int64_t)width-1-x) : x;
+    *vy = edge == DOCK_EDGE_LEFT ? dock_saturate_int((int64_t)width-1-x) : x;
 }
 
 int dock_edge_layout(const DockSettings *s, DockEdge edge, int count,
@@ -211,11 +196,11 @@ int dock_edge_panel_rect(const DockSettings *s, DockEdge edge, const DockPlaceme
         const DockPlacement *last = &p[count-1];
         int first_pos = edge == DOCK_EDGE_BOTTOM ? p[0].x : p[0].y;
         int last_pos = edge == DOCK_EDGE_BOTTOM ? last->x : last->y;
-        r.left = clip(bounded_int((int64_t)first_pos-s->padding), long_axis);
-        r.right = clip(bounded_int((int64_t)last_pos+last->size+s->padding), long_axis);
+        r.left = dock_clamp(dock_saturate_int((int64_t)first_pos-s->padding), 0, long_axis);
+        r.right = dock_clamp(dock_saturate_int((int64_t)last_pos+last->size+s->padding), 0, long_axis);
     } else {
-        r.left = clip(s->padding, long_axis);
-        r.right = clip(long_axis-s->padding, long_axis);
+        r.left = dock_clamp(s->padding, 0, long_axis);
+        r.right = dock_clamp(long_axis-s->padding, 0, long_axis);
     }
     dock_panel_cross_bounds(s,cross_axis,&r.top,&r.bottom);
     if (r.right < r.left) r.right = r.left;

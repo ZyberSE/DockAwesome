@@ -1,9 +1,10 @@
-DockAwesome - a magnifying dock for ApolloOS
-============================================
+DockAwesome - a magnifying dock for the Vampire V4
+==================================================
 
 Requirements
-  Vampire V4 (68080) with ApolloOS R9.5 and a 16-bit RGB SAGA Workbench.
-  The dock draws through SAGA PiP and uses AMMX.
+  Vampire V4 (68080) with ApolloOS R9.5, AmigaOS 3.2.3 or AmigaOS 3.9.
+  Live transparency needs a 16-bit Workbench screen; the dock draws
+  through SAGA PiP and uses AMMX. Other screens get a static background.
 
 Install
   1. Copy DockAwesome and DockAwesome.info to SYS:WBStartup to start it
@@ -32,5 +33,8 @@ Uninstall
   Quit the dock from its menu, delete DockAwesome and DockAwesome.info,
   and move WBDock back if you used it.
 
+What is new is in RELEASE_NOTES.md. New releases:
+  https://github.com/delwall/DockAwesome/releases
+
 Report problems to ZyBeR on Discord. Include what you did, what you saw,
-and the version from About.
+the version from About and the output of DockAwesome --caps.

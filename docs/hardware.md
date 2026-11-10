@@ -3,7 +3,10 @@
 ## Builds
 
 `make` builds DockAwesome for the Vampire 68080 with AMMX (`-m68080`,
-`DOCK_AMMX`). There is no build for other CPUs. See the
+`DOCK_AMMX`). There is no build for other CPUs, so every backend uses the
+AMMX kernels; `--ammx` is still accepted. The dock does not refuse to start
+when exec `AttnFlags` bit 10 (`AFF_68080`) is clear: ApolloOS sets it, but
+AmigaOS 3.2 on a Vampire need not. `--caps` shows the flags. See the
 [build instructions](../README.md#build-and-test).
 
 The build links with `-noixemul`. The app and larger probes request a

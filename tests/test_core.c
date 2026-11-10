@@ -66,6 +66,32 @@ static void test_normalize(void)
     assert(!dock_cache_build(&cache, &source, &s));
 }
 
+/* dock_clamp tests low first; with low 0 it is the old clip(v, limit),
+   which returns limit for any v >= 0 when limit < 0. */
+static void test_clamp_helpers(void)
+{
+    assert(dock_clamp(-5, 0, 10) == 0 && dock_clamp(5, 0, 10) == 5 && dock_clamp(15, 0, 10) == 10);
+    assert(dock_clamp(-1, 0, -1) == 0 && dock_clamp(0, 0, -1) == -1 && dock_clamp(7, 0, -1) == -1);
+    assert(dock_clamp(3, 5, 2) == 5 && dock_clamp(9, 5, 2) == 2);
+    assert(dock_clamp(INT_MIN, INT_MIN, INT_MAX) == INT_MIN && dock_clamp(INT_MAX, 0, INT_MAX) == INT_MAX);
+    assert(dock_saturate_int((int64_t)INT_MAX+1) == INT_MAX && dock_saturate_int((int64_t)INT_MIN-1) == INT_MIN);
+    assert(dock_saturate_int(INT64_MAX) == INT_MAX && dock_saturate_int(INT64_MIN) == INT_MIN);
+    assert(dock_saturate_int(-42) == -42 && dock_saturate_int(INT_MAX) == INT_MAX);
+}
+
+static void test_image_opaque_at(void)
+{
+    unsigned char px[3*2*4] = {0};
+    DockImage im = {3, 2, px};
+    px[(1*3+2)*4+3] = 1; px[0*4+3] = 255; px[(0*3+1)*4+0] = 255; /* color only: transparent */
+    assert(dock_image_opaque_at(&im,0,0) && dock_image_opaque_at(&im,2,1));
+    assert(!dock_image_opaque_at(&im,1,0) && !dock_image_opaque_at(&im,1,1));
+    assert(!dock_image_opaque_at(&im,-1,0) && !dock_image_opaque_at(&im,0,-1));
+    assert(!dock_image_opaque_at(&im,3,0) && !dock_image_opaque_at(&im,0,2));
+    assert(!dock_image_opaque_at(&im,INT_MIN,INT_MAX) && !dock_image_opaque_at(NULL,0,0));
+    im.pixels = NULL; assert(!dock_image_opaque_at(&im,0,0));
+}
+
 static void test_reference_wave_and_hover(void)
 {
     DockSettings s = dock_settings_default();
@@ -1485,6 +1511,29 @@ static int damage_covers(const DockDamage *d, int x, int y)
     return 0;
 }
 
+/* Uploads keep up to max damage rects, else their bounding box. */
+static void test_damage_upload_rects(void)
+{
+    enum { W = 64, H = 48 };
+    DockDamage d;
+    DockRect out[3];
+    int i;
+    dock_damage_clear(&d);
+    assert(dock_damage_upload_rects(&d,W,H,3,out) == 0);
+    dock_damage_add(&d,(DockRect){1,2,3,4},W,H);
+    dock_damage_add(&d,(DockRect){10,20,15,30},W,H);
+    assert(dock_damage_upload_rects(&d,W,H,3,out) == 2);
+    assert(out[0].left == 1 && out[0].top == 2 && out[0].right == 3 && out[0].bottom == 4);
+    assert(out[1].left == 10 && out[1].top == 20 && out[1].right == 15 && out[1].bottom == 30);
+    for (i = 0; i < 2; ++i) dock_damage_add(&d,(DockRect){40+i*4,5,42+i*4,40},W,H);
+    assert(d.count == 4 && dock_damage_upload_rects(&d,W,H,3,out) == 1);
+    assert(out[0].left == 1 && out[0].top == 2 && out[0].right == 46 && out[0].bottom == 40);
+    dock_damage_set_full(&d);
+    assert(dock_damage_upload_rects(&d,W,H,3,out) == 1);
+    assert(out[0].left == 0 && out[0].top == 0 && out[0].right == W && out[0].bottom == H);
+    assert(dock_damage_upload_rects(NULL,W,H,3,out) == 0 && dock_damage_upload_rects(&d,W,H,0,out) == 0);
+}
+
 static void test_damage_add(void)
 {
     enum { W = 64, H = 48 };
@@ -1617,6 +1666,20 @@ static void test_mask(void *context, int y, int left, int right, unsigned char *
 /* Q4: two buffers with per-buffer pending damage, random skipped and failed
    presents and a switching mask. After every conversion the back buffer
    equals a full conversion of the current frame; coverage is never written. */
+/* Pixels dock_convert565_damage reports: rows times 8-aligned spans. */
+static unsigned long expected_conversion(const DockDamage *d, int width, int height)
+{
+    unsigned long pixels = 0;
+    int i;
+    if (d->full) return (unsigned long)width*height;
+    for (i = 0; i < d->count; ++i) {
+        const DockRect *r = &d->rect[i];
+        int right = r->right+7 < width ? (r->right+7)&~7 : width;
+        pixels += (unsigned long)(right-(r->left&~7))*(unsigned long)(r->bottom-r->top);
+    }
+    return pixels;
+}
+
 static void test_conversion_double_buffer(void)
 {
     enum { W = 70, H = 21, STRIDE = W*2+18, FRAMES = 6000 };
@@ -1656,13 +1719,13 @@ static void test_conversion_double_buffer(void)
         if (mask.band || masked[back]) dock_damage_set_full(&pending[back]);
         if (!pending[back].full) ++partial;
         memcpy(saved,coverage,sizeof(coverage));
-        dock_convert565_damage(buffer[back],STRIDE,&frame,coverage,&pending[back],scratch,
-            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask);
+        assert(dock_convert565_damage(buffer[back],STRIDE,&frame,coverage,&pending[back],scratch,
+            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask) == expected_conversion(&pending[back],W,H));
         dock_damage_clear(&pending[back]);
         masked[back] = mask.band;
         assert(!memcmp(saved,coverage,sizeof(coverage)));
-        dock_convert565_damage(reference,STRIDE,&frame,coverage,&whole,scratch,
-            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask);
+        assert(dock_convert565_damage(reference,STRIDE,&frame,coverage,&whole,scratch,
+            dock_rgba_to_rgb565_c,dock_rgb565_key_c,test_mask,&mask) == (unsigned long)W*H);
         for (y = 0; y < H; ++y) assert(!memcmp(buffer[back]+y*STRIDE,reference+y*STRIDE,W*2));
         ++conversions;
         if (fuzz_next(&seed,8)) front = back; /* else a failed present keeps the same back buffer */
@@ -1674,11 +1737,187 @@ static void test_conversion_double_buffer(void)
     dock_damage_clear(&d);
     dock_damage_add(&d,(DockRect){9,2,10,3},W,H);
     memset(reference,0x3c,sizeof(reference));
-    dock_convert565_damage(reference,STRIDE,&frame,NULL,&d,scratch,dock_rgba_to_rgb565_c,dock_rgb565_key_c,NULL,NULL);
+    assert(dock_convert565_damage(reference,STRIDE,&frame,NULL,&d,scratch,dock_rgba_to_rgb565_c,dock_rgb565_key_c,NULL,NULL) == 8);
+    assert(!dock_convert565_damage(reference,STRIDE,&frame,NULL,&d,NULL,dock_rgba_to_rgb565_c,dock_rgb565_key_c,NULL,NULL));
     for (i = 0; i < STRIDE*H; ++i) {
         int row = i/STRIDE, x = i%STRIDE/2;
         assert((reference[i] != 0x3c) <= (row == 2 && x >= 8 && x < 16));
     }
+}
+
+/* New colors at the same pixel addresses. Alpha, and so the runs, stay
+   valid: this is a rebuild that reused the freed addresses. */
+static void recolor_in_place(DockCache *cache, unsigned char delta)
+{
+    int l;
+    size_t i;
+    for (l = 0; l < cache->levels; ++l)
+        for (i = 0; i < (size_t)cache->image[l].width*cache->image[l].height*4; ++i)
+            if ((i&3) != 3) cache->image[l].pixels[i] = (unsigned char)(cache->image[l].pixels[i]+delta);
+}
+
+/* The canvas and coverage equal a fresh full render. */
+static void assert_full_render(const RenderFixture *f, const DockCache *const *icons,
+                               const DockPlacement *p, DockPanelShape *shape)
+{
+    size_t size = (size_t)f->width*f->height;
+    DockImage ref = {f->width,f->height,malloc(size*4)};
+    unsigned char *cov = malloc(size);
+    assert(ref.pixels && cov);
+    dock_render_oriented_mask(&ref,&f->backdrop,icons,p,FIX_COUNT,&f->s,NULL,shape,cov,0,f->edge,0,NULL);
+    assert(!memcmp(ref.pixels,f->canvas.pixels,size*4));
+    assert(!memcmp(cov,f->coverage,size));
+    free(ref.pixels); free(cov);
+}
+
+/* Slots compare cache stamps, so a cache rebuilt at the same addresses and
+   a reorder damage just their slots, with no dock_renderer_invalidate. */
+static void test_damage_stamp(void)
+{
+    RenderFixture f;
+    DockRenderer r;
+    DockPlacement p[FIX_COUNT];
+    const DockCache *icons[FIX_COUNT], *t;
+    DockPanelShape *shape = calloc(1,sizeof(*shape));
+    DockCache a = {0}, b = {0};
+    const unsigned char *address;
+    unsigned long stamp;
+    int i;
+    assert(shape);
+    memset(&f,0,sizeof(f));
+    f.s = dock_settings_default();
+    f.s.levels = 9; f.s.max_size = 64;
+    fixture_sources(&f);
+    /* Every build takes a new nonzero stamp; free clears it. */
+    assert(f.cache[0].stamp && f.cache[1].stamp > f.cache[0].stamp && f.cache[2].stamp > f.cache[1].stamp);
+    assert(dock_cache_build(&a,&f.cache[0].image[0],&f.s) && dock_cache_build(&b,&f.cache[0].image[0],&f.s));
+    assert(a.stamp && b.stamp > a.stamp);
+    stamp = b.stamp; dock_cache_restamp(&b); assert(b.stamp > stamp);
+    dock_cache_free(&a); dock_cache_free(&b);
+    assert(!a.stamp && !b.stamp);
+    fixture_open(&f,DOCK_EDGE_BOTTOM);
+    fixture_layout(&f,0,p);
+    fixture_icons(&f,icons);
+    memset(&r,0,sizeof(r));
+    r.pixels = dock_backend_portable(); r.coverage = f.coverage; r.edge = DOCK_EDGE_BOTTOM;
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(r.damage.full);
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(!r.damage.full && !r.damage.count);
+    /* Slot 2 alone shows cache 2. Without a new stamp the change is unseen. */
+    address = f.cache[2].image[0].pixels;
+    recolor_in_place(&f.cache[2],40);
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(!r.damage.full && !r.damage.count);
+    dock_cache_restamp(&f.cache[2]);
+    assert(f.cache[2].image[0].pixels == address);
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(!r.damage.full && r.damage.count == 1);
+    for (i = 0; i < FIX_COUNT; ++i)
+        assert(damage_covers(&r.damage,p[i].x+p[i].size/2,p[i].y+p[i].size/2) == (i == 2));
+    assert_full_render(&f,icons,p,shape);
+    /* A reorder: slots 1 and 2 swap caches. */
+    t = icons[1]; icons[1] = icons[2]; icons[2] = t;
+    dock_renderer_draw(&r,&f.canvas,&f.backdrop,icons,p,FIX_COUNT,&f.s);
+    assert(!r.damage.full);
+    for (i = 0; i < FIX_COUNT; ++i)
+        assert(damage_covers(&r.damage,p[i].x+p[i].size/2,p[i].y+p[i].size/2) == (i == 1 || i == 2));
+    assert_full_render(&f,icons,p,shape);
+    dock_renderer_release(&r);
+    fixture_close(&f);
+    for (i = 0; i < 3; ++i) dock_cache_free(&f.cache[i]);
+    free(shape);
+}
+
+/* dock_rgb565_refresh leaves the cache equal to a whole capture (visible
+   source columns, zero tail) and reports exactly the bounding box of the
+   pixels that differed, including a stale tail and no visible columns. */
+static void test_rgb565_refresh(void)
+{
+    enum { W = 37, H = 9, STRIDE = W*2+6, ROUNDS = 4000 };
+    static unsigned char cache[W*H*2], source[STRIDE*H], whole[W*H*2];
+    unsigned seed = 31;
+    int k, i, x, y, changed = 0;
+    DockRect box;
+    for (i = 0; i < STRIDE*H; ++i) source[i] = (unsigned char)fuzz_next(&seed,256);
+    memset(cache,0,sizeof(cache));
+    for (k = 0; k < ROUNDS; ++k) {
+        int visible = k%11 ? W-(int)fuzz_next(&seed,4) : (int)fuzz_next(&seed,W+1);
+        int rects = (int)fuzz_next(&seed,4);
+        DockRect expect = {0,0,0,0};
+        for (i = 0; i < rects; ++i) {
+            int left = (int)fuzz_next(&seed,W), top = (int)fuzz_next(&seed,H);
+            int right = left+1+(int)fuzz_next(&seed,W/2), bottom = top+1+(int)fuzz_next(&seed,4);
+            unsigned char *target = fuzz_next(&seed,5) ? source : cache; /* cache: a foreign write */
+            int stride = target == source ? STRIDE : W*2;
+            for (y = top; y < bottom && y < H; ++y) for (x = left*2; x < right*2 && x < W*2; ++x)
+                if (fuzz_next(&seed,3)) target[y*stride+x] = (unsigned char)fuzz_next(&seed,4);
+        }
+        for (y = 0; y < H; ++y) {
+            memcpy(whole+y*W*2,source+y*STRIDE,(size_t)visible*2);
+            memset(whole+y*W*2+visible*2,0,(size_t)(W-visible)*2);
+            for (x = 0; x < W; ++x) if (memcmp(whole+(y*W+x)*2,cache+(y*W+x)*2,2)) {
+                if (expect.left == expect.right) expect = (DockRect){x,y,x+1,y+1};
+                if (x < expect.left) expect.left = x;
+                if (x >= expect.right) expect.right = x+1;
+                expect.bottom = y+1;
+            }
+        }
+        box = dock_rgb565_refresh(cache,source,STRIDE,W,visible,H,k&1 ? dock_bytes_equal_c : NULL);
+        assert(!memcmp(&box,&expect,sizeof(box)));
+        assert(!memcmp(cache,whole,sizeof(cache)));
+        changed += box.left < box.right;
+    }
+    assert(changed > ROUNDS/2 && changed < ROUNDS);
+    box = dock_rgb565_refresh(NULL,source,STRIDE,W,W,H,NULL);
+    assert(box.left == box.right);
+}
+
+/* Queued backdrop boxes join the next draw's damage, clipped to the canvas,
+   once; a full draw absorbs them. */
+static void test_backdrop_damage(void)
+{
+    enum { W = 120, H = 60 };
+    static unsigned char canvas_pixels[W*H*4], back[W*H*4];
+    DockSettings s = dock_settings_default();
+    DockImage canvas = {W,H,canvas_pixels}, backdrop = {W,H,back};
+    DockRenderer r;
+    DockRect panel;
+    int i, radius, y0, y1;
+    memset(&r,0,sizeof(r));
+    r.pixels = dock_backend_portable();
+    for (i = 0; i < W*H*4; ++i) back[i] = (unsigned char)(i*7);
+    assert(dock_render_panel(&s,DOCK_EDGE_BOTTOM,NULL,0,W,H,0,&panel,&radius) && panel.bottom-panel.top > 6);
+    y0 = panel.top+2; y1 = panel.top+5;
+    dock_renderer_draw(&r,&canvas,&backdrop,NULL,NULL,0,&s);
+    assert(r.damage.full);
+    dock_renderer_draw(&r,&canvas,&backdrop,NULL,NULL,0,&s);
+    assert(!r.damage.full && !r.damage.count);
+    for (i = panel.top; i < panel.bottom; ++i) assert(r.glass.ready[i]);
+    dock_renderer_backdrop_damaged(&r,(DockRect){5,y0,20,y1});
+    dock_renderer_backdrop_damaged(&r,(DockRect){-4,-3,3,1});
+    dock_renderer_backdrop_damaged(&r,(DockRect){W-3,H-2,W+10,H+5});
+    dock_renderer_backdrop_damaged(&r,(DockRect){7,panel.top,7,panel.bottom}); /* empty */
+    /* Only the rows a box spans are mixed again. */
+    for (i = panel.top; i < panel.bottom; ++i)
+        assert(!r.glass.ready[i] == ((i >= y0 && i < y1) || i >= H-2));
+    dock_renderer_draw(&r,&canvas,&backdrop,NULL,NULL,0,&s);
+    assert(!r.damage.full && r.damage.count == 3);
+    for (i = 0; i < 3; ++i) {
+        const DockRect *d = &r.damage.rect[i];
+        assert((d->left == 5 && d->top == y0 && d->right == 20 && d->bottom == y1) ||
+               (d->left == 0 && d->top == 0 && d->right == 3 && d->bottom == 1) ||
+               (d->left == W-3 && d->top == H-2 && d->right == W && d->bottom == H));
+    }
+    dock_renderer_draw(&r,&canvas,&backdrop,NULL,NULL,0,&s);
+    assert(!r.damage.full && !r.damage.count);
+    dock_renderer_backdrop_damaged(&r,(DockRect){5,2,20,9});
+    dock_renderer_invalidate(&r);
+    dock_renderer_draw(&r,&canvas,&backdrop,NULL,NULL,0,&s);
+    assert(r.damage.full);
+    dock_renderer_draw(&r,&canvas,&backdrop,NULL,NULL,0,&s);
+    assert(!r.damage.full && !r.damage.count);
+    dock_renderer_release(&r);
 }
 
 /* Damage fuzz: an incremental renderer (glass) and a damage-only redraw
@@ -1690,7 +1929,7 @@ static void test_damage_fuzz(void)
     RenderFixture f;
     DockPanelShape *shape_ref = calloc(1,sizeof(*shape_ref)), *shape_b = calloc(1,sizeof(*shape_b));
     unsigned seed = 2024;
-    int edge, captured, total = 0, full_frames = 0;
+    int edge, captured, total = 0, full_frames = 0, box_frames = 0;
     uint64_t damaged = 0, pixels_total = 0;
     assert(shape_ref && shape_b);
     memset(&f,0,sizeof(f));
@@ -1705,7 +1944,7 @@ static void test_damage_fuzz(void)
         const DockCache *icons[MAX_COUNT];
         DockOverlay overlays[MAX_COUNT+1];
         DockImage ref, b;
-        unsigned char *ref_cov, *b_cov;
+        unsigned char *ref_cov, *b_cov, *screen565, *cache565;
         int running[MAX_COUNT] = {1,0,1,0,0,1}, hidden = -1, pressed = 0, center = 0, active = 0;
         int count = FIX_COUNT, along, cross, drag = 0, drag_x = 0, drag_y = 0, drag_level = 0, frame, i;
         int bottom = edge == DOCK_EDGE_BOTTOM, size;
@@ -1715,7 +1954,14 @@ static void test_damage_fuzz(void)
         ref = (DockImage){f.width,f.height,malloc((size_t)size*4)};
         b = (DockImage){f.width,f.height,malloc((size_t)size*4)};
         ref_cov = malloc((size_t)size); b_cov = malloc((size_t)size);
-        assert(ref.pixels && b.pixels && ref_cov && b_cov);
+        /* A PiP source: the screen behind the canvas (4 bytes of row
+           padding) and the RGB565 cache the backdrop is decoded from. */
+        screen565 = malloc((size_t)(f.width*2+4)*f.height); cache565 = malloc((size_t)size*2);
+        assert(ref.pixels && b.pixels && ref_cov && b_cov && screen565 && cache565);
+        for (i = 0; i < f.height; ++i)
+            dock_rgba_to_rgb565_c(screen565+(size_t)i*(f.width*2+4),f.backdrop.pixels+(size_t)i*f.width*4,(unsigned long)f.width);
+        for (i = 0; i < f.height; ++i)
+            memcpy(cache565+(size_t)i*f.width*2,screen565+(size_t)i*(f.width*2+4),(size_t)f.width*2);
         memset(&r,0,sizeof(r));
         r.pixels = dock_backend_portable(); r.coverage = f.coverage; r.edge = (DockEdge)edge;
         for (i = 0; i < MAX_COUNT; ++i) icons[i] = &f.cache[i%3];
@@ -1749,13 +1995,50 @@ static void test_damage_fuzz(void)
                 for (i = y0*f.width*4; i < (y0+n)*f.width*4 && i < size*4; ++i)
                     if ((i&3) != 3) f.backdrop.pixels[i] = (unsigned char)(f.backdrop.pixels[i]*7+frame);
                 dock_renderer_backdrop_changed(&r);
-            } else if (event < 94) {
+            } else if (event < 92) {
+                /* A reorder, found by the per-slot compare alone. */
                 int a = (int)fuzz_next(&seed,MAX_COUNT), c = (int)fuzz_next(&seed,MAX_COUNT);
                 const DockCache *t = icons[a]; icons[a] = icons[c]; icons[c] = t;
-                if (fuzz_next(&seed,2)) dock_renderer_invalidate(&r);
+            } else if (event < 93) {
+                /* A rebuild at the same addresses (cache 1 is also the drag
+                   overlay, which compares addresses only). */
+                DockCache *c = &f.cache[fuzz_next(&seed,2)*2];
+                recolor_in_place(c,(unsigned char)(1+fuzz_next(&seed,255)));
+                dock_cache_restamp(c);
+            } else if (event < 94) {
+                /* A real rebuild into the slot's cache, from its largest
+                   image, freeing the old pixels. */
+                DockCache *c = &f.cache[fuzz_next(&seed,2)*2], rebuilt;
+                assert(dock_cache_build(&rebuilt,&c->image[c->levels-1],&f.s));
+                dock_cache_free(c);
+                *c = rebuilt;
             } else if (event < 96) hidden = hidden >= 0 ? -1 : (int)fuzz_next(&seed,MAX_COUNT);
             else if (event < 97) f.s.end_gap = f.s.end_gap ? 0 : 6;
             /* else: an unchanged frame */
+            if (!fuzz_next(&seed,6)) {
+                /* A window moves behind the dock: random screen boxes change
+                   (not every pixel), the refresh finds the changed box, only
+                   it is decoded, and the renderer redraws only it. */
+                int boxes = 1+(int)fuzz_next(&seed,2), k, x, y, stride = f.width*2+4;
+                DockRect box;
+                for (k = 0; k < boxes; ++k) {
+                    int left = (int)fuzz_next(&seed,(unsigned)f.width), top = (int)fuzz_next(&seed,(unsigned)f.height);
+                    int right = left+1+(int)fuzz_next(&seed,(unsigned)f.width/3+1);
+                    int bottom2 = top+1+(int)fuzz_next(&seed,(unsigned)f.height/3+1);
+                    for (y = top; y < bottom2 && y < f.height; ++y)
+                        for (x = left; x < right && x < f.width; ++x) if (fuzz_next(&seed,4)) {
+                            screen565[y*stride+x*2] ^= (unsigned char)fuzz_next(&seed,256);
+                            screen565[y*stride+x*2+1] ^= (unsigned char)(1+fuzz_next(&seed,255));
+                        }
+                }
+                box = dock_rgb565_refresh(cache565,screen565,(size_t)stride,f.width,f.width,f.height,dock_bytes_equal_c);
+                for (y = 0; y < f.height; ++y) assert(!memcmp(cache565+(size_t)y*f.width*2,screen565+(size_t)y*stride,(size_t)f.width*2));
+                for (y = box.top; y < box.bottom; ++y)
+                    dock_rgb565_to_rgba_c(f.backdrop.pixels+((size_t)y*f.width+box.left)*4,
+                        cache565+((size_t)y*f.width+box.left)*2,(unsigned long)(box.right-box.left));
+                dock_renderer_backdrop_damaged(&r,box);
+                ++box_frames;
+            }
             {
                 int mx = bottom ? along : cross, my = bottom ? cross : along;
                 const DockCache *row[MAX_COUNT];
@@ -1803,27 +2086,27 @@ static void test_damage_fuzz(void)
             ++total;
         }
         dock_renderer_release(&r);
-        free(ref.pixels); free(b.pixels); free(ref_cov); free(b_cov);
+        free(ref.pixels); free(b.pixels); free(ref_cov); free(b_cov); free(screen565); free(cache565);
         fixture_close(&f);
     }
     for (edge = 0; edge < 3; ++edge) dock_cache_free(&f.cache[edge]);
     free(shape_ref); free(shape_b);
     /* The fuzz must exercise partial damage, not only full frames. */
-    assert(total >= 20000 && full_frames < total/4 && damaged*2 < pixels_total);
-    printf("Damage fuzz: %d frames, %d full, %lu%% of pixels redrawn.\n",
-        total,full_frames,(unsigned long)(damaged*100/pixels_total));
+    assert(total >= 20000 && full_frames < total/4 && damaged*2 < pixels_total && box_frames > total/8);
+    printf("Damage fuzz: %d frames, %d full, %d backdrop boxes, %lu%% of pixels redrawn.\n",
+        total,full_frames,box_frames,(unsigned long)(damaged*100/pixels_total));
 }
 
 int main(void)
 {
     DockSettings defaults = dock_settings_default();
-    test_normalize(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_animation_no_overlap(); test_layout(); test_blend();
+    test_normalize(); test_clamp_helpers(); test_image_opaque_at(); test_reference_wave_and_hover(); test_zoom_gap_compaction(); test_inter_icon_anchor_continuity(); test_alpha_fringe(); test_distant_icon_motion(); test_animation_no_overlap(); test_layout(); test_blend();
     test_mix(); test_pressed_artwork(); test_side_panel_coverage(); test_reorder(); test_renderer();
     test_faint_shadows(); test_scaled_shadows(); test_resampling(); test_enclosed_glass_and_centering(); test_animation_stays_inside(); test_icon_build(); test_scaled_fill(); test_icon_runs();
     test_clipped_divider(); test_decode_rgb24(); test_items_fit();
     test_animation_and_pointer_anchor(); test_reference_timing_and_panel(); test_rounded_panel();
     test_convert(); test_native565(); test_key565(); test_overlay_coverage();
-    test_render_goldens(0); test_render_goldens(1); test_damage_add(); test_damage_divider(); test_damage_fuzz(); test_conversion_double_buffer();
+    test_render_goldens(0); test_render_goldens(1); test_damage_add(); test_damage_upload_rects(); test_damage_divider(); test_damage_stamp(); test_rgb565_refresh(); test_backdrop_damage(); test_damage_fuzz(); test_conversion_double_buffer();
     printf("All core tests passed: normalization, alpha, layout bounds, clipping, 65536 blends, reorder, renderer.\n");
     printf("Default cache: %lu bytes/icon; 20 icons: %lu bytes.\n",
         (unsigned long)dock_cache_bytes(&defaults),

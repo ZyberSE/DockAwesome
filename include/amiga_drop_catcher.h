@@ -6,6 +6,10 @@ struct Window;
 struct Region;
 struct BitMap;
 typedef struct AmigaDropCatcher AmigaDropCatcher;
+/* --profile: without shapes, how often the receiver armed and disarmed and
+   whether Workbench presses found it armed. */
+typedef struct { unsigned long arms, disarms, presses_armed, presses_unarmed; } AmigaDropCatcherStats;
+AmigaDropCatcherStats amiga_drop_catcher_stats(const AmigaDropCatcher *catcher);
 
 enum {
     AMIGA_DROP_STARTED = 1,
@@ -19,8 +23,12 @@ enum {
    This recognizes Workbench client-area drag candidates, not private icon
    state: background/lasso gestures can also qualify. Titlebar/border starts
    are excluded. No original input events are consumed or replayed. */
+/* left, top, width and height are the dock's box. With a normal_shape the
+   window lies on that box and catches by changing its shape; with NULL
+   (no window shapes, AmigaOS 3.x) it rests elsewhere at 1x1 and catches by
+   moving onto the box with ChangeWindowBox. */
 AmigaDropCatcher *amiga_drop_catcher_init(struct Screen *screen,
-    struct Window *window, struct Region *normal_shape, int width, int height);
+    struct Window *window, struct Region *normal_shape, int left, int top, int width, int height);
 unsigned int amiga_drop_catcher_update(AmigaDropCatcher *catcher,
     uint32_t external_serial, struct Screen *external_screen,
     int down_x, int down_y, int external_held, int external_dragged,

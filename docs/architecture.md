@@ -14,21 +14,106 @@ Pointer -> layout -> renderer -> frame -> native window or PiP2
 
 | Module | Role |
 | --- | --- |
-| `dock_core.c` | Icon caches, layout, animation, blending, and pixel conversion |
+| `dock_core.c` | Settings, icon caches, layout, animation, and pixel conversion kernels |
+| `dock_compose.c` | Compositor: plate, glass rows, divider, and icon and overlay blending |
 | `dock_geometry.c` | Bottom, left, and right geometry and hit testing |
 | `dock_interaction.c` | Button pairs, drag state, and pin actions |
 | `dock_renderer.c` | Pixel backend selection, damage tracking, and damaged PiP conversion |
 | `dock_prefs.c` | JSON preferences |
-| `amiga_main.c` | Workbench integration, item state, input, and timers |
+| `dock_profile.c` | Backend and feature choice from probed capabilities |
+| `amiga_caps.c` | CPU, chipset and OS capability probes, `--caps` |
+| `amiga_main.c` | Items and icons, gestures, drawing, animation, timers, preferences, profile and the event loop |
+| `amiga_surface.c` | Common surface open and close steps, and the backend choice |
+| `amiga_surface_pip.c` | PiP backend: buffers and lease, live capture, coverage masks, conversion and present |
+| `amiga_surface_window.c` | Window backend (snapshot and opaque): backdrop, native window, damage upload |
+| `amiga_input_handler.c` | The `input.device` handler, its hit snapshots and button queue |
+| `amiga_status.c` | Workbench status worker, window list, window actions and Shell targets |
+| `amiga_workbench.c` | `screennotify.library` client: release and reacquire the Workbench screen |
 | `amiga_ui.c` | Menus, labels, Settings, About, and Folder Stack |
 | `about_font.c` | Prerendered Vera Sans glyphs for About (generated) |
 | `amiga_display.c` | Native capture and uploads for indexed and RTG screens |
 | `amiga_pip.c` | PiP2 buffers, alignment, presentation, and lease |
 
+The Amiga modules share one private header, `src/amiga_app.h`: the `App`
+state, the input handler's context and snapshots, the status worker's
+message, the profile counters, `SurfaceOps`, the cross-module
+declarations, and the small helpers (`row_placement`, `pin_index`,
+`profile_clock`, `viewport_limit` and others) as `static inline`, so each
+module inlines them as the single file did. `App` keeps its field order;
+`amiga_input.s` reads `VBlankState` by offset. Everything else stays
+`static` in its module.
+
+`dock_core.h` declares the caches, layout, settings, clamp helpers and
+kernels; `dock_compose.h` declares the compositor (`dock_render_oriented_clip`,
+`DockGlass`, `DockPanelShape`, `DockOverlay`, `dock_blend`). The private
+`src/dock_pixel.h` holds the word load and store, run flag and level
+lookup that the core, compositor and renderer share as static inline
+helpers, so each pixel loop keeps them in its own translation unit.
+
 `DockPixelBackend` selects C or AMMX kernels. Both use the same rounded
 50% blend. Icons with partial alpha share the C compositor. The renderer
 draws the overlays (running dots, the dragged icon) and the caller
 presents the frame; screen memory stays in the native display layer.
+
+## Platform capabilities
+
+`amiga_caps.c` probes the machine once at startup into a `DockCaps`
+table, and the screen depth again whenever Workbench reopens.
+`dock_choose_profile` (`dock_profile.c`, host-tested in
+`tests/test_profile.c`) turns the table and the requested mode into a
+`DockProfile`: the backend, the pixel kernels, the UI shapes, glass and
+antialiased text, and the input coordinate mode. Nothing is probed per
+frame or per pixel; other code reads the stored caps and profile.
+
+| Field | Probe |
+| --- | --- |
+| `cpu_080` | exec `AttnFlags` bit 10 (`AFF_68080`) |
+| `ammx` | always in the AMMX build, which runs only on a 68080 |
+| `saga_core`, `saga_pip2` | SAGA register `DFF3EA`, read only in the AMMX build or on a reported 68080; PiP2 needs 11900 or newer |
+| `shaped_windows` | Intuition `lib_Version` 50 with the vector at 858, and Layers V50 |
+| `rgb_rastport` | graphics.library `lib_NegSize` at least `$40E` (AROS RastPort RGB tags) |
+| `alpha_text` | cybergraphics.library V51 with `BltTemplateAlpha` (`lib_NegSize` `$DE`) |
+| `window_action`, `status_notify` | Intuition V50 vectors 942 and 930 |
+| `apollo_console` | Intuition 50.7, input.device 41.4, console.device 41.7 |
+| `screen_notify` | `screennotify.library` opens |
+| `screen_depth` | `BMA_DEPTH` of the Workbench bitmap |
+
+PiP needs AMMX, PiP2, shaped windows and a 16-bit screen, else the dock
+uses snapshot (an explicit `--pip` stops with the missing need). The glass
+UI needs shaped windows, RGB tags and more than 8 bits, and antialiased
+text the glass and `alpha_text`. On ApolloOS R9.5 on a Vampire every probe
+succeeds and the choices match the earlier scattered checks. A new target
+adds probes and table rows, not checks in drawing code. `--caps` prints
+both tables.
+
+## Surface backends
+
+A backend is a `SurfaceOps` table (`amiga_app.h`). `apply_profile` points
+`app->surface` at `amiga_surface_pip` or `amiga_surface_window` whenever it
+sets the profile, which happens only while no surface is open
+(`select_backend` at startup and on Workbench reopen,
+`fall_back_to_snapshot` after a failed PiP open), so the table that opened
+a surface also closes it. The table is called at most once per frame or
+event-loop wake; pixel loops never dispatch through it.
+
+| Entry | Called | Contract |
+| --- | --- | --- |
+| `open(app)` | end of `open_surface` | The common steps have placed the surface (`left`, `top`, `width`, `height`, `settings.edge_padding`), opened the display layer, allocated `canvas` (and `backdrop` for PiP or snapshot), laid out the row and, with `--damage-check`, the reference canvas. Fill the backdrop and call `dock_renderer_backdrop_changed`, open `app->window` and `app->appwindow` on `drop_port`, and allocate what `present` needs. Return 0 on failure (optionally with `surface_error`); `close_surface` releases a partial open. |
+| `close(app)` | middle of `close_surface` | After input, timers and gestures stop; before the display layer, canvas and renderer go. Release everything `open` made, including the window and AppWindow, in a safe order (PiP stops DMA before the window; regions outlive their windows). Safe after a partial open. |
+| `capture(app, full_compare)` | before a whole frame (first frame, Workbench reopen, bench) | Refresh the backdrop from the screen; nonzero when the frame must be redrawn. Window: nothing to do. |
+| `poll(app, due, redraw)` | once per event-loop wake | Background work such as the PiP live capture and drag image. `due` is the live timer, `redraw` a pending redraw; nonzero asks for a redraw. Set `app->failed` with `surface_error` when the surface is lost; the loop then stops. |
+| `present(app, frame)` | once per `draw`, the one indirect call per frame | Show the composed canvas, using `app->renderer.damage` for partial updates, and publish what depends on the shown frame (PiP: the input snapshot and the shown drop slot; window: the empty-dock hint). |
+
+A new target, such as a planar or classic AmigaOS 3.x screen, adds probes
+and a profile backend (see Platform capabilities) and one more table: open
+its window and buffers, convert `canvas` in `present` (the damage list
+bounds the work), and return 0 from `capture` and `poll` if its backdrop
+is fixed. Geometry limits that are backend specific are still keyed on
+`app->pip_mode`: `viewport_limit` (PiP's maximum size and 32 px width
+steps), the PiP width alignment, keyed right tail and spare pin room in
+`open_surface`, and PiP's input path (the `input.device` snapshots instead
+of IDCMP buttons, `pointer_inside`, `live_schedule`). A backend with other
+limits moves them into the table.
 
 ## Layout and memory
 
@@ -66,22 +151,30 @@ blending. Tests compare cached and uncached rendering.
 
 The renderer keeps the plate interior (the plate color mixed 50% with the
 backdrop) row by row between frames. The main program calls
-`dock_renderer_backdrop_changed` whenever the backdrop changes (a PiP
-capture, a drag reference, or a snapshot); the next frame mixes the rows
-again. The backdrop is copied only outside the plate interior. On Vampire at
-Size 72 with 13 icons this took composition from 40.6 to 24.1 ms per frame.
+`dock_renderer_backdrop_changed` whenever the whole backdrop changes (a
+first or forced PiP capture, a drag reference, or a snapshot); the next
+frame mixes the rows again. The backdrop is copied only outside the plate
+interior. On Vampire at Size 72 with 13 icons this took composition from
+40.6 to 24.1 ms per frame. A live PiP capture finds the bounding box of the
+changed source pixels over the whole canvas (`dock_rgb565_refresh`), copies
+and decodes only that, and calls `dock_renderer_backdrop_damaged`: the next
+draw redraws the box on top of its own damage and mixes only the rows it
+spans.
 
 The renderer also keeps the inputs of its last draw and redraws only the
 damage: a list of up to 80 rectangles that never intersect (overlapping
-ones merge into their bounding box; overflow redraws everything). Changed
+ones merge into their bounding box; overflow redraws everything). A slot
+changes when its placement, pressed state, image address or cache stamp
+does. Every cache build takes a new stamp from one counter, because a
+rebuilt cache can reuse a freed address, so freeing, rebuilding, swapping
+or reordering caches needs no full redraw; the Folder Stack morph blends
+into one buffer and restamps it only when its inputs change. Changed
 slots add their old and new image rectangles, moved plate ends a strip that
 reaches the corner radius plus one pixel inward, the divider its old and new
 span, and running dots and the dragged icon, which the renderer now draws as
 overlays, their old and new rectangles. A different canvas, backdrop,
 coverage buffer, edge, centered plate, setting, item count, corner radius or
-plate thickness redraws everything, as does `dock_renderer_invalidate`. The
-main program calls it after every cache free, replace, build or swap and
-every reorder, because a rebuilt cache can reuse a freed address. Each
+plate thickness redraws everything, as does `dock_renderer_invalidate`. Each
 rectangle is drawn by `dock_render_oriented_clip`, which writes canvas and
 coverage only inside it, with the bytes a full draw gives there.
 `DockRenderer.damage` reports what the last draw wrote.
@@ -123,7 +216,10 @@ UI, PiP, and screen lock before Workbench resets and reopens afterwards.
 
 Snapshot mode captures the desktop before opening the dock. Press R to
 refresh the image. Opaque mode draws a solid background. Both use a native
-window and its clipping rules.
+window and its clipping rules. On RTG screens each frame uploads only the
+renderer's damage (up to eight rectangles, else their bounding box); a
+Simple Refresh repair, a draw that drew nothing, and indexed screens upload
+the whole canvas. Every mode uses the AMMX kernels.
 
 PiP uses a small RGB565 overlay and an empty idle AppWindow shape. Pixels
 outside the artwork and plate use SAGA's source key. The native display code

@@ -96,7 +96,7 @@ void amiga_font_aa_draw(const AmigaFontAA *font, DockImage *target,
             const unsigned char *mask = font->coverage+glyph->offset+y*glyph->width+first;
             unsigned char *dst = target->pixels+((size_t)(top+y)*target->width+gx+first)*4;
             for (x = first; x < end; ++x, ++mask, dst += 4) {
-                unsigned int alpha = *mask, remaining = 255-alpha;
+                unsigned int alpha = *mask;
                 if (!alpha) continue;
                 if (alpha == 255) {
                     dst[0] = red;
@@ -105,10 +105,7 @@ void amiga_font_aa_draw(const AmigaFontAA *font, DockImage *target,
                     dst[3] = 255;
                     continue;
                 }
-                dst[0] = (red*alpha+dst[0]*remaining+127)/255;
-                dst[1] = (green*alpha+dst[1]*remaining+127)/255;
-                dst[2] = (blue*alpha+dst[2]*remaining+127)/255;
-                dst[3] = alpha+(dst[3]*remaining+127)/255;
+                amiga_blend_coverage(dst,red,green,blue,alpha);
             }
         }
     }
@@ -185,9 +182,6 @@ int amiga_font_aa_blit(AmigaFontAA *font, struct Library *cyber,
         }
         pen += glyph->advance;
     }
-    /* ApolloOS cybergraphics.library V51 BltTemplateAlpha. */
-    LP8NR(0xde, DockBltTemplateAlpha, APTR, font->template, a0,
-        LONG, 0, d0, LONG, width, d1, struct RastPort *, target, a1,
-        LONG, left+lo, d2, LONG, top, d3, LONG, width, d4, LONG, font->height, d5, , cyber);
+    amiga_alpha_template_blit(cyber,target,font->template,width,font->height,left+lo,top);
     return 1;
 }

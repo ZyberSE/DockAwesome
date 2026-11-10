@@ -1,6 +1,6 @@
 #ifndef AMIGA_DISPLAY_H
 #define AMIGA_DISPLAY_H
-#include "dock_geometry.h"
+#include "dock_renderer.h"
 struct Screen;
 struct Window;
 struct BitMap;
@@ -9,25 +9,40 @@ struct RastPort;
 typedef struct AmigaDisplay AmigaDisplay;
 AmigaDisplay *amiga_display_open(struct Screen *screen, int width, int height);
 void amiga_display_close(AmigaDisplay *display);
+/* Reuse an RTG display for a new size, growing its upload buffer as needed.
+   Returns 0 on indexed screens, a changed screen bitmap or no memory;
+   the caller then closes it and opens a new one. */
+int amiga_display_resize(AmigaDisplay *display, int width, int height);
 /* encode565 writes big-endian RGB565, used for direct uploads to RGB16
    bitmaps; NULL keeps the RGB24 upload. */
 void amiga_display_set_converters(AmigaDisplay *display, DockConvertRGB24 encode, DockConvertRGB565 decode,
     DockConvertRGB565 encode565);
 int amiga_display_capture(AmigaDisplay *display, DockImage *image, int x, int y);
 /* Native RGB16 cache: -1 unsupported/changed bitmap, 0 equal, 1 copied.
-   A valid check limits comparison in canvas coordinates. Damage still
-   refreshes the entire cache. The caller owns width*height*2 bytes. */
+   A valid check limits the comparison in canvas coordinates; a change there
+   still refreshes every stale pixel of the cache. A NULL box copies the
+   whole cache. Otherwise only the changed row spans are written
+   (dock_rgb565_refresh) and box receives their bounding box: empty when
+   equal, the whole canvas on force. The caller owns width*height*2 bytes. */
 int amiga_display_capture565(AmigaDisplay *display, unsigned char *cache,
-    int x, int y, int force, const DockRect *check, DockBytesEqual equal);
+    int x, int y, int force, const DockRect *check, DockBytesEqual equal, DockRect *box);
 /* Read the drag baseline from the catcher bitmap. The mask update reads
    native RGB16 through an unlayered RastPort on the supported SAGA screen.
    Its bounds are relative to the Dock canvas. Returns -1 on read failure. */
 int amiga_display_drag_reference565(AmigaDisplay *display, struct BitMap *backing,
     unsigned char *reference, int visible_width);
+/* marked bounds every nonzero mask pixel (empty when left >= right): only
+   its union with the pointer box is scanned, and it returns the new bound.
+   NULL scans the whole mask. colors (RGB565, the reference's layout), when
+   given, receives the screen's pixel wherever the mask is set. */
 int amiga_display_drag_mask565(AmigaDisplay *display, const unsigned char *reference,
-    unsigned char *mask, int x, int y, int left, int top, int right, int bottom,
-    DockBytesEqual equal);
+    unsigned char *mask, DockRect *marked, int x, int y, int left, int top, int right, int bottom,
+    DockBytesEqual equal, unsigned char *colors);
 int amiga_display_present(AmigaDisplay *display, struct Window *window, const DockImage *image);
+/* An RGBA image into an RTG RastPort (an off-screen bitmap) at 0,0, and
+   back out of it. Return 0 on failure. */
+int amiga_display_write_rgba(AmigaDisplay *display, struct RastPort *port, const DockImage *image);
+int amiga_display_read_rgba(AmigaDisplay *display, struct RastPort *port, DockImage *image);
 /* With no background, the caller initializes the returned back buffer. */
 struct RastPort *amiga_display_begin_frame(AmigaDisplay *display, const DockImage *background);
 int amiga_display_capture_frame(AmigaDisplay *display, DockImage *image);
@@ -35,9 +50,16 @@ void amiga_display_end_frame(AmigaDisplay *display, struct Window *window);
 /* Partial uploads are available on RTG. Indexed screens use a full repaint. */
 int amiga_display_present_tile(AmigaDisplay *display, struct Window *window,
     const DockImage *image, int x, int y, int width, int height);
-typedef struct { uint64_t conversion_ticks, upload_ticks; } AmigaDisplayTiming;
-/* Optional stage measurements use a caller-owned monotonic clock; normal uploads do not read it. */
-int amiga_display_present_profiled(AmigaDisplay *display, struct Window *window,
-    const DockImage *image, uint64_t (*clock)(void), AmigaDisplayTiming *timing);
+/* Stage measurements use a caller-owned monotonic clock (stage ticks stay
+   zero without one); pixels counts what was converted. */
+typedef struct { uint64_t conversion_ticks, upload_ticks; unsigned long pixels; } AmigaDisplayTiming;
+/* Uploads only the damaged rectangles of image (their bounding box above
+   AMIGA_DISPLAY_TILES), nothing for empty damage. NULL or full damage and
+   indexed screens upload everything. timing is optional; normal uploads
+   pass no clock and never read one. */
+#define AMIGA_DISPLAY_TILES 8
+int amiga_display_present_damage(AmigaDisplay *display, struct Window *window,
+    const DockImage *image, const DockDamage *damage, uint64_t (*clock)(void),
+    AmigaDisplayTiming *timing);
 int amiga_display_depth(const AmigaDisplay *display);
 #endif

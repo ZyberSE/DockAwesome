@@ -1088,20 +1088,81 @@ static void folder_glyph(DockUI *ui, struct RastPort *rp, int x, int y, int draw
     }
 }
 
+enum { FOLDER_PAINT_LABELS = 1, FOLDER_PAINT_GLYPHS = 2 };
+
+/* The back and page buttons: a round face with a chevron pointing left
+   (direction -1) or right (1). Natively a disc and a two-pixel chevron. */
 static void folder_button(DockUI *ui, struct RastPort *rp, int direction,
     int x, int y, int width, int height)
 {
+    int size = width < height ? width : height, arm = size/5, i;
+    x += (width-size)/2; y += (height-size)/2;
     popup_color(ui,rp,MENU_HOVER);
-    fill_rounded(rp,x,y,width,height,4);
+    fill_rounded(rp,x,y,size,size,size/2);
     popup_color(ui,rp,MENU_TEXT);
-    x += (width-7)/2+3;
-    y += (height-7)/2+3;
-    Move(rp,x-3*direction,y-3);
-    Draw(rp,x+3*direction,y);
-    Draw(rp,x-3*direction,y+3);
+    x += size/2-direction*arm/2; y += size/2;
+    for (i = 0; i < 2; ++i) {
+        Move(rp,x-direction*(arm-i),y-arm);
+        Draw(rp,x+direction*i,y);
+        Draw(rp,x-direction*(arm-i),y+arm);
+    }
 }
 
-enum { FOLDER_PAINT_LABELS = 1, FOLDER_PAINT_GLYPHS = 2 };
+/* Squared distance from (px,py) to the segment (x0,y0)-(x1,y1), all in
+   1/16 px. */
+static int segment_distance2(int px, int py, int x0, int y0, int x1, int y1)
+{
+    int dx = x1-x0, dy = y1-y0, ex = px-x0, ey = py-y0;
+    int length = dx*dx+dy*dy, along = ex*dx+ey*dy;
+    if (along > 0 && length > 0) {
+        if (along >= length) { ex = px-x1; ey = py-y1; }
+        else { ex -= dx*along/length; ey -= dy*along/length; }
+    }
+    return ex*ex+ey*ey;
+}
+
+/* folder_button antialiased into an RGBA target, 4x4 samples per pixel:
+   a faint disc of the text colour over the glass and a round-capped
+   chevron stroke, the weight of the Open in Workbench ring. */
+static void folder_button_aa(DockImage *target, int direction, int x, int y, int width, int height)
+{
+    ULONG color = menu_colors[MENU_TEXT];
+    unsigned int red = (color>>16)&255, green = (color>>8)&255, blue = color&255;
+    int size = width < height ? width : height;
+    int radius = size*8, cx = x*16+width*8, cy = y*16+height*8;
+    int arm = radius*3/8, reach = radius*3/16, half = 13;
+    int tip = cx+direction*(reach-radius/16), back = cx-direction*(reach+radius/16);
+    int px, py;
+    if (!target || !target->pixels || size < 6) return;
+    for (py = y; py < y+height; ++py) {
+        if (py < 0 || py >= target->height) continue;
+        for (px = x; px < x+width; ++px) {
+            int disc = 0, stroke = 0, sx, sy;
+            unsigned char *pixel;
+            if (px < 0 || px >= target->width) continue;
+            for (sy = 0; sy < 4; ++sy) for (sx = 0; sx < 4; ++sx) {
+                int qx = px*16+2+4*sx, qy = py*16+2+4*sy;
+                int dx = qx-cx, dy = qy-cy;
+                if (dx*dx+dy*dy <= radius*radius) ++disc;
+                if (segment_distance2(qx,qy,back,cy-arm,tip,cy) <= half*half ||
+                    segment_distance2(qx,qy,back,cy+arm,tip,cy) <= half*half) ++stroke;
+            }
+            pixel = target->pixels+((size_t)py*target->width+px)*4;
+            if (disc) amiga_blend_coverage(pixel,red,green,blue,(unsigned int)disc*3);
+            if (stroke) amiga_blend_coverage(pixel,red,green,blue,((unsigned int)stroke*255+8)/16);
+        }
+    }
+}
+
+/* A button where the labels go: antialiased with them into the target, or
+   natively in the pass that draws native labels. */
+static void folder_control(DockUI *ui, struct RastPort *rp, DockImage *target, int parts,
+    int direction, int x, int y, int width, int height)
+{
+    if ((parts&FOLDER_PAINT_LABELS) && target) folder_button_aa(target,direction,x,y,width,height);
+    else if ((parts&FOLDER_PAINT_LABELS) && (parts&FOLDER_PAINT_GLYPHS))
+        folder_button(ui,rp,direction,x,y,width,height);
+}
 
 static void paint_folder_content(DockUI *ui, struct RastPort *rp, int parts, DockImage *target)
 {
@@ -1118,8 +1179,8 @@ static void paint_folder_content(DockUI *ui, struct RastPort *rp, int parts, Doc
     SetFont(rp,folder_font(ui));
     if (labels)
         centered_folder_text(ui,rp,target,title,offset+width/2,(f->header-font_height)/2,width-4*control);
-    if (glyphs && folder_nested(f))
-        folder_button(ui,rp,-1,offset+f->pad,(f->header-control)/2,control,control);
+    if (folder_nested(f))
+        folder_control(ui,rp,target,parts,-1,offset+f->pad,(f->header-control)/2,control,control);
     if (labels && !f->count) {
         centered_folder_text(ui,rp,target,f->read_ok ? "Empty drawer" : "Cannot read drawer",
             offset+width/2,f->header,width-2*f->pad);
@@ -1152,9 +1213,9 @@ static void paint_folder_content(DockUI *ui, struct RastPort *rp, int parts, Doc
                 (unsigned long)folder_last_page(f)+1);
             centered_folder_text(ui,rp,target,page,offset+width/2,y+(control-font_height)/2,width);
         }
-        if (glyphs && f->page) folder_button(ui,rp,-1,offset+f->pad,y,control,control);
-        if (glyphs && f->page < folder_last_page(f))
-            folder_button(ui,rp,1,offset+width-f->pad-control,y,control,control);
+        if (f->page) folder_control(ui,rp,target,parts,-1,offset+f->pad,y,control,control);
+        if (f->page < folder_last_page(f))
+            folder_control(ui,rp,target,parts,1,offset+width-f->pad-control,y,control,control);
     }
 }
 

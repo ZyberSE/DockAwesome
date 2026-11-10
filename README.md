@@ -1,6 +1,6 @@
 # DockAwesome
 
-![DockAwesome on ApolloOS: icons magnified under the pointer over the live desktop](docs/images/dock.png)
+![DockAwesome on ApolloOS over the live desktop](docs/images/dock.png)
 
 A macOS-style dock for ApolloOS on the Vampire V4 (68080, AMMX and SAGA).
 

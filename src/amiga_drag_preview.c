@@ -22,6 +22,7 @@ struct AmigaDragPreview {
     struct Region *shape;
     int width, height, icon_height, left, top;
     int shaped, remove;
+    int stale; /* without shapes: moved, the save-under not yet shown there */
     int text_width, label_width, label_top;
     /* Without shapes the window keeps a copy of what lies under it (a
        save-under, as for a BOB) and draws the icon over it. */
@@ -153,26 +154,38 @@ static int save_under(AmigaDragPreview *p, int left, int top)
     return 1;
 }
 
+static int landed(const AmigaDragPreview *p)
+{
+    return p->window->LeftEdge == p->left && p->window->TopEdge == p->top;
+}
+
 int amiga_drag_preview_move(AmigaDragPreview *p, int x, int y)
 {
     int left, top;
     if (!p) return 0;
-    /* Intuition queues MoveWindow. Keep at most one move in flight. */
-    if (p->window->LeftEdge != p->left || p->window->TopEdge != p->top) return 0;
+    /* Intuition queues MoveWindow (on AmigaOS 3.2.3 it lands with the next
+       input event, ~120 ms without one). Keep at most one move in flight.
+       Without shapes the save-under for the new place is shown once the
+       move has landed: drawn before, the window showed it at the old place
+       and the background around the icon lagged. */
+    if (!landed(p)) return 0;
+    if (p->stale) { p->stale = 0; render(p); return 1; }
     position(p,x,y,&left,&top);
     if (left == p->left && top == p->top) return 0;
     if (!p->shaped && !save_under(p,left,top)) return 0;
     MoveWindow(p->window,left-p->left,top-p->top);
     p->left = left; p->top = top;
-    /* Smart Refresh carries this drawing along when the move lands. */
-    if (!p->shaped) render(p);
+    p->stale = !p->shaped;
     return 1;
 }
 
 const DockImage *amiga_drag_preview_icon(const AmigaDragPreview *p, int *x, int *y)
 {
     if (!p) return NULL;
-    *x = p->left+(p->width-p->icon.width)/2; *y = p->top;
+    /* Shaped (ApolloOS) moves land at once: where it is going. Without
+       shapes, where it is now, so the dock's half stays with the window's. */
+    *x = (p->shaped ? p->left : p->window->LeftEdge)+(p->width-p->icon.width)/2;
+    *y = p->shaped ? p->top : p->window->TopEdge;
     return &p->icon;
 }
 
@@ -180,7 +193,8 @@ void amiga_drag_preview_set_remove(AmigaDragPreview *p, int remove)
 {
     if (!p || p->remove == !!remove) return;
     p->remove = !!remove;
-    if (!p->shaped) render(p);
+    if (p->shaped) return;
+    if (landed(p)) render(p); else p->stale = 1;
 }
 
 int amiga_drag_preview_owns(const AmigaDragPreview *p, const struct Window *window)

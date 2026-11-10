@@ -45,18 +45,10 @@ static size_t sidecar_base_length(const DockFolderEntry *entry)
     return length-5;
 }
 
-static size_t mark_custom_icons(DockFolderEntry *entries, size_t count)
+/* Icon files are not entries of their own. */
+static size_t drop_sidecars(DockFolderEntry *entries, size_t count)
 {
     size_t i, visible = 0;
-    for (i = 0; i < count; ++i) {
-        size_t length = sidecar_base_length(&entries[i]);
-        DockFolderEntry key, *entry;
-        if (!length) continue;
-        memcpy(key.name,entries[i].name,length);
-        key.name[length] = '\0';
-        entry = bsearch(&key,entries,count,sizeof(*entries),compare_names);
-        if (entry) entry->custom_icon = 1;
-    }
     for (i = 0; i < count; ++i) {
         if (!sidecar_base_length(&entries[i])) {
             if (visible != i) entries[visible] = entries[i];
@@ -124,7 +116,6 @@ static int read_folder(const char *path, DockFolderEntry **entries, size_t *coun
         }
         memcpy(result[used].name, name, length + 1);
         result[used].drawer = drawer;
-        result[used].custom_icon = 0;
         ++used;
     }
     ok = IoErr() == ERROR_NO_MORE_ENTRIES;
@@ -139,7 +130,7 @@ done:
     }
     if (used > 1) qsort(result, used, sizeof(*result), compare_entries);
     *entries = result;
-    *count = mark_custom_icons(result,used);
+    *count = drop_sidecars(result,used);
     return 1;
 }
 

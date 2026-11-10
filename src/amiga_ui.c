@@ -1374,13 +1374,6 @@ static void paint_folder(DockUI *ui)
     }
 }
 
-static void skip_standard_icons(FolderView *f)
-{
-    int visible = folder_visible_files(f);
-    size_t first = f->page*folder_page_size(f);
-    while (f->next_icon < visible && !f->entries[first+f->next_icon].custom_icon) ++f->next_icon;
-}
-
 static void clear_folder_motion(FolderView *f)
 {
     free(f->motion_scene.pixels);
@@ -1519,7 +1512,6 @@ static void reset_folder_page(DockUI *ui)
     FolderView *f = &ui->folder;
     f->next_icon = f->artwork_ready = f->needs_repaint = 0;
     free_folder_icons(f);
-    if (f->count) skip_standard_icons(f);
     if (f->motion == FOLDER_OPENING) {
         /* Start from the bare backdrop; the box grows out of the tip. */
         if (prepare_folder_scene(ui)) {
@@ -1729,7 +1721,6 @@ int dock_ui_folder_step(DockUI *ui)
     if (f->motion) return advance_folder_motion(ui);
     i = f->next_icon++;
     entry = f->page*folder_page_size(f)+i;
-    skip_standard_icons(f);
     strcpy(path,f->path);
     requesters = amiga_requesters_off();
     loaded = AddPart((STRPTR)path,(STRPTR)f->entries[entry].name,sizeof(path)) &&

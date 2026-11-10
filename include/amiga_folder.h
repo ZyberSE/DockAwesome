@@ -6,7 +6,6 @@
 typedef struct {
     char name[108];
     int drawer;
-    int custom_icon;
 } DockFolderEntry;
 
 /* DOS errors fail instead of opening volume requesters that block the main task. */

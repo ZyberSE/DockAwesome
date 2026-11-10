@@ -301,9 +301,11 @@ __attribute__((noinline)) int load_icon_mode(const App *app, const char *path, D
     return 1;
 }
 
+/* An entry's own icon, else the one Workbench shows for it: the default
+   icon for its type (DefIcons: ENV:Sys/def_lha, def_drawer, ...). */
 static int read_folder_icon(const void *context, const char *path, DockImage *icon)
 {
-    return load_icon_mode(context,path,icon,NULL,1);
+    return load_icon_mode(context,path,icon,NULL,0);
 }
 
 static int load_stack_icon(const App *app, const char *path, DockImage *icon)

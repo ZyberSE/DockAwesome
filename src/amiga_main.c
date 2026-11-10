@@ -1094,9 +1094,11 @@ static void profile_report(App *app)
             (unsigned long)app->stats.shape_rects_peak);
         fflush(stdout);
     }
-    printf("Drawn drag pin: opens=%lu places=%lu vblank_waits=%lu failures=%lu\n",
+    printf("Drawn drag pin: opens=%lu places=%lu vblank_waits=%lu failures=%lu last=%ld,%ld %ldx%ld visible=%d\n",
         (unsigned long)app->stats.bob_opens, (unsigned long)app->stats.bob_places,
-        (unsigned long)app->stats.bob_waits, (unsigned long)app->stats.bob_failures);
+        (unsigned long)app->stats.bob_waits, (unsigned long)app->stats.bob_failures,
+        (long)app->stats.bob_last[0], (long)app->stats.bob_last[1], (long)app->stats.bob_last[2],
+        (long)app->stats.bob_last[3], app->pip_mode ? pip_visible_width(app) : app->width);
     fflush(stdout);
 }
 
@@ -1316,8 +1318,13 @@ static void draw(App *app)
            window is: the two halves of the icon stay one picture. */
         const DockImage *shown = amiga_drag_preview_icon(app->drag_preview,&x,&y);
         if (shown) { icon = shown; x -= app->left; y -= app->top; }
-        overlays[overlay_count++] = (DockOverlay){icon, x, y};
         app->drag_overlay_icon = icon; app->drag_overlay_x = x; app->drag_overlay_y = y;
+        /* Drawn on the screen, the dock shows the same whole picture on its
+           surface (with the Remove pill: only the icon cut the pill). */
+        if (app->drag_bob && drag_bob_picture(app,icon))
+            overlays[overlay_count++] = (DockOverlay){&app->drag_bob_picture,
+                x-(app->drag_bob_picture.width-icon->width)/2, y};
+        else overlays[overlay_count++] = (DockOverlay){icon, x, y};
     } else app->drag_overlay_icon = NULL;
     app->renderer.overlays = overlays; app->renderer.overlay_count = overlay_count;
     dock_renderer_draw(&app->renderer, &app->canvas, (app->snapshot || app->pip_mode) ? &app->backdrop : NULL,
@@ -1721,14 +1728,36 @@ static int update_drag_bob(App *app, const DockImage *icon, int x, int y)
         if (!app->drag_bob) { ++app->stats.bob_failures; app->bob_failed = gesture->token; return -1; }
         ++app->stats.bob_opens;
         {
-            int visible = app->pip_mode ? app->width-app->settings.edge_padding : app->width;
+            int visible = app->pip_mode ? pip_visible_width(app) : app->width;
             amiga_drag_bob_set_exclude(app->drag_bob,
                 (DockRect){app->left,app->top,app->left+visible,app->top+app->height});
         }
     }
-    (void)x; (void)y; (void)remove;
+    (void)remove;
     app->drag_bob_due = 1;
-    return 0;
+    /* The dock draws the pin's part on its surface and the place for the
+       screen: a move needs a frame, also once Remove is armed (the frame
+       did not follow the pointer there, and the drawn pin stayed behind). */
+    if (x == app->drag_bob_gx && y == app->drag_bob_gy) return 0;
+    app->drag_bob_gx = x; app->drag_bob_gy = y;
+    return 1;
+}
+
+/* The drawn pin's picture for icon and the Remove state, rebuilt on a
+   change. Returns 0 without memory. */
+int drag_bob_picture(App *app, const DockImage *icon)
+{
+    int remove = app->gesture.remove_armed;
+    DockImage picture;
+    if (icon == app->drag_bob_icon && remove == app->drag_bob_remove && app->drag_bob_picture.pixels)
+        return 1;
+    app->drag_bob_remove = remove;
+    if (!drag_picture(app,icon,&remove,&picture)) return 0;
+    free(app->drag_bob_picture.pixels);
+    app->drag_bob_picture = picture;
+    app->drag_bob_icon = icon;
+    app->drag_bob_new = 1;
+    return 1;
 }
 
 /* The PiP front buffer as RGB (the key colour stays magenta), with
@@ -1758,21 +1787,13 @@ static void dump_pip_front(App *app)
 static void drag_bob_present(App *app)
 {
     const DockImage *icon = app->drag_overlay_icon;
-    int remove = app->gesture.remove_armed, x, y;
+    int x, y;
     if (!app->drag_bob || !app->drag_bob_due || !icon) return;
-    if (icon != app->drag_bob_icon || remove != app->drag_bob_remove) {
-        DockImage picture;
-        app->drag_bob_remove = remove;
-        if (!drag_picture(app,icon,&remove,&picture)) {
-            app->bob_failed = app->gesture.token;
-            drag_bob_close(app);
-            app->gesture_redraw = 1;
-            return;
-        }
-        free(app->drag_bob_picture.pixels);
-        app->drag_bob_picture = picture;
-        app->drag_bob_icon = icon;
-        app->drag_bob_new = 1;
+    if (!drag_bob_picture(app,icon)) {
+        app->bob_failed = app->gesture.token;
+        drag_bob_close(app);
+        app->gesture_redraw = 1;
+        return;
     }
     x = app->left+app->drag_overlay_x-(app->drag_bob_picture.width-icon->width)/2;
     y = app->top+app->drag_overlay_y;
@@ -1784,6 +1805,8 @@ static void drag_bob_present(App *app)
        so the dock's half and this one change together. */
     if (app->vblank.flip_buffer) { WaitTOF(); ++app->stats.bob_waits; }
     ++app->stats.bob_places;
+    app->stats.bob_last[0] = app->drag_bob_x; app->stats.bob_last[1] = app->drag_bob_y;
+    app->stats.bob_last[2] = app->drag_bob_picture.width; app->stats.bob_last[3] = app->drag_bob_picture.height;
     if (!amiga_drag_bob_place(app->drag_bob,app->drag_bob_new ? &app->drag_bob_picture : NULL,
             app->drag_bob_x,app->drag_bob_y)) {
         ++app->stats.bob_failures;
@@ -1793,7 +1816,6 @@ static void drag_bob_present(App *app)
         return;
     }
     app->drag_bob_new = 0;
-    if (app->pip_dump[0] && app->pip) dump_pip_front(app);
 }
 
 /* What carries a dragged pin beyond the dock's surface.
@@ -1815,7 +1837,7 @@ static int update_drag_preview(App *app)
     int inside = 0; /* the dock itself can draw the icon */
     if (index >= 0 && !app->items[index].temporary && !app->items[index].stack) {
         int level = app->moving_item ? app->held_icon.level : app->placement[index].level;
-        int visible = app->pip_mode ? app->width-app->settings.edge_padding : app->width;
+        int visible = app->pip_mode ? pip_visible_width(app) : app->width;
         int left = gesture->x-app->items[index].cache.image[level].width/2;
         int top = gesture->y-app->items[index].cache.image[level].height/2;
         icon = &app->items[index].cache.image[level];
@@ -2305,6 +2327,9 @@ static __attribute__((noinline)) void event_loop(App *app)
         animation_schedule(app); live_schedule(app);
         if (redraw) draw(app);
         drag_bob_present(app);
+        /* --pip-dump: what PiP shows during a drag, frame by frame. */
+        if (redraw && app->pip_dump[0] && app->pip && app->gesture.active && app->gesture.dragged)
+            dump_pip_front(app);
         animation_profile_end(app);
         if (app->notice[0]) {
             /* The drop was replied and its receiver released before this frame. */

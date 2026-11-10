@@ -7,10 +7,6 @@
 
 /* The overlay's columns on the screen. A right dock's keyed transport
    padding lies past the screen edge. */
-static int pip_visible_width(const App *app)
-{
-    return app->width-app->settings.edge_padding;
-}
 
 static ULONG region_rect_count(const struct Region *region)
 {

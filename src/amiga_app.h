@@ -213,6 +213,7 @@ typedef struct {
     ULONG program_checks, drawer_checks, document_checks, status_events;
     ULONG source_polls, layer_busy, source_changes, front_requests, shape_updates, shape_rects, shape_rects_peak;
     ULONG bob_opens, bob_places, bob_failures, bob_waits; /* the drawn drag pin */
+    LONG bob_last[4]; /* its last place and size */
     ULONG drop_messages, drop_arguments, drop_added, drop_reordered, drop_bad_paths;
     ULONG desktop_scans;
     ULONG drag_reveal_frames, drag_reveal_peak, popup_reveal_frames, dialog_reveal_frames;
@@ -369,6 +370,8 @@ typedef struct App {
     /* The dragged pin's overlay in the last frame drawn (canvas coordinates). */
     const DockImage *drag_overlay_icon;
     int drag_overlay_x, drag_overlay_y;
+    int pip_tail; /* keyed columns at the far side of a left PiP dock */
+    int drag_bob_gx, drag_bob_gy; /* the pointer at the drawn pin's last frame */
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;
     uint64_t flash_deadline;
@@ -541,6 +544,13 @@ void animation_cancel(App *app);
 void live_cancel(App *app);
 /* Restore the screen under a drawn drag pin and free it. */
 void drag_bob_close(App *app);
+int drag_bob_picture(App *app, const DockImage *icon);
+/* PiP's columns that show the dock: the last ones of each row are a keyed
+   tail (the right edge's past the screen, a left dock's on its far side). */
+static inline int pip_visible_width(const App *app)
+{
+    return app->width-app->settings.edge_padding-app->pip_tail;
+}
 void stack_button_build(App *app);
 void ui_blocking(void *context, int blocking);
 int ui_fit(void *context, const DockUIPrefs *draft);

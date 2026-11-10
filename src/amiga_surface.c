@@ -57,6 +57,12 @@ int open_surface(App *app)
     int right_padding = app->edge == DOCK_EDGE_RIGHT && app->pip_mode ?
         RIGHT_PIP_TAIL-DOCK_DESKTOP_GAP : 0;
     int panel_cross = dock_panel_thickness(&app->settings)+DOCK_DESKTOP_GAP+right_padding;
+    /* SAGA shows the last columns of each PiP row at the start of the next
+       one: a right dock keeps them past the screen edge, a left dock keyed
+       on its far side. Without them a pin dragged out of a left dock (on
+       AmigaOS 3.2.3) left icon pixels at the screen's left edge and lost
+       its own last columns: an invisible edge. */
+    app->pip_tail = app->edge == DOCK_EDGE_LEFT && app->pip_mode ? RIGHT_PIP_TAIL : 0;
     /* Each attempt reports its own error. Keep the text of an earlier failure. */
     if (!app->failed) app->surface_error[0] = 0;
     app->settings.edge_padding = right_padding;
@@ -69,7 +75,7 @@ int open_surface(App *app)
     wanted = dock_viewport_length(&app->settings,reserve);
     if (wanted > limit) wanted = limit;
     if (wanted < 1) return 0;
-    app->width = app->edge == DOCK_EDGE_BOTTOM ? wanted : cross;
+    app->width = app->edge == DOCK_EDGE_BOTTOM ? wanted : cross+app->pip_tail;
     if (app->width > app->screen->Width) app->width = app->screen->Width;
     if (app->pip_mode) {
         app->width = (app->width+31)&~31;

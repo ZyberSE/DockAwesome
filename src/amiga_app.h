@@ -212,6 +212,7 @@ typedef struct {
     ULONG program_polls, program_changes, menu_suspends;
     ULONG program_checks, drawer_checks, document_checks, status_events;
     ULONG source_polls, layer_busy, source_changes, front_requests, shape_updates, shape_rects, shape_rects_peak;
+    ULONG bob_opens, bob_places, bob_failures, bob_waits; /* the drawn drag pin */
     ULONG drop_messages, drop_arguments, drop_added, drop_reordered, drop_bad_paths;
     ULONG desktop_scans;
     ULONG drag_reveal_frames, drag_reveal_peak, popup_reveal_frames, dialog_reveal_frames;
@@ -364,7 +365,7 @@ typedef struct App {
     const DockImage *drag_bob_icon;
     int drag_bob_remove, drag_bob_x, drag_bob_y, drag_bob_due, drag_bob_new, window_drag;
     int use_pip1; /* --pip1: labels and drags may use PiP1 beside a narrow dock */
-    uint32_t bob_attempt;
+    uint32_t bob_failed; /* the gesture in which drawing failed */
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;
     uint64_t flash_deadline;

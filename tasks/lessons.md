@@ -278,3 +278,8 @@
 - A screenshot shows this (the receiver is in the screen bitmap): on AmigaOS 3.2.3 a window moved into the box was cut at the box's top edge.
 - Rule: a helper window that waits on the dock's box stays behind the other windows (WindowToBack); check windows near the dock with the pointer inside a Workbench window after any change to arming.
 - On AmigaOS 3.2.3 a Run process is not found by task name: use Status COMMAND=<path> and Break <n>.
+
+## See the screen mid-drag before handing a drag fix over (2026-11-10)
+- Twice the user saw the same drag fault after my fix: the drawn pin was allowed one try per gesture, so leaving the dock a second time in the same drag fell back to the window preview. Counters (opens, places) said "drawn" and I believed them.
+- What showed it: holding the button with amiga_button, moving with relative moves (absolute warps did not register as a press on the left-edge dock), and a screenshot at each step; the window preview's grey Remove label gave it away.
+- Rule: for any drag change, test out, back in and out again in one gesture with the button held, and look at each step. Count only work that is needed (a still pin was redrawn 1000 times).

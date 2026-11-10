@@ -1094,6 +1094,10 @@ static void profile_report(App *app)
             (unsigned long)app->stats.shape_rects_peak);
         fflush(stdout);
     }
+    printf("Drawn drag pin: opens=%lu places=%lu vblank_waits=%lu failures=%lu\n",
+        (unsigned long)app->stats.bob_opens, (unsigned long)app->stats.bob_places,
+        (unsigned long)app->stats.bob_waits, (unsigned long)app->stats.bob_failures);
+    fflush(stdout);
 }
 
 static void profile_close(App *app)
@@ -1696,8 +1700,9 @@ void drag_bob_close(App *app)
 
 /* Without shapes and PiP1 on an RTG screen: the pin drawn straight on the
    screen (amiga_drag_bob.h), placed after the frame (drag_bob_present).
-   Returns -1 to use the window preview instead (--window-drag, or it could
-   not start in this gesture). */
+   Returns -1 to use the window preview instead (--window-drag, or drawing
+   failed in this gesture). Leaving the surface again after coming back in
+   draws again: one try per gesture had handed that to the window. */
 static int update_drag_bob(App *app, const DockImage *icon, int x, int y)
 {
     DockGesture *gesture = &app->gesture;
@@ -1708,12 +1713,12 @@ static int update_drag_bob(App *app, const DockImage *icon, int x, int y)
         drag_bob_close(app);
         return 1;
     }
+    if (app->bob_failed == gesture->token) return -1;
     if (!app->drag_bob) {
-        if (app->bob_attempt == gesture->token) return -1;
-        app->bob_attempt = gesture->token;
         dock_ui_hide_label(app->ui);
         app->drag_bob = amiga_drag_bob_open(app->screen);
-        if (!app->drag_bob) return -1;
+        if (!app->drag_bob) { ++app->stats.bob_failures; app->bob_failed = gesture->token; return -1; }
+        ++app->stats.bob_opens;
         {
             int visible = app->pip_mode ? app->width-app->settings.edge_padding : app->width;
             amiga_drag_bob_set_exclude(app->drag_bob,
@@ -1723,15 +1728,22 @@ static int update_drag_bob(App *app, const DockImage *icon, int x, int y)
     if (icon != app->drag_bob_icon || remove != app->drag_bob_remove) {
         DockImage picture;
         app->drag_bob_remove = remove;
-        if (!drag_picture(app,icon,&remove,&picture)) { drag_bob_close(app); return -1; }
+        if (!drag_picture(app,icon,&remove,&picture)) {
+            app->bob_failed = gesture->token;
+            drag_bob_close(app);
+            return -1;
+        }
         free(app->drag_bob_picture.pixels);
         app->drag_bob_picture = picture;
         app->drag_bob_icon = icon;
         app->drag_bob_new = 1;
     }
-    app->drag_bob_x = x-app->drag_bob_picture.width/2;
-    app->drag_bob_y = y-icon->height/2;
-    app->drag_bob_due = 1;
+    x -= app->drag_bob_picture.width/2; y -= icon->height/2;
+    /* Only a move or a new picture is drawn again. */
+    if (app->drag_bob_new || x != app->drag_bob_x || y != app->drag_bob_y) {
+        app->drag_bob_x = x; app->drag_bob_y = y;
+        app->drag_bob_due = 1;
+    }
     return 0;
 }
 
@@ -1742,9 +1754,12 @@ static void drag_bob_present(App *app)
     app->drag_bob_due = 0;
     /* The PiP frame just presented shows from the next field: draw then,
        so the dock's half and this one change together. */
-    if (app->vblank.flip_buffer) WaitTOF();
+    if (app->vblank.flip_buffer) { WaitTOF(); ++app->stats.bob_waits; }
+    ++app->stats.bob_places;
     if (!amiga_drag_bob_place(app->drag_bob,app->drag_bob_new ? &app->drag_bob_picture : NULL,
             app->drag_bob_x,app->drag_bob_y)) {
+        ++app->stats.bob_failures;
+        app->bob_failed = app->gesture.token;
         drag_bob_close(app); /* the window preview takes over */
         app->gesture_redraw = 1;
         return;

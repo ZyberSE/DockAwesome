@@ -783,9 +783,22 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
 - [x] Installed on Coffin 2026-11-10: SYS:WBStartup/DockAwesome (+ .info, DONOTWAIT), ENVARC:DockAwesome.json, WBDock moved to SYS:WBStartup/Disabled/. Build db01deb. Rollback: move WBDock back, delete the two DockAwesome files.
 
 ### Before merging pip-os3
-- [ ] ApolloOS regression after a reboot into ApolloOS: PiP sweep, drops
-      with the shaped catcher, --damage-check, labels and drag on PiP2 with
-      shapes, the new rgb/alpha probes (--caps must still say yes), menus
-      and Folder Stack motion (now scale + fade).
+- [x] ApolloOS regression, build 315 (2026-11-10 night, by agent):
+      --caps: rgb_rastport yes (after the RGB565-precision probe fix,
+      653280b), alpha_text yes, ui_glass yes; --damage-check 80 frames, 0
+      mismatches; shaped label (tip, glass), menu (glass, AA text), Folder
+      Stack (scale + fade: entrance 6-7 frames in ~150 ms, dismissal 6 in
+      ~140 ms), shaped drag preview with Remove, Workbench drop added a pin
+      (drag image painted 8 frames); config restored afterwards.
+- [x] Installed build 315 on ApolloOS: SYS:WBStartup/DockAwesome; the old
+      build 225 (black rectangle after boot) is Disabled/DockAwesome-build225.old.
+      Older .old builds removed; DockAwesome-1.0b1.old kept.
+- [ ] Reboot into ApolloOS with the user: does build 315 come up at boot
+      (225 took seconds and showed a black rectangle)?
+- [ ] A crash after starting a second dock (PiP2 is already in use, OK):
+      unknown whether the new or the broken old dock; reproduce with the user
+      present. Exit path reviewed, nothing found.
+- [ ] Coffin runs db01deb (before 653280b): no behaviour change there, but
+      update on its next boot so both run the same build.
 - [ ] Run >file loses profile output on Coffin (use an Execute script).
-- [x] Clean RAM: on Coffin (done 2026-11-10).
+- [ ] Merge pip-os3 (user's call); push only when asked.

@@ -264,3 +264,7 @@
 - With the dock at the bottom (PiP2 992 px wide) on Coffin's 24-bit screen, a tooltip in PiP1 scrambled the whole dock; the PiP1 overlay was 96 rows tall and reached over the dock's rows. Beside a 96 px side dock the same overlay showed fine.
 - Keeping PiP1 off the dock's rows (even 4 rows clear) did not help: every PiP1 label or drag still scrambled the 992 px dock. Measured fine: 128 + 96 px.
 - Rule: use a second overlay only where its combination was seen working (PiP1 beside a narrow dock); test layout changes (edge, size) on the hardware, not only on the edge that was verified; after two failed hardware guesses, fall back to the known-good path instead of a third.
+
+## Probes must tolerate the screen's precision (2026-11-10)
+- The RGB pen probe compared the read-back pixel exactly; on ApolloOS's 16-bit screen the colour comes back with 5-6 bits per channel, so it said "no" and the UI lost its RGB colours. Compare at the screen's precision (RGB565 masks).
+- Run --caps on every OS after changing a probe, not only on the OS the change was made for.

@@ -1,5 +1,7 @@
 # DockAwesome
 
+![DockAwesome on ApolloOS: icons magnified under the pointer over the live desktop](docs/images/dock.png)
+
 A macOS-style dock for ApolloOS on the Vampire V4 (68080, AMMX and SAGA).
 
 - Hover to magnify nearby icons and see their names.
@@ -8,6 +10,8 @@ A macOS-style dock for ApolloOS on the Vampire V4 (68080, AMMX and SAGA).
   gets a dot under its pin, or a temporary icon. Pin those with **Keep in Dock**.
 - Browse a drawer from the dock with **Folder Stack**.
 - Use live transparency with SAGA PiP2, or use a static or solid background.
+
+![A large magnified icon under the pointer](docs/images/dock-zoom.png)
 
 ## Requirements
 

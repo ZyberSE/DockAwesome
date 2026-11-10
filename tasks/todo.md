@@ -814,8 +814,13 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
       preview lag (pins drawn on the screen, dock_bob), tearing on a side
       dock (PiP2 flips in the VBlank), labels in windows (PiP1 only with
       --pip1), left dock keyed tail. User: "Funkar perfekt!".
-- [ ] ApolloOS (build 320) and Coffin (build 325): install build 344 on their
-      next boot and check drag-out on the bottom and side docks there.
+- [x] ApolloOS: installed build 344 (rollback Disabled/DockAwesome-build320.old;
+      315 and 318 removed). --caps unchanged; shaped drag-out with Remove
+      checked with the button held.
+- [ ] ApolloOS with the user: drag-out seam now that PiP2 flips in the
+      VBlank (the shaped window moves at once), tooltips, Folder Stack.
+- [ ] Coffin (build 325): install build 344 on its next boot and check
+      drag-out on the bottom and side docks.
 - [x] Installed build 325 on Coffin (rollback Disabled/DockAwesome-build314.old).
 - [ ] Coffin with the user: drag out of the bottom dock (the window path now
       draws the window's picture), default icons, native back button, icon

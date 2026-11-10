@@ -86,11 +86,13 @@ static const MenuItem shell_items[] = {
 };
 /* About typography: Vera Sans, prerendered and antialiased (about_font.c),
    because opening it through diskfont takes about 11 s after a reboot.
-   gap: space after the line; the larger gap separates the credit. */
+   gap: space after the line; the larger gaps set off the credit and
+   where new releases are. */
 static const struct { const char *text; int style, gap; } about_lines[] = {
     {"DockAwesome",ABOUT_TITLE,8}, {dock_build_version,ABOUT_BODY,3},
     {dock_build_date,ABOUT_SMALL,16}, {"Created by",ABOUT_SMALL,3},
-    {"Reine \"ZyBeR\" Delwall",ABOUT_NAME,0}
+    {"Reine \"ZyBeR\" Delwall",ABOUT_NAME,14},
+    {"github.com/delwall/DockAwesome/releases",ABOUT_SMALL,0}
 };
 enum { ABOUT_LINES = sizeof(about_lines)/sizeof(about_lines[0]), ABOUT_MARGIN = 18 };
 enum {

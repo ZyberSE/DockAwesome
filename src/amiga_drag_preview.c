@@ -58,8 +58,9 @@ static int build_shape(AmigaDragPreview *p, const DockImage *icon, int label_wid
         }
         if (last >= first && !add_rect(p->shape,icon_left+first,y,icon_left+last,y)) return 0;
     }
-    return add_rect(p->shape,label_left,top+1,right,p->height-2) &&
-        add_rect(p->shape,label_left+1,top,right-1,p->height-1);
+    return !label_width ||
+        (add_rect(p->shape,label_left,top+1,right,p->height-2) &&
+        add_rect(p->shape,label_left+1,top,right-1,p->height-1));
 }
 
 static int alloc_image(DockImage *image, int width, int height)
@@ -80,7 +81,7 @@ static int render(AmigaDragPreview *p)
     else memcpy(p->frame.pixels,p->background.pixels,(size_t)p->width*p->height*4);
     dock_blend(&p->frame,&p->icon,(p->width-p->icon.width)/2,0);
     if (!amiga_display_present(p->display,p->window,&p->frame)) return 0;
-    if (!p->shaped && !p->remove) return 1;
+    if (!p->remove) return 1;
     if (!(info = GetScreenDrawInfo(p->screen))) return 0;
     SetFont(rp,p->screen->RastPort.Font);
     SetAPen(rp,info->dri_Pens[BACKGROUNDPEN]);
@@ -109,8 +110,11 @@ AmigaDragPreview *amiga_drag_preview_open(struct Screen *screen, const DockImage
     p->icon_height = icon->height;
     p->width = icon->width > p->label_width ? icon->width : p->label_width;
     p->height = p->label_top+screen->RastPort.Font->tf_YSize+6;
+    /* Shaped without Remove: the icon alone, the same picture the dock
+       draws under it on its surface. */
+    if (shaped && !remove) { p->width = icon->width; p->height = icon->height; }
     if (p->text_width <= 0 || p->width > screen->Width || p->height > screen->Height) goto fail;
-    if (shaped && !build_shape(p,icon,p->label_width)) goto fail;
+    if (shaped && !build_shape(p,icon,remove ? p->label_width : 0)) goto fail;
     /* A private copy: the item's cache can be rebuilt during the drag. */
     if (!alloc_image(&p->icon,icon->width,icon->height) || !alloc_image(&p->frame,p->width,p->height))
         goto fail;

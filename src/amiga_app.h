@@ -350,6 +350,10 @@ typedef struct App {
     uint32_t drag_float_token;
     const DockImage *drag_float_icon; /* the cache image shown, to see a level change */
     uint32_t preview_attempt;
+    /* A shaped drag_preview cannot change its shape: the image and Remove
+       state it opened with, to reopen on a change. */
+    const DockImage *drag_preview_icon;
+    int drag_preview_remove;
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;
     uint64_t flash_deadline;

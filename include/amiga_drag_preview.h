@@ -6,12 +6,14 @@ struct Window;
 typedef struct AmigaDragPreview AmigaDragPreview;
 
 /* A transient native window extends the drag beyond the Dock's surface.
-   Shaped, it shows the icon's outline over a matte drawn once; without
-   shapes it keeps a save-under of the screen and redraws on each move.
+   Shaped, it shows the icon's outline over a matte drawn once, with the
+   "Remove" label only if opened with remove; without shapes it keeps a
+   save-under of the screen and redraws on each move.
    Intuition moves the window and restores what it uncovers. */
 AmigaDragPreview *amiga_drag_preview_open(struct Screen *screen, const DockImage *icon,
     int shaped, int remove, int pointer_x, int pointer_y);
-/* Show or hide the "Remove" label (without shapes; shaped always shows it). */
+/* Show or hide the "Remove" label (without shapes; a shaped preview is
+   reopened instead). */
 void amiga_drag_preview_set_remove(AmigaDragPreview *preview, int remove);
 void amiga_drag_preview_move(AmigaDragPreview *preview, int pointer_x, int pointer_y);
 int amiga_drag_preview_owns(const AmigaDragPreview *preview, const struct Window *window);

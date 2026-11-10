@@ -268,3 +268,7 @@
 ## Probes must tolerate the screen's precision (2026-11-10)
 - The RGB pen probe compared the read-back pixel exactly; on ApolloOS's 16-bit screen the colour comes back with 5-6 bits per channel, so it said "no" and the UI lost its RGB colours. Compare at the screen's precision (RGB565 masks).
 - Run --caps on every OS after changing a probe, not only on the OS the change was made for.
+
+## A fix for "all OSes" covers every branch of the code (2026-11-10)
+- The user said the drag-out edge fix applied to all versions and OSes. I fixed the PiP1 and window paths on Coffin, but the shaped (ApolloOS) branch of update_drag_preview kept its own rule: no window until Remove armed, so the dock's icon was cut at PiP2's invisible edge. My ApolloOS regression said "drag preview works" from screenshots, which do not show PiP.
+- Rule: when a fix must hold on every OS, list every branch that selects behaviour by caps (shaped, PiP1, window) and change or rule out each one. A screenshot never verifies what PiP shows; ask the user for that part.

@@ -58,6 +58,30 @@ _dock_folder_backfill_entry:
     movem.l (sp)+,d2-d7/a2-a6
     rts
 
+; Keyboard reset handler. a1 = ResetState {task, mask, pip2, pip1}: turn
+; both SAGA PiP units off (SAGA keeps them on through a reboot) and signal
+; the main task, which answers KBD_RESETHANDLERDONE.
+    xdef _dock_reset_entry
+_dock_reset_entry:
+    move.l 8(a1),d0
+    beq.s .reset_pip1
+    move.l d0,a0
+    clr.w (a0)
+.reset_pip1:
+    move.l 12(a1),d0
+    beq.s .reset_signal
+    move.l d0,a0
+    clr.w (a0)
+.reset_signal:
+    move.l a6,-(sp)
+    move.l 4.w,a6
+    move.l 4(a1),d0
+    move.l (a1),a1
+    jsr -324(a6)            ; Signal(task, mask)
+    move.l (sp)+,a6
+    moveq #0,d0
+    rts
+
 ; Vertical-blank interrupt server. a1 = VBlankState {task, mask, armed,
 ; fields, flip_register, flip_buffer}: count every field, show a pending
 ; PiP2 buffer, and while armed signal the main task. Return

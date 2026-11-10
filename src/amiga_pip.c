@@ -58,6 +58,26 @@ static ULONG field_counter(void)
 }
 #endif
 
+volatile UWORD *amiga_pip_dma_register(int unit)
+{
+    return (volatile UWORD *)((unit == 1 ? PIP1_BASE : PIP2_BASE)+0x12);
+}
+
+int amiga_pip_off_if_free(void)
+{
+#ifndef DOCK_AMMX
+    return 0;
+#else
+    unsigned int core = *(volatile UWORD *)CORE_REVISION;
+    if (core < 11900 || core == 0xffff) return 0;
+    Forbid();
+    if (!FindSemaphore((STRPTR)PIP2_LEASE)) *amiga_pip_dma_register(2) = 0;
+    if (!FindSemaphore((STRPTR)PIP1_LEASE)) *amiga_pip_dma_register(1) = 0;
+    Permit();
+    return 1;
+#endif
+}
+
 AmigaPip *amiga_pip_open(struct Screen *screen, int x, int y, int width, int height, int right_padding,
                        char *error, size_t error_capacity)
 {

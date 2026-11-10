@@ -199,6 +199,18 @@ _Static_assert(offsetof(ProgramPoll,owners) <= 0xffff, "ProgramPoll message exce
    it counts fields and, while armed, signals the main task. Animation ticks
    then follow the display instead of a 20 ms timer that drifts against
    its 50 Hz, which shows a frame twice or never now and then. */
+/* Read by dock_reset_entry (amiga_input.s) by offset: task, mask, then the
+   PiP2 and PiP1 DMA registers it clears. */
+typedef struct { struct Task *task; ULONG mask; volatile UWORD *pip2, *pip1; } ResetState;
+typedef struct {
+    struct MsgPort *port;
+    struct IOStdReq *io;
+    struct Interrupt interrupt;
+    ResetState state;
+    LONG bit;
+    int added;
+} ResetWatch;
+
 /* flip_register/flip_buffer: a PiP2 buffer flip for the server to do
    (amiga_pip_flip_at_vblank). */
 typedef struct { struct Task *task; ULONG mask; volatile ULONG armed, fields, flip_register, flip_buffer; } VBlankState;
@@ -373,6 +385,7 @@ typedef struct App {
     int pip_tail; /* keyed columns at the far side of a left PiP dock */
     int drag_bob_gx, drag_bob_gy; /* the pointer at the drawn pin's last frame */
     int menu_decided, menu_hides; /* the native menu held now: whether PiP steps aside */
+    ResetWatch reset; /* amiga_reset.c */
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;
     uint64_t flash_deadline;
@@ -548,6 +561,10 @@ void drag_bob_close(App *app);
 int drag_bob_picture(App *app, const DockImage *icon);
 /* While a native menu is held: PiP steps aside if the menu can reach it. */
 void pip_menu_check(App *app);
+int reset_watch_open(App *app);
+ULONG reset_watch_mask(const App *app);
+void reset_watch_done(App *app);
+void reset_watch_close(App *app);
 /* PiP's columns that show the dock: the last ones of each row are a keyed
    tail (the right edge's past the screen, a left dock's on its far side). */
 static inline int pip_visible_width(const App *app)

@@ -293,3 +293,8 @@
 - On Coffin a desktop right-click (MagicMenu) hid the dock for the whole menu. Painting the menu over the dock instead (screen diff, as for Workbench drag images) blocked the dock: LockBitMap on the 24-bit screen waits until MagicMenu closes, and the status polls' LockIBase did too. MagicMenu's menus are not layers on the screen (the LayerInfo lock stayed free).
 - Rule: read nothing from the screen and take no Intuition lock while a native menu is held. Decide once per menu from the pointer whether it can reach the dock (256 px), hide PiP only then, and let the loop wait for the menu.
 - Testing menus with the agent: a held right button can leave MagicMenu in sticky mode with the pointer over items like Power > Reboot now. Move away and close with Esc; Ctrl-C to the dock is answered only after the menu closes (cleanup needs Intuition).
+
+## SAGA PiP survives a reboot (2026-11-10)
+- A "black box at ApolloOS boot" (twice) and, photographed on AmigaOS 3.2.3, Coffin's last dock frame at boot: PiP stays on through a reboot, showing the previous system's buffer (black once that memory is cleared). My first guess (window backfill) was reverted unmerged.
+- Rule: ask what exactly is seen (shape, content, timing) before guessing at a boot-time artefact; a photo of the stale frame identified it at once.
+- The dock turns both units off at start (unless leased), on Ctrl-Amiga-Amiga (keyboard reset handler), and --pip-off exists for S:User-Startup.

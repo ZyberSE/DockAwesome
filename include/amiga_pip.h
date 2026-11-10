@@ -29,6 +29,13 @@ int amiga_pip_set_keying(AmigaPip *pip, int enable);
    tore a tall surface (a dock on the left or right edge) across the field.
    NULL slots write at once again. */
 void amiga_pip_flip_at_vblank(AmigaPip *pip, volatile ULONG *register_slot, volatile ULONG *buffer_slot);
+/* SAGA keeps PiP on through a reboot: the next system showed the previous
+   one's dock (or a black box where that memory was cleared) until the dock
+   started. Turns off each unit that no one in this boot has leased.
+   Returns 0 without a core that has PiP. */
+int amiga_pip_off_if_free(void);
+/* A unit's DMA register (writing 0 turns it off), for a reset handler. */
+volatile UWORD *amiga_pip_dma_register(int unit);
 /* The buffer last presented (diagnosis). */
 const unsigned char *amiga_pip_front_buffer(const AmigaPip *pip);
 unsigned char *amiga_pip_back_buffer(AmigaPip *pip);

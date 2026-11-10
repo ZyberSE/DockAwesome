@@ -471,10 +471,6 @@ static int pip_open(App *app)
         WA_SimpleRefresh, TRUE, WA_NoCareRefresh, TRUE,
         WA_IDCMP, IDCMP_FLAGS & ~IDCMP_REFRESHWINDOW, WA_MouseQueue, 1,
         WA_ShapeRegion, (ULONG)app->shape,
-        /* Until the empty shape takes (it is set again below) the window
-           is a full rectangle: backfilled, it showed as a black box over
-           the dock's place while ApolloOS booted. */
-        WA_BackFill, (ULONG)LAYERS_NOBACKFILL,
         TAG_DONE);
     if (!app->window) return 0;
     if (amiga_change_window_shape(app->window, app->shape) != app->shape) {

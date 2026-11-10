@@ -2124,13 +2124,19 @@ static __attribute__((noinline)) void event_loop(App *app)
             (app->program_replies ? (1UL<<app->program_replies->mp_SigBit) : 0) |
             (app->launch_port ? (1UL<<app->launch_port->mp_SigBit) : 0) |
             (app->status_notify ? (1UL<<app->status_notify_bit) : 0) |
-            app->input_context.signal | dock_ui_signal_mask(app->ui) | SIGBREAKF_CTRL_C);
+            app->input_context.signal | dock_ui_signal_mask(app->ui) | reset_watch_mask(app) |
+            SIGBREAKF_CTRL_C);
         struct IntuiMessage *msg;
         DockUIAction action;
         int redraw = app->gesture_redraw, recreate = 0, save = 0, due;
         int dismiss_popup;
         ++app->stats.wakes; app->gesture_redraw = 0;
         if (signals & SIGBREAKF_CTRL_C) break;
+        if (signals & reset_watch_mask(app)) {
+            /* Ctrl-Amiga-Amiga: PiP is off; let the reset go on. */
+            reset_watch_done(app);
+            break;
+        }
         if (native_menu_held(app)) {
             /* MagicMenu holds IntuitionBase's lock while its menu is up:
                the status polls and the drop catcher would wait on it (the
@@ -2401,7 +2407,7 @@ static void usage(void)
          "            [--snapshot | --opaque | --pip] [--ammx] [--profile]\n"
          "            [--pip-dump prefix] [--pip-x-offset n] [--pip-y-offset n]\n"
          "            [--bench-sweep speed] [--damage-check] [--no-vsync]\n"
-         "            [--self-launch] [--window-drag] [--pip1] [Workbench paths...]\n"
+         "            [--self-launch] [--window-drag] [--pip1] [--pip-off] [Workbench paths...]\n"
          "            [--version] [--caps]\n"
          "Drop Workbench icons to pin them. Click a pin to open it.\n"
          "Drag to reorder. Drag out or press Delete to remove a pin.\n"
@@ -2418,6 +2424,8 @@ static void usage(void)
          "--no-vsync paces zoom animation with the 20 ms timer instead of the display.\n"
          "--self-launch starts pins the way Workbench does without asking it, as\n"
          "the dock does when another desktop replaces Workbench.\n"
+         "--pip-off turns SAGA PiP off and exits: run it early in S:User-Startup,\n"
+         "as PiP stays on through a reboot.\n"
          "--pip1 shows labels and dragged pins in SAGA's PiP1 beside a narrow PiP\n"
          "dock without window shapes (it glitched the dock on some setups).\n"
          "--window-drag carries a pin dragged out of the dock in a window, as\n"
@@ -2444,6 +2452,7 @@ int main(int argc, char **argv)
     int explicit_pip = 0, caps_only = 0;
     if (!app) return 20;
     app->settings = dock_settings_default(); app->input_bit = app->vblank_bit = -1;
+    app->reset.bit = -1;
     {
         /* The icon cache may use a quarter of the free memory, at least the
            portable 16 MB default; a fixed budget refused sizes that fit. */
@@ -2464,7 +2473,16 @@ int main(int argc, char **argv)
             strcpy(app->config, argv[i]);
         }
         else if (!strcmp(argv[i], "--caps")) caps_only = 1;
+        else if (!strcmp(argv[i], "--pip-off")) {
+            /* For S:User-Startup: before any dock runs, clear the PiP a
+               previous system left on through the reboot. */
+            amiga_pip_off_if_free();
+            free(app); return 0;
+        }
     }
+    /* SAGA keeps PiP on through a reboot: what the previous system's dock
+       showed stayed up until this one presented its first frame. */
+    if (!caps_only) amiga_pip_off_if_free();
     dock_prefs_defaults(&app->prefs);
     config_state = read_config(app);
     if (config_state < 0) {
@@ -2608,6 +2626,7 @@ int main(int argc, char **argv)
     }
     if (!animation_open(app)) { fail_after_cleanup(app,"Cannot open timer.device for dock animation."); goto done; }
     if (!install_input(app)) { fail_after_cleanup(app,"Cannot install pointer observer in input.device."); goto done; }
+    if (app->pip_mode) reset_watch_open(app);
     if (app->count != initial_count || config_state != 1) save_config(app);
     if (app->pip_mode) {
         struct Task *self = FindTask(NULL);
@@ -2638,6 +2657,7 @@ done:
     dock_ui_destroy(app->ui); app->ui = NULL;
     app->input_context.ui_busy = 0;
     remove_input(app);
+    reset_watch_close(app);
     if (app->pip_dump[0] && app->source_valid && app->canvas.pixels) {
         int source_ok = dump_ppm(app->pip_dump, "source", &app->backdrop);
         int composed_ok = dump_ppm(app->pip_dump, "composed", &app->canvas);

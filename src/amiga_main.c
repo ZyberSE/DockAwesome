@@ -1851,9 +1851,9 @@ static void open_menu(App *app, int x, int y, uint32_t pin_id)
                 action = item->kind == PIN_DOCUMENT ? DOCK_UI_CLOSE_ITEM : DOCK_UI_QUIT_ITEM;
         }
         /* A pin with nothing to offer here (not running, or no window
-           with a close gadget) shows the dock's own menu rather than
-           ignoring the click. */
-        if (!action && !can_keep && !stack) pin_id = 0;
+           with a close gadget) shows no menu: the dock's own menu over
+           an icon was confusing. It stays on the plate between icons. */
+        if (!action && !can_keep && !stack) return;
     }
     reset_hover_label(app);
     interaction_cancel(app);

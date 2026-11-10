@@ -74,16 +74,16 @@ static int update_drag_mask(App *app, int sample)
 /* A native menu opened within this many pixels of the dock may cover it. */
 enum { MENU_REACH = 256 };
 
-/* Whether a native menu opened now, at the pointer, can reach the dock.
-   MagicMenu's pop-up opens at the pointer, Intuition's from the title
-   bar above it. Decided once per menu. */
+/* Whether a native menu opened now can reach the dock: MagicMenu's pop-up
+   opens at the pointer, Intuition's drops from the title bar, so a dock
+   near the top (a side dock) always steps aside. Decided once per menu. */
 static int menu_near_dock(const App *app)
 {
     int x = app->screen->MouseX, y = app->screen->MouseY;
     int right = app->left+pip_visible_width(app), bottom = app->top+app->height;
     int dx = x < app->left ? app->left-x : x >= right ? x-right+1 : 0;
     int dy = y < app->top ? app->top-y : y >= bottom ? y-bottom+1 : 0;
-    return dx < MENU_REACH && dy < MENU_REACH;
+    return app->top < MENU_REACH || (dx < MENU_REACH && dy < MENU_REACH);
 }
 
 /* PiP2 lies over menus, so the dock steps aside for a native menu that can
@@ -471,6 +471,10 @@ static int pip_open(App *app)
         WA_SimpleRefresh, TRUE, WA_NoCareRefresh, TRUE,
         WA_IDCMP, IDCMP_FLAGS & ~IDCMP_REFRESHWINDOW, WA_MouseQueue, 1,
         WA_ShapeRegion, (ULONG)app->shape,
+        /* Until the empty shape takes (it is set again below) the window
+           is a full rectangle: backfilled, it showed as a black box over
+           the dock's place while ApolloOS booted. */
+        WA_BackFill, (ULONG)LAYERS_NOBACKFILL,
         TAG_DONE);
     if (!app->window) return 0;
     if (amiga_change_window_shape(app->window, app->shape) != app->shape) {

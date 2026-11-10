@@ -52,6 +52,11 @@ int amiga_drag_bob_place(AmigaDragBob *b, const DockImage *picture, int x, int y
     return 0;
 }
 
+void amiga_drag_bob_set_exclude(AmigaDragBob *b, DockRect rect)
+{
+    if (b) dock_bob_set_exclude(&b->bob,rect);
+}
+
 void amiga_drag_bob_close(AmigaDragBob *b)
 {
     if (!b) return;

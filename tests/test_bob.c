@@ -28,13 +28,17 @@ static int screen_write(void *context, const unsigned char *rgb, size_t stride, 
     return 1;
 }
 
-/* The screen equals the original with picture blended at (px, py). */
+static DockRect excluded;
+
+/* The screen equals the original with picture blended at (px, py), but
+   not inside excluded. */
 static void expect(const DockImage *picture, int px, int py, int shown)
 {
     int x, y, c;
     for (y = 0; y < H; ++y) for (x = 0; x < W; ++x) for (c = 0; c < 3; ++c) {
         unsigned int want = original[y][x][c];
-        if (shown && x >= px && y >= py && x < px+picture->width && y < py+picture->height) {
+        int out = !(x >= excluded.left && x < excluded.right && y >= excluded.top && y < excluded.bottom);
+        if (shown && out && x >= px && y >= py && x < px+picture->width && y < py+picture->height) {
             const unsigned char *p = picture->pixels+((size_t)(y-py)*picture->width+(x-px))*4;
             unsigned int a = p[3];
             if (a) want = (p[c]*a+want*(255-a)+127)/255;
@@ -91,8 +95,18 @@ int main(void)
     assert(dock_bob_hide(&bob));
     expect(&a,0,0,0);
     assert(dock_bob_hide(&bob));
+    /* A rect left alone (the dock's own surface): moves across its edge
+       never touch it, and hiding restores the rest. */
+    excluded = (DockRect){30,15,50,40};
+    dock_bob_set_exclude(&bob,excluded);
+    for (i = 0; i < 12; ++i) {
+        assert(dock_bob_place(&bob,NULL,22+2*i,12+i));
+        expect(&a,22+2*i,12+i,1);
+    }
+    assert(dock_bob_hide(&bob));
+    expect(&a,0,0,0);
     dock_bob_free(&bob);
     free(a.pixels); free(b.pixels);
-    puts("bob: save-under, union moves, edges and restore PASS");
+    puts("bob: save-under, union moves, edges, excluded rect and restore PASS");
     return 0;
 }

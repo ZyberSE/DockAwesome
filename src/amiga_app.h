@@ -363,6 +363,7 @@ typedef struct App {
     DockImage drag_bob_picture;
     const DockImage *drag_bob_icon;
     int drag_bob_remove, drag_bob_x, drag_bob_y, drag_bob_due, drag_bob_new, window_drag;
+    int use_pip1; /* --pip1: labels and drags may use PiP1 beside a narrow dock */
     uint32_t bob_attempt;
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;

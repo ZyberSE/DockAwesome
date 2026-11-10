@@ -1,6 +1,7 @@
 #ifndef AMIGA_DRAG_BOB_H
 #define AMIGA_DRAG_BOB_H
 #include "dock_core.h"
+#include "dock_geometry.h"
 struct Screen;
 typedef struct AmigaDragBob AmigaDragBob;
 
@@ -14,6 +15,10 @@ AmigaDragBob *amiga_drag_bob_open(struct Screen *screen);
 /* Draw picture (NULL keeps the last) with its top left at x, y. Returns 0
    on failure: the screen is restored and the caller closes it. */
 int amiga_drag_bob_place(AmigaDragBob *bob, const DockImage *picture, int x, int y);
+/* Never draw into rect (screen coordinates): the dock's own surface,
+   where the dock draws the pin itself. Drawn there, the pin was read back
+   into the dock's glass. */
+void amiga_drag_bob_set_exclude(AmigaDragBob *bob, DockRect rect);
 /* Restore the screen and free. */
 void amiga_drag_bob_close(AmigaDragBob *bob);
 #endif

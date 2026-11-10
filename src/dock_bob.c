@@ -37,17 +37,19 @@ static void copy_rect(unsigned char *to, DockRect to_box, const unsigned char *f
 }
 
 /* Blend the picture, its top left at (x, y), over the RGB image laid out
-   over box, within clip. */
-static void blend(unsigned char *rgb, DockRect box, const DockImage *picture, int x, int y, DockRect clip)
+   over box, within clip and outside exclude. */
+static void blend(unsigned char *rgb, DockRect box, const DockImage *picture, int x, int y, DockRect clip,
+    DockRect exclude)
 {
     size_t stride = (size_t)(box.right-box.left)*3;
     int row, col;
     for (row = clip.top; row < clip.bottom; ++row) {
         const unsigned char *in = picture->pixels+((size_t)(row-y)*picture->width+(clip.left-x))*4;
         unsigned char *out = rgb+(size_t)(row-box.top)*stride+(size_t)(clip.left-box.left)*3;
+        int skip = row >= exclude.top && row < exclude.bottom;
         for (col = clip.left; col < clip.right; ++col, in += 4, out += 3) {
             unsigned int a = in[3], keep = 255-a;
-            if (!a) continue;
+            if (!a || (skip && col >= exclude.left && col < exclude.right)) continue;
             out[0] = (unsigned char)((in[0]*a+out[0]*keep+127)/255);
             out[1] = (unsigned char)((in[1]*a+out[1]*keep+127)/255);
             out[2] = (unsigned char)((in[2]*a+out[2]*keep+127)/255);
@@ -104,7 +106,7 @@ int dock_bob_place(DockBob *bob, const DockImage *picture, int x, int y)
     /* The screen there still shows the old picture: put back what it hid. */
     if (!empty(old)) copy_rect(bob->work,box,bob->saved,old,old);
     copy_rect(bob->saved,next,bob->work,box,next);
-    blend(bob->work,box,&bob->picture,x,y,next);
+    blend(bob->work,box,&bob->picture,x,y,next,bob->exclude);
     if (!s->write(s->context,bob->work,(size_t)(box.right-box.left)*3,box.left,box.top,
             box.right-box.left,box.bottom-box.top)) {
         bob->drawn = (DockRect){0,0,0,0};
@@ -112,6 +114,11 @@ int dock_bob_place(DockBob *bob, const DockImage *picture, int x, int y)
     }
     bob->drawn = next;
     return 1;
+}
+
+void dock_bob_set_exclude(DockBob *bob, DockRect rect)
+{
+    bob->exclude = rect;
 }
 
 int dock_bob_hide(DockBob *bob)

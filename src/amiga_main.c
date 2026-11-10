@@ -1302,7 +1302,9 @@ static void draw(App *app)
     for (i = 0; i < count; ++i)
         if (icons[i] && app->items[row_item(app,i)].running)
             overlays[overlay_count++] = running_dot(app,&placement[i]);
-    if (dragged >= 0 && !app->gesture.remove_armed) {
+    /* Drawn on the screen, the pin is left out of the dock's surface: the
+       dock draws it there, with Remove armed too. */
+    if (dragged >= 0 && (!app->gesture.remove_armed || app->drag_bob)) {
         int level = app->moving_item ? app->held_icon.level : app->placement[dragged].level;
         const DockImage *icon = &app->items[dragged].cache.image[level];
         int x = app->gesture.x-icon->width/2, y = app->gesture.y-icon->height/2;
@@ -1712,6 +1714,11 @@ static int update_drag_bob(App *app, const DockImage *icon, int x, int y)
         dock_ui_hide_label(app->ui);
         app->drag_bob = amiga_drag_bob_open(app->screen);
         if (!app->drag_bob) return -1;
+        {
+            int visible = app->pip_mode ? app->width-app->settings.edge_padding : app->width;
+            amiga_drag_bob_set_exclude(app->drag_bob,
+                (DockRect){app->left,app->top,app->left+visible,app->top+app->height});
+        }
     }
     if (icon != app->drag_bob_icon || remove != app->drag_bob_remove) {
         DockImage picture;
@@ -1733,6 +1740,9 @@ static void drag_bob_present(App *app)
 {
     if (!app->drag_bob || !app->drag_bob_due) return;
     app->drag_bob_due = 0;
+    /* The PiP frame just presented shows from the next field: draw then,
+       so the dock's half and this one change together. */
+    if (app->vblank.flip_buffer) WaitTOF();
     if (!amiga_drag_bob_place(app->drag_bob,app->drag_bob_new ? &app->drag_bob_picture : NULL,
             app->drag_bob_x,app->drag_bob_y)) {
         drag_bob_close(app); /* the window preview takes over */
@@ -2313,7 +2323,8 @@ static void usage(void)
          "            [--snapshot | --opaque | --pip] [--ammx] [--profile]\n"
          "            [--pip-dump prefix] [--pip-x-offset n] [--pip-y-offset n]\n"
          "            [--bench-sweep speed] [--damage-check] [--no-vsync]\n"
-         "            [--self-launch] [--window-drag] [Workbench paths...] [--version] [--caps]\n"
+         "            [--self-launch] [--window-drag] [--pip1] [Workbench paths...]\n"
+         "            [--version] [--caps]\n"
          "Drop Workbench icons to pin them. Click a pin to open it.\n"
          "Drag to reorder. Drag out or press Delete to remove a pin.\n"
          "R refreshes the background. Esc or Ctrl-C quits.\n"
@@ -2329,6 +2340,8 @@ static void usage(void)
          "--no-vsync paces zoom animation with the 20 ms timer instead of the display.\n"
          "--self-launch starts pins the way Workbench does without asking it, as\n"
          "the dock does when another desktop replaces Workbench.\n"
+         "--pip1 shows labels and dragged pins in SAGA's PiP1 beside a narrow PiP\n"
+         "dock without window shapes (it glitched the dock on some setups).\n"
          "--window-drag carries a pin dragged out of the dock in a window, as\n"
          "before, instead of drawing it on the screen (RTG without window shapes).\n"
          "--caps prints the probed CPU, chipset and OS features and the chosen\n"
@@ -2412,6 +2425,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--no-vsync")) app->no_vsync = 1;
         else if (!strcmp(argv[i], "--self-launch")) app->self_launch = 1;
         else if (!strcmp(argv[i], "--window-drag")) app->window_drag = 1;
+        else if (!strcmp(argv[i], "--pip1")) app->use_pip1 = 1;
         else if (!strcmp(argv[i], "--bench-sweep")) {
             app->bench_speed = i+1 < argc ? bounded_option(argv[++i],1,64) : INT_MAX;
             if (app->bench_speed == INT_MAX) { puts("--bench-sweep needs a speed from 1 to 64."); free(app); return 20; }

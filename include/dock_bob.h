@@ -23,6 +23,7 @@ typedef struct {
     unsigned char *work;   /* RGB scratch for the union */
     size_t saved_cap, work_cap;
     DockRect drawn;        /* on the screen; empty while hidden */
+    DockRect exclude;      /* never drawn into (empty: none) */
 } DockBob;
 
 void dock_bob_init(DockBob *bob, const DockBobScreen *screen);
@@ -30,6 +31,9 @@ void dock_bob_init(DockBob *bob, const DockBobScreen *screen);
    cut at the screen's edges. Returns 0 on failure; the screen is then as
    it was with nothing drawn. */
 int dock_bob_place(DockBob *bob, const DockImage *picture, int x, int y);
+/* Leave rect alone: the picture is not drawn there (where something
+   else shows it). Takes effect with the next place. */
+void dock_bob_set_exclude(DockBob *bob, DockRect rect);
 /* Restores the screen under the picture. */
 int dock_bob_hide(DockBob *bob);
 void dock_bob_free(DockBob *bob);

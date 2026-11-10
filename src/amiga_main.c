@@ -1317,7 +1317,8 @@ static void draw(App *app)
         const DockImage *shown = amiga_drag_preview_icon(app->drag_preview,&x,&y);
         if (shown) { icon = shown; x -= app->left; y -= app->top; }
         overlays[overlay_count++] = (DockOverlay){icon, x, y};
-    }
+        app->drag_overlay_icon = icon; app->drag_overlay_x = x; app->drag_overlay_y = y;
+    } else app->drag_overlay_icon = NULL;
     app->renderer.overlays = overlays; app->renderer.overlay_count = overlay_count;
     dock_renderer_draw(&app->renderer, &app->canvas, (app->snapshot || app->pip_mode) ? &app->backdrop : NULL,
         icons, placement, count, &app->settings);
@@ -1725,32 +1726,59 @@ static int update_drag_bob(App *app, const DockImage *icon, int x, int y)
                 (DockRect){app->left,app->top,app->left+visible,app->top+app->height});
         }
     }
+    (void)x; (void)y; (void)remove;
+    app->drag_bob_due = 1;
+    return 0;
+}
+
+/* The PiP front buffer as RGB (the key colour stays magenta), with
+   --pip-dump while a pin is drawn: what PiP showed beside it. */
+static void dump_pip_front(App *app)
+{
+    const unsigned char *front = amiga_pip_front_buffer(app->pip);
+    int stride = amiga_pip_stride(app->pip), x, y;
+    DockImage image;
+    if (!front || stride < 2) return;
+    image = (DockImage){stride/2,app->height,malloc((size_t)stride/2*app->height*4)};
+    if (!image.pixels) return;
+    for (y = 0; y < image.height; ++y) for (x = 0; x < image.width; ++x) {
+        unsigned int v = (front[(size_t)y*stride+x*2]<<8)|front[(size_t)y*stride+x*2+1];
+        unsigned char *p = image.pixels+((size_t)y*image.width+x)*4;
+        p[0] = (unsigned char)((v>>8)&0xf8); p[1] = (unsigned char)((v>>3)&0xfc);
+        p[2] = (unsigned char)((v<<3)&0xf8); p[3] = 255;
+    }
+    dump_ppm(app->pip_dump,"pipfront",&image);
+    free(image.pixels);
+}
+
+/* After the frame is presented, so the screen and PiP change together.
+   The picture and place come from the dragged pin's overlay in that frame
+   (draw): taken before the animation step, they could be a zoom level and
+   a few pixels off the dock's half. */
+static void drag_bob_present(App *app)
+{
+    const DockImage *icon = app->drag_overlay_icon;
+    int remove = app->gesture.remove_armed, x, y;
+    if (!app->drag_bob || !app->drag_bob_due || !icon) return;
     if (icon != app->drag_bob_icon || remove != app->drag_bob_remove) {
         DockImage picture;
         app->drag_bob_remove = remove;
         if (!drag_picture(app,icon,&remove,&picture)) {
-            app->bob_failed = gesture->token;
+            app->bob_failed = app->gesture.token;
             drag_bob_close(app);
-            return -1;
+            app->gesture_redraw = 1;
+            return;
         }
         free(app->drag_bob_picture.pixels);
         app->drag_bob_picture = picture;
         app->drag_bob_icon = icon;
         app->drag_bob_new = 1;
     }
-    x -= app->drag_bob_picture.width/2; y -= icon->height/2;
+    x = app->left+app->drag_overlay_x-(app->drag_bob_picture.width-icon->width)/2;
+    y = app->top+app->drag_overlay_y;
     /* Only a move or a new picture is drawn again. */
-    if (app->drag_bob_new || x != app->drag_bob_x || y != app->drag_bob_y) {
-        app->drag_bob_x = x; app->drag_bob_y = y;
-        app->drag_bob_due = 1;
-    }
-    return 0;
-}
-
-/* After the frame is presented, so the screen and PiP change together. */
-static void drag_bob_present(App *app)
-{
-    if (!app->drag_bob || !app->drag_bob_due) return;
+    if (!app->drag_bob_new && x == app->drag_bob_x && y == app->drag_bob_y) { app->drag_bob_due = 0; return; }
+    app->drag_bob_x = x; app->drag_bob_y = y;
     app->drag_bob_due = 0;
     /* The PiP frame just presented shows from the next field: draw then,
        so the dock's half and this one change together. */
@@ -1765,6 +1793,7 @@ static void drag_bob_present(App *app)
         return;
     }
     app->drag_bob_new = 0;
+    if (app->pip_dump[0] && app->pip) dump_pip_front(app);
 }
 
 /* What carries a dragged pin beyond the dock's surface.

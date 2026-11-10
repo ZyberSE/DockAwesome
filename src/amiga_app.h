@@ -366,6 +366,9 @@ typedef struct App {
     int drag_bob_remove, drag_bob_x, drag_bob_y, drag_bob_due, drag_bob_new, window_drag;
     int use_pip1; /* --pip1: labels and drags may use PiP1 beside a narrow dock */
     uint32_t bob_failed; /* the gesture in which drawing failed */
+    /* The dragged pin's overlay in the last frame drawn (canvas coordinates). */
+    const DockImage *drag_overlay_icon;
+    int drag_overlay_x, drag_overlay_y;
     int drop_preview_slot, displayed_drop_slot, snap_wait_motion, snap_x, snap_y;
     uint32_t next_pin_id, flash_pin_id;
     uint64_t flash_deadline;

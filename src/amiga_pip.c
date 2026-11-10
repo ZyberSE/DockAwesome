@@ -31,6 +31,7 @@ struct AmigaPip {
     int keying, configuration_dirty;
     int retirement_pending;
     ULONG last_present_field;
+    volatile ULONG *flip_slot; /* amiga_pip_flip_at_vblank */
     unsigned int core;
     APTR allocation[2];
     unsigned char *pixels[2];
@@ -126,8 +127,20 @@ AmigaPip *amiga_pip_open_unit(struct Screen *screen, int unit, int x, int y, int
 #endif
 }
 
+void amiga_pip_flip_at_vblank(AmigaPip *p, volatile ULONG *register_slot, volatile ULONG *buffer_slot)
+{
+    if (!p) return;
+    if (p->flip_slot) *p->flip_slot = 0;
+    p->flip_slot = NULL;
+    if (!register_slot || !buffer_slot) return;
+    *buffer_slot = 0;
+    *register_slot = p->base+0x08;
+    p->flip_slot = buffer_slot;
+}
+
 void amiga_pip_suspend(AmigaPip *p)
 {
+    if (p && p->flip_slot) *p->flip_slot = 0;
 #ifdef DOCK_AMMX
     if (p && p->touched && p->configured) reg16(p,0x12,0); /* DMA row bytes0 disables */
 #endif
@@ -181,6 +194,7 @@ void amiga_pip_close(AmigaPip *p)
 {
     int i;
     if (!p) return;
+    if (p->flip_slot) *p->flip_slot = 0;
 #ifdef DOCK_AMMX
     if (p->touched) {
         /* Stop DMA before freeing either possibly scanned buffer. */
@@ -228,6 +242,7 @@ int amiga_pip_present(AmigaPip *p)
     }
     next=p->front^1;
     if (!p->configured || p->configuration_dirty || x!=p->physical_x || y!=p->physical_y) {
+        if (p->flip_slot) *p->flip_slot = 0;
         reg16(p,0x12,0); p->touched=1;
         reg16(p,0x00,(UWORD)x); reg16(p,0x02,(UWORD)y);
         reg16(p,0x04,(UWORD)(x+p->width)); reg16(p,0x06,(UWORD)(y+p->height));
@@ -237,10 +252,11 @@ int amiga_pip_present(AmigaPip *p)
         reg32(p,0x08,(ULONG)p->pixels[next]);
         reg16(p,0x12,(UWORD)p->stride);
         p->physical_x=x; p->physical_y=y; p->configured=1; p->configuration_dirty=0;
-    } else reg32(p,0x08,(ULONG)p->pixels[next]);
-    /* Read after the volatile register write: a racing VBlank then causes a
-       conservative extra wait, never premature reuse of the previous front.
-       Pointer flips are not synchronized, so mid-field tearing is possible. */
+    } else if (p->flip_slot) *p->flip_slot = (ULONG)p->pixels[next];
+    else reg32(p,0x08,(ULONG)p->pixels[next]);
+    /* Read after the write: a racing VBlank then causes a conservative extra
+       wait, never premature reuse of the previous front. Without a VBlank
+       slot the pointer flips at once, so mid-field tearing is possible. */
     p->last_present_field=field_counter(); p->retirement_pending=1;
     p->front=next;
     return 1;

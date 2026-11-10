@@ -1,12 +1,14 @@
 #ifndef AMIGA_PIP_H
 #define AMIGA_PIP_H
+#include <exec/types.h>
 #include <stddef.h>
 struct Screen;
 typedef struct AmigaPip AmigaPip;
 enum { AMIGA_PIP_MAX_WIDTH = 2048, AMIGA_PIP_MAX_HEIGHT = 1200 };
 /* PiP2 uses a lease shared by cooperating apps. Registers are write-only.
    Use big-endian RGB565, 32-pixel width steps, 64-byte row alignment, and zero
-   modulo. Wait for VBlank before reusing a buffer. Flips can still tear.
+   modulo. Wait for VBlank before reusing a buffer. Flips written at once can
+   tear; amiga_pip_flip_at_vblank moves them into the vertical blank.
    The right_padding columns may extend past the screen and must stay clear. */
 AmigaPip *amiga_pip_open(struct Screen *screen, int x, int y, int width, int height, int right_padding,
                        char *error, size_t error_capacity);
@@ -21,6 +23,12 @@ void amiga_pip_suspend(AmigaPip *pip);
 int amiga_pip_set_alignment(AmigaPip *pip, int x_offset, int y_offset);
 /* Enable the 0xF81F key on the next frame. Escape opaque magenta first. */
 int amiga_pip_set_keying(AmigaPip *pip, int enable);
+/* Flip buffers in the vertical blank: present leaves the new front's
+   address in *buffer_slot for a VBlank server, which writes it to the
+   address in *register_slot and clears the slot. A pointer written at once
+   tore a tall surface (a dock on the left or right edge) across the field.
+   NULL slots write at once again. */
+void amiga_pip_flip_at_vblank(AmigaPip *pip, volatile ULONG *register_slot, volatile ULONG *buffer_slot);
 unsigned char *amiga_pip_back_buffer(AmigaPip *pip);
 /* 0 or 1: which buffer amiga_pip_back_buffer returns. A failed or suspended
    present keeps it, so it then holds the newest conversion. */

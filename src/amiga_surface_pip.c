@@ -404,6 +404,7 @@ static int pip_open(App *app)
         return 0;
     }
     if (!amiga_pip_set_keying(app->pip, 1)) return 0;
+    if (app->vblank_open) amiga_pip_flip_at_vblank(app->pip,&app->vblank.flip_register,&app->vblank.flip_buffer);
     if (amiga_display_capture565(app->display, app->source565, app->left,
             app->top, 1, NULL, app->renderer.pixels->bytes_equal, NULL) < 0) {
         strcpy(app->surface_error, "PiP cannot read this screen's pixel format."); return 0;

@@ -807,8 +807,15 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
       ApolloOS boot (Workbench holds it since it started it at boot).
 - [x] Folder Stack icons kept between openings and read ahead while idle
       (4272be2): 22 icons 940 ms -> first opening 132 ms, later 12 ms.
-- [ ] ApolloOS has build 320 in WBStartup (325 only ran from RAM: for the
-      test): install 325 there on its next boot.
+- [x] AmigaOS 3.2.3 (Vampire): installed build 344 in WBStartup with its own
+      ENVARC config (WBDock's programs, bottom), WBDock moved to
+      WBStartup/Disabled, rollback Disabled/DockAwesome-build326.old. Fixed
+      there: stale band from the drop receiver (now behind windows), window
+      preview lag (pins drawn on the screen, dock_bob), tearing on a side
+      dock (PiP2 flips in the VBlank), labels in windows (PiP1 only with
+      --pip1), left dock keyed tail. User: "Funkar perfekt!".
+- [ ] ApolloOS (build 320) and Coffin (build 325): install build 344 on their
+      next boot and check drag-out on the bottom and side docks there.
 - [x] Installed build 325 on Coffin (rollback Disabled/DockAwesome-build314.old).
 - [ ] Coffin with the user: drag out of the bottom dock (the window path now
       draws the window's picture), default icons, native back button, icon

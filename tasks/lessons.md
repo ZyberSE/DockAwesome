@@ -283,3 +283,8 @@
 - Twice the user saw the same drag fault after my fix: the drawn pin was allowed one try per gesture, so leaving the dock a second time in the same drag fell back to the window preview. Counters (opens, places) said "drawn" and I believed them.
 - What showed it: holding the button with amiga_button, moving with relative moves (absolute warps did not register as a press on the left-edge dock), and a screenshot at each step; the window preview's grey Remove label gave it away.
 - Rule: for any drag change, test out, back in and out again in one gesture with the button held, and look at each step. Count only work that is needed (a still pin was redrawn 1000 times).
+
+## SAGA PiP rows wrap their last columns; composite before claiming a fix (2026-11-10)
+- A left PiP dock showed pixels of a dragged pin at the screen's left edge and lost its own last columns: SAGA shows the last columns of a PiP row at the start of the next. The right dock's keyed tail had already been found; the left dock lacked it. Calibration (+17/-1) was right; my guess that it was wrong cost a round.
+- What finally showed every fault: the button held, the pin stepped across the edge in small steps, and each screenshot composited with that frame's PiP front buffer (--pip-dump). Do this before handing over any change at the PiP/screen seam, and keep the steps small, as the user asked.
+- Programs started with Run >file lose their stdout here: run them from an Execute script, and have probes also write results to a file of their own.

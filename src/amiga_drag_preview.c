@@ -169,13 +169,21 @@ int amiga_drag_preview_move(AmigaDragPreview *p, int x, int y)
        move has landed: drawn before, the window showed it at the old place
        and the background around the icon lagged. */
     if (!landed(p)) return 0;
-    if (p->stale) { p->stale = 0; render(p); return 1; }
+    if (amiga_drag_preview_settle(p)) return 1;
     position(p,x,y,&left,&top);
     if (left == p->left && top == p->top) return 0;
     if (!p->shaped && !save_under(p,left,top)) return 0;
     MoveWindow(p->window,left-p->left,top-p->top);
     p->left = left; p->top = top;
     p->stale = !p->shaped;
+    return 1;
+}
+
+int amiga_drag_preview_settle(AmigaDragPreview *p)
+{
+    if (!p || !p->stale || !landed(p)) return 0;
+    p->stale = 0;
+    render(p);
     return 1;
 }
 

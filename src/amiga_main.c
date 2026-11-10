@@ -1977,6 +1977,7 @@ static __attribute__((noinline)) void event_loop(App *app)
         int dismiss_popup;
         ++app->stats.wakes; app->gesture_redraw = 0;
         if (signals & SIGBREAKF_CTRL_C) break;
+        if (amiga_drag_preview_settle(app->drag_preview)) redraw = 1;
         if (launch_reap(app)) { redraw = 1; status_changed(app); }
         if ((signals & workbench) && (workbench_notify_poll(app) || app->workbench_closed)) {
             if (app->workbench_closed) continue;

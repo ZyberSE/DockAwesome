@@ -272,3 +272,9 @@
 ## A fix for "all OSes" covers every branch of the code (2026-11-10)
 - The user said the drag-out edge fix applied to all versions and OSes. I fixed the PiP1 and window paths on Coffin, but the shaped (ApolloOS) branch of update_drag_preview kept its own rule: no window until Remove armed, so the dock's icon was cut at PiP2's invisible edge. My ApolloOS regression said "drag preview works" from screenshots, which do not show PiP.
 - Rule: when a fix must hold on every OS, list every branch that selects behaviour by caps (shaped, PiP1, window) and change or rule out each one. A screenshot never verifies what PiP shows; ask the user for that part.
+
+## Without shapes, the armed drop receiver must not cover windows (2026-11-10)
+- Filmed on Coffin (IMG_2484): a stale band over a Workbench list window where it reached into the dock's box. The receiver arms with the buttons up (pointer on a Workbench icon, anywhere in a drawer window, and stays armed on the dock), went to the front over the whole box and backfilled from a snapshot; whatever changed under it (wheel scrolling, a move) showed stale through PiP's keyed headroom.
+- A screenshot shows this (the receiver is in the screen bitmap): on AmigaOS 3.2.3 a window moved into the box was cut at the box's top edge.
+- Rule: a helper window that waits on the dock's box stays behind the other windows (WindowToBack); check windows near the dock with the pointer inside a Workbench window after any change to arming.
+- On AmigaOS 3.2.3 a Run process is not found by task name: use Status COMMAND=<path> and Break <n>.

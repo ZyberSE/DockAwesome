@@ -189,9 +189,14 @@ static int set_catching(AmigaDropCatcher *c, int catching)
         struct Region *previous = amiga_change_window_shape(c->window, catching ? c->catch_region : c->normal);
         return previous == expected || (!catching && previous == c->normal);
     }
+    /* Behind the other windows (in front of the backdrop): in front, a
+       window on the dock's box was hidden behind the save-under while
+       armed, and changes in it (scrolling, a move) showed as stale bands
+       through PiP (Coffin, AmigaOS 3.2.3). A drop where a window lies on
+       the box goes to that window. */
     if (catching) {
         ChangeWindowBox(c->window, c->left, c->top, c->width, c->height);
-        WindowToFront(c->window);
+        WindowToBack(c->window);
     } else ChangeWindowBox(c->window, 0, 0, 1, 1);
     return 1;
 }

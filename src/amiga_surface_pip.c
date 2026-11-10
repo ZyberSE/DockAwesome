@@ -71,11 +71,36 @@ static int update_drag_mask(App *app, int sample)
     return 1;
 }
 
-static int pip_blocked_by_screen_or_menu(App *app)
+/* A native menu opened within this many pixels of the dock may cover it. */
+enum { MENU_REACH = 256 };
+
+/* Whether a native menu opened now, at the pointer, can reach the dock.
+   MagicMenu's pop-up opens at the pointer, Intuition's from the title
+   bar above it. Decided once per menu. */
+static int menu_near_dock(const App *app)
+{
+    int x = app->screen->MouseX, y = app->screen->MouseY;
+    int right = app->left+pip_visible_width(app), bottom = app->top+app->height;
+    int dx = x < app->left ? app->left-x : x >= right ? x-right+1 : 0;
+    int dy = y < app->top ? app->top-y : y >= bottom ? y-bottom+1 : 0;
+    return dx < MENU_REACH && dy < MENU_REACH;
+}
+
+/* PiP2 lies over menus, so the dock steps aside for a native menu that can
+   reach it; one opened further away leaves the dock in place (hiding it
+   for every desktop right-click on Coffin was jarring). The screen is not
+   read while a menu is up: under P96 MagicMenu holds the screen's bitmap
+   lock until it closes. */
+static int pip_blocked_by_screen(App *app)
 {
     int menu = native_menu_held(app);
-    if (IntuitionBase->FirstScreen == app->screen && !menu) return 0;
-    if (app->profile && app->pip_visible && menu) ++app->stats.menu_suspends;
+    if (!menu) app->menu_decided = 0;
+    else if (!app->menu_decided) {
+        app->menu_decided = 1;
+        app->menu_hides = menu_near_dock(app);
+        if (app->menu_hides) ++app->stats.menu_suspends;
+    }
+    if (IntuitionBase->FirstScreen == app->screen && !(menu && app->menu_hides)) return 0;
     interaction_cancel(app);
     amiga_pip_suspend(app->pip); app->pip_visible = 0; input_publish(app);
     return 1;
@@ -121,7 +146,8 @@ static int live_capture(App *app, int full_compare)
     const DockRect *check = NULL;
     int result, moved, screen_left, screen_top, dialog_moved, force;
     uint64_t started;
-    if (pip_blocked_by_screen_or_menu(app)) return 0;
+    if (pip_blocked_by_screen(app)) return 0;
+    if (native_menu_held(app)) return 0;
     /* Native Workbench can retain layer locks through its drag loop. Do not
        enter a layer/bitmap operation while its external gesture is active. */
     if (amiga_drop_catcher_active(app->drop_catcher)) return 0;
@@ -259,6 +285,11 @@ static ULONG paint_drag_image(App *app, unsigned char *buffer, int stride)
     return painted;
 }
 
+void pip_menu_check(App *app)
+{
+    if (app->pip) pip_blocked_by_screen(app);
+}
+
 /* Encode and key the frame into the back buffer and show it, unless
    another screen or a native menu is in front. */
 static void pip_show(App *app, const DockImage *frame)
@@ -270,7 +301,7 @@ static void pip_show(App *app, const DockImage *frame)
     ULONG painted = 0;
     unsigned char *buffer;
     uint64_t started = app->profile ? profile_clock() : 0, encoded, converted;
-    if (pip_blocked_by_screen_or_menu(app)) return;
+    if (pip_blocked_by_screen(app)) return;
     encoded = app->profile ? profile_clock() : 0;
     buffer = amiga_pip_back_buffer(app->pip);
     back = amiga_pip_back_index(app->pip);

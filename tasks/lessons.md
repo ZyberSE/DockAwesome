@@ -288,3 +288,8 @@
 - A left PiP dock showed pixels of a dragged pin at the screen's left edge and lost its own last columns: SAGA shows the last columns of a PiP row at the start of the next. The right dock's keyed tail had already been found; the left dock lacked it. Calibration (+17/-1) was right; my guess that it was wrong cost a round.
 - What finally showed every fault: the button held, the pin stepped across the edge in small steps, and each screenshot composited with that frame's PiP front buffer (--pip-dump). Do this before handing over any change at the PiP/screen seam, and keep the steps small, as the user asked.
 - Programs started with Run >file lose their stdout here: run them from an Execute script, and have probes also write results to a file of their own.
+
+## Native menus: MagicMenu holds IntuitionBase and P96's bitmap lock (2026-11-10)
+- On Coffin a desktop right-click (MagicMenu) hid the dock for the whole menu. Painting the menu over the dock instead (screen diff, as for Workbench drag images) blocked the dock: LockBitMap on the 24-bit screen waits until MagicMenu closes, and the status polls' LockIBase did too. MagicMenu's menus are not layers on the screen (the LayerInfo lock stayed free).
+- Rule: read nothing from the screen and take no Intuition lock while a native menu is held. Decide once per menu from the pointer whether it can reach the dock (256 px), hide PiP only then, and let the loop wait for the menu.
+- Testing menus with the agent: a held right button can leave MagicMenu in sticky mode with the pointer over items like Power > Reboot now. Move away and close with Esc; Ctrl-C to the dock is answered only after the menu closes (cleanup needs Intuition).

@@ -1042,7 +1042,7 @@ static void profile_report(App *app)
         printf("Damage check: frames=%lu compose_mismatch=%lu convert_mismatch=%lu\n",
             (unsigned long)app->stats.check_frames, (unsigned long)app->stats.compose_mismatch,
             (unsigned long)app->stats.convert_mismatch);
-    printf("Workbench programs: polls=%lu changes=%lu roundtrip_us_avg=%lu max=%lu native_menu_suspends=%lu\n",
+    printf("Workbench programs: polls=%lu changes=%lu roundtrip_us_avg=%lu max=%lu native_menu_hides=%lu\n",
         (unsigned long)app->stats.program_polls, (unsigned long)app->stats.program_changes,
         ticks_us(app,app->stats.program_poll_ticks,app->stats.program_polls),
         ticks_us(app,app->stats.program_poll_peak,1), (unsigned long)app->stats.menu_suspends);
@@ -2131,6 +2131,15 @@ static __attribute__((noinline)) void event_loop(App *app)
         int dismiss_popup;
         ++app->stats.wakes; app->gesture_redraw = 0;
         if (signals & SIGBREAKF_CTRL_C) break;
+        if (native_menu_held(app)) {
+            /* MagicMenu holds IntuitionBase's lock while its menu is up:
+               the status polls and the drop catcher would wait on it (the
+               dock froze, deaf to Ctrl-C). Only decide whether PiP steps
+               aside for the menu, then wait for it to close. */
+            if (app->pip_mode) pip_menu_check(app);
+            interaction_cancel(app);
+            continue;
+        }
         if (amiga_drag_preview_settle(app->drag_preview)) redraw = 1;
         if (launch_reap(app)) { redraw = 1; status_changed(app); }
         if ((signals & workbench) && (workbench_notify_poll(app) || app->workbench_closed)) {

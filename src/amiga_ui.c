@@ -1,4 +1,5 @@
 #include "amiga_ui.h"
+#include <inline/macros.h>
 #include "dock_compose.h"
 #include "amiga_display.h"
 #include "amiga_float.h"
@@ -94,7 +95,11 @@ static const struct { const char *text; int style, gap; } about_lines[] = {
     {"Reine \"ZyBeR\" Delwall",ABOUT_NAME,14},
     {"github.com/delwall/DockAwesome/releases",ABOUT_SMALL,0}
 };
-enum { ABOUT_LINES = sizeof(about_lines)/sizeof(about_lines[0]), ABOUT_MARGIN = 18 };
+enum { ABOUT_LINES = sizeof(about_lines)/sizeof(about_lines[0]), ABOUT_MARGIN = 18,
+    ABOUT_LINK = ABOUT_LINES-1 };
+/* Opened in the default browser through openurl.library when it is there;
+   without it the line is plain text. */
+static const char about_url[] = "https://github.com/delwall/DockAwesome/releases";
 enum {
     FOLDER_COLS = 12, FOLDER_ROWS = 10,
 
@@ -241,6 +246,9 @@ struct DockUI {
     SettingsView settings;
     int font_height, font_width, popup_row, popup_selected, popup_pressed;
     int window_shapes, popup_rgb, rgb_pens, showing_about;
+    struct Library *openurl; /* while About is open, when installed */
+    LONG link_pen;           /* a blue for the link, -1 without one */
+    DockRect about_link;     /* the link line in the About window */
     UWORD popup_pen[MENU_COLORS];
 };
 
@@ -525,6 +533,10 @@ void dock_ui_close_dialog(DockUI *ui)
     memset(&ui->settings,0,sizeof(ui->settings));
     if (ui->asl) CloseLibrary(ui->asl);
     ui->asl = NULL;
+    if (ui->openurl) CloseLibrary(ui->openurl);
+    ui->openurl = NULL;
+    if (ui->link_pen >= 0) ReleasePen(ui->screen->ViewPort.ColorMap,(ULONG)ui->link_pen);
+    ui->link_pen = -1;
     ui->showing_about = 0;
 }
 
@@ -537,6 +549,7 @@ DockUI *dock_ui_create(struct Screen *screen, int window_shapes, int glass, int 
     ui = (DockUI *)calloc(1, sizeof(*ui));
     if (!ui) return NULL;
     ui->screen = screen;
+    ui->link_pen = -1;
     ui->window_shapes = window_shapes;
     ui->popup_rgb = glass;
     ui->rgb_pens = glass && rgb_pens;
@@ -2887,9 +2900,28 @@ static void paint_about(DockUI *ui)
     SetDrMd(rp,JAM1);
     SetAPen(rp,ui->draw->dri_Pens[TEXTPEN]);
     for (i = 0; i < ABOUT_LINES; ++i) {
+        int link = i == ABOUT_LINK && ui->openurl;
+        if (link) SetAPen(rp,ui->link_pen >= 0 ? (ULONG)ui->link_pen : ui->draw->dri_Pens[TEXTPEN]);
         about_draw(ui,rp,i,w->Width/2,y);
+        if (link) {
+            struct RastPort measure;
+            int width, bottom = y+about_height(ui,i);
+            InitRastPort(&measure); SetFont(&measure,ui->draw->dri_Font);
+            width = about_width(ui,&measure,i);
+            ui->about_link = (DockRect){w->Width/2-width/2,y,w->Width/2-width/2+width,bottom+1};
+            RectFill(rp,ui->about_link.left,bottom,ui->about_link.right-1,bottom);
+            SetAPen(rp,ui->draw->dri_Pens[TEXTPEN]);
+        }
         y += about_height(ui,i)+about_lines[i].gap;
     }
+}
+
+/* openurl.library: URL_OpenA(url, tags), the first function. */
+static void open_about_link(DockUI *ui)
+{
+    struct Library *base = ui->openurl;
+    if (!base) return;
+    LP2(0x1e, ULONG, URL_OpenA, STRPTR, (STRPTR)about_url, a0, struct TagItem *, NULL, a1, , base);
 }
 
 int dock_ui_open_about(DockUI *ui)
@@ -2908,7 +2940,13 @@ int dock_ui_open_about(DockUI *ui)
     button_width = ui->font_width*10;
     button_height = ui->font_height+12;
     height += button_height+10; /* 16 px between the credit and the button. */
-    ui->dialog = open_dialog(ui,"About",width,height,BUTTONIDCMP);
+    ui->openurl = OpenLibrary((STRPTR)"openurl.library",1);
+    ui->about_link = (DockRect){0};
+    /* A link blue (FILLPEN read as pale grey on ApolloOS); the text pen
+       underlined without one. */
+    ui->link_pen = ui->openurl ? ObtainBestPen(ui->screen->ViewPort.ColorMap,
+        0x20202020UL,0x50505050UL,0xb0b0b0b0UL,OBP_Precision,PRECISION_GUI,TAG_DONE) : -1;
+    ui->dialog = open_dialog(ui,"About",width,height,BUTTONIDCMP|IDCMP_MOUSEBUTTONS);
     if (!ui->dialog) return 0;
     previous = CreateContext(&ui->gadgets);
     if (!previous || !gadget(ui,previous,BUTTON_KIND,GID_CANCEL,"OK",
@@ -3171,8 +3209,15 @@ static int dialog_poll(DockUI *ui)
         UWORD code = msg->Code;
         const struct Gadget *g = msg->IAddress;
         int id = (cls == IDCMP_GADGETUP && g) ? g->GadgetID : 0;
+        int mx = msg->MouseX, my = msg->MouseY;
         GT_ReplyIMsg(msg);
         if (action) continue;
+        if (ui->showing_about && cls == IDCMP_MOUSEBUTTONS && code == SELECTDOWN &&
+            mx >= ui->about_link.left && mx < ui->about_link.right &&
+            my >= ui->about_link.top && my < ui->about_link.bottom) {
+            open_about_link(ui);
+            continue;
+        }
         if (cls == IDCMP_REFRESHWINDOW) {
             GT_BeginRefresh(ui->dialog);
             if (ui->showing_about) paint_about(ui);

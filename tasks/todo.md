@@ -805,9 +805,16 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
 - [x] Installed build 320 on ApolloOS; rollback Disabled/DockAwesome-build318.old.
 - [ ] Delete SYS:WBStartup/Disabled/DockAwesome-build315.old after the next
       ApolloOS boot (Workbench holds it since it started it at boot).
-- [ ] Coffin: install build 320 and check the bottom dock's drag out (the
-      window path now draws the window's picture), the default icons and the
-      native back button.
+- [x] Folder Stack icons kept between openings and read ahead while idle
+      (4272be2): 22 icons 940 ms -> first opening 132 ms, later 12 ms.
+- [x] Installed build 325 on ApolloOS? No: ApolloOS has 320 in WBStartup and
+      325 ran from RAM: for the test. Install 325 there on its next boot.
+- [x] Installed build 325 on Coffin (rollback Disabled/DockAwesome-build314.old).
+- [ ] Coffin with the user: drag out of the bottom dock (the window path now
+      draws the window's picture), default icons, native back button, icon
+      fill speed.
+- Note: Coffin starts AmiMCP from S:User-Startup (run amiagent TOKEN=amiga),
+  ApolloOS from SYS:WBStartup/AmiMCP (IconX script waiting for AROSTCP).
 - [ ] A crash after starting a second dock (PiP2 is already in use, OK):
       unknown whether the new or the broken old dock; reproduce with the user
       present. Exit path reviewed, nothing found.

@@ -819,8 +819,10 @@ PiP1, shows beside the dock's PiP2 under Coffin (probe: both visible).
       checked with the button held.
 - [ ] ApolloOS with the user: drag-out seam now that PiP2 flips in the
       VBlank (the shaped window moves at once), tooltips, Folder Stack.
-- [ ] Coffin (build 325): install build 344 on its next boot and check
-      drag-out on the bottom and side docks.
+- [x] Coffin: installed build 344 (rollback Disabled/DockAwesome-build325.old;
+      314 removed). Drawn drag pin with the round Remove pill checked with
+      the button held; the screen came back clean. User: "Allt funkar på
+      Coffin också!" (said on 325; 344 installed after).
 - [x] Installed build 325 on Coffin (rollback Disabled/DockAwesome-build314.old).
 - [ ] Coffin with the user: drag out of the bottom dock (the window path now
       draws the window's picture), default icons, native back button, icon
